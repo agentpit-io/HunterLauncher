@@ -14,17 +14,18 @@
 
 ## 下载与安装
 
+> 表里的大小是 **v0.1.0 实际发布产物**的值。
 > **0.1.0 是预发布版（prerelease）**，因为安装包**没有代码签名**（见下面的「未签名包怎么放行」）。
 > 功能是完整的：Linux 上从零安装、升级、回滚、离线导入都真机跑通过；
 > Windows / macOS **只在 CI 里编译与打包通过，没有在真机上跑过**。
 
 | 平台 | 下载 | 大小 | 说明 |
 |---|---|---|---|
-| **Windows** 10 21H2+ / 11 · x64 | `hunter-launcher_<版本>_x64-setup.exe` | 见 Release 页 | NSIS 安装包，推荐 |
-| | `hunter-launcher_<版本>_x64_en-US.msi` | 见 Release 页 | 要走组策略分发就用这个 |
-| **macOS** 12+ · Intel / Apple Silicon | `hunter-launcher_<版本>_universal.dmg` | 见 Release 页 | 通用二进制，一个包通吃两种芯片 |
-| **Linux** Ubuntu 22.04+ / Debian 12+ · x64 | `hunter-launcher_<版本>_amd64.deb` | 3.81 MiB | 推荐 |
-| | `hunter-launcher_<版本>_amd64.AppImage` | 75.55 MiB | 免安装；大是因为要自带整套 WebKitGTK，压不下去 |
+| **Windows** 10 21H2+ / 11 · x64 | `hunter-launcher_<版本>_x64-setup.exe` | 2.64 MiB | NSIS 安装包，推荐 |
+| | `hunter-launcher_<版本>_x64_en-US.msi` | 3.46 MiB | 要走组策略分发就用这个 |
+| **macOS** 12+ · Intel / Apple Silicon | `hunter-launcher_<版本>_universal.dmg` | 6.51 MiB | 通用二进制，一个包通吃两种芯片 |
+| **Linux** Ubuntu 22.04+ / Debian 12+ · x64 | `hunter-launcher_<版本>_amd64.deb` | 3.82 MiB | 推荐 |
+| | `hunter-launcher_<版本>_amd64.AppImage` | 78.01 MiB | 免安装；大是因为要自带整套 WebKitGTK，压不下去 |
 
 **GitHub 下载**：<https://github.com/agentpit-io/HunterLauncher/releases>
 **国内下载**（腾讯云香港，不用翻墙）：`https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/<版本>/`
@@ -144,7 +145,7 @@ xattr -dr com.apple.quarantine "/Applications/Hunter Launcher.app"
 HunterCode 开源版是一套跑在你自己机器上的多智能体投研终端，用 `docker compose` 起 6 个容器。
 对愿意敲命令行的人，这没什么难度；但它的目标用户里有相当一部分**正是怕命令行的那批人**。
 
-Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完全部的部署动作（Linux `.deb` 实测 3.81 MiB，AppImage 75.55 MiB —— 后者要自带整套 WebKitGTK）：
+Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完全部的部署动作（Linux `.deb` 3.82 MiB、Windows NSIS 2.64 MiB、macOS dmg 6.51 MiB；AppImage 78 MiB —— 它要自带整套 WebKitGTK）：
 
 | 启动器替你做的事 | 原来要手动做的 |
 |---|---|
@@ -167,7 +168,7 @@ Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完�
 |---|---|---|---|
 | Windows | 10 21H2+ / 11 · x64 | NSIS `.exe` + MSI | CI 编译 + 代码审阅（暂无真机） |
 | macOS | 12+ · Intel / Apple Silicon | `.dmg`（通用二进制） | CI 编译 + 代码审阅（暂无真机） |
-| Linux | Ubuntu 22.04+ / Debian 12+ · x64 | `.deb`（3.81 MiB，推荐）+ `.AppImage`（75.55 MiB，免安装） | ✅ 真机测试（Ubuntu 24.04） |
+| Linux | Ubuntu 22.04+ / Debian 12+ · x64 | `.deb`（3.82 MiB，推荐）+ `.AppImage`（78.01 MiB，免安装） | ✅ 真机测试（Ubuntu 24.04） |
 
 > 只有 Linux 有真实测试环境。Windows / macOS 以「CI 能编译通过 + 代码路径审阅」为准，
 > 每个里程碑的报告里会写明哪些是未真机验证的。

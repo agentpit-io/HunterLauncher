@@ -48,7 +48,7 @@ cat <<EOF
 |---|---|---|
 | Windows 10/11 x64 | \`hunter-launcher_${V}_x64-setup.exe\`（推荐）/ \`hunter-launcher_${V}_x64_en-US.msi\` | NSIS 安装包 / MSI |
 | macOS 12+ | \`hunter-launcher_${V}_universal.dmg\` | 通用二进制（Intel + Apple Silicon） |
-| Ubuntu 22.04+ / Debian 12+ x64 | \`hunter-launcher_${V}_amd64.deb\`（推荐）/ \`hunter-launcher_${V}_amd64.AppImage\` | deb 约 4 MB；AppImage 约 76 MB（自带整套 WebKitGTK，这是格式的固有代价） |
+| Ubuntu 22.04+ / Debian 12+ x64 | \`hunter-launcher_${V}_amd64.deb\`（推荐）/ \`hunter-launcher_${V}_amd64.AppImage\` | deb 约 3.8 MiB；AppImage 约 78 MiB（自带整套 WebKitGTK，这是格式的固有代价） |
 
 **国内下载**（腾讯云香港，不用翻墙）：
 \`${CN_BASE}/launcher/${V}/\`
@@ -82,7 +82,7 @@ Windows 代码签名证书（100–500 美元/年）与 Apple 开发者账号（
 
 ## 已知问题
 
-* AppImage 有 76 MB，远超设计目标里写的 40 MB —— 它要自带整套 WebKitGTK，压不下去。
+* AppImage 有 78 MiB，远超设计目标里写的 40 MB —— 它要自带整套 WebKitGTK，压不下去。
   介意体积就用 deb。
 * \`.deb\` 装的启动器**不能就地自更新**（换 /usr 下的文件要 root）。点「更新」时启动器会把
   新包下到 \`~/.hunter/updates/\` 并给出一条 \`sudo apt install\` 命令，最后一步由你来。
