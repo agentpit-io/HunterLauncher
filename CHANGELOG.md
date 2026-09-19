@@ -55,8 +55,8 @@ Windows 会触发 SmartScreen、macOS 需要手动放行（步骤见 README 与 
 
 ### 已知问题
 
-* **AppImage 约 75 MB**，远超设计目标里的 40 MB —— 要自带整套 WebKitGTK，压不下去。
-  `.deb` 只有约 3 MB，介意体积就用 deb。
+* **AppImage 75.55 MiB**，远超设计目标里的 40 MB —— 要自带整套 WebKitGTK，压不下去。
+  `.deb` 只有 3.81 MiB，介意体积就用 deb。（两个都是测试机上真实构建的值。）
 * **`.deb` 装的启动器不能就地自更新**（见上）。
 * **运行面板「今日对话」「晨报」两张卡显示 `—`**：hunter-community 的 api 没有对应的
   免登录接口（逐条实测过）。缺哪几条在面板上可以点开看。

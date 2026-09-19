@@ -16,12 +16,28 @@ CN_BASE="${CN_DOWNLOAD_BASE:-https://hunter-dl-hk-1253756459.cos.ap-hongkong.myq
 TAG="launcher-v${V}"
 
 # ── CHANGELOG 里这个版本那一节 ────────────────────────────────────────────
-if [ -f CHANGELOG.md ]; then
-  awk -v v="$V" '
+# 预发布（0.1.0-rc.1）在 CHANGELOG 里通常没有自己的小节 —— 它和要发的正式版是同一批变更，
+# 为每个 rc 抄一遍只会让 CHANGELOG 变成流水账。所以：先找精确匹配，找不到就退回基础版本
+# （去掉 `-rc.N` 后缀）那一节，并在前面说明这是预发布。
+section() {
+  awk -v v="$1" '
     $0 ~ "^## \\[?" v "\\]?" { on = 1; print; next }
     on && /^## / { exit }
     on { print }
   ' CHANGELOG.md
+}
+
+if [ -f CHANGELOG.md ]; then
+  BODY=$(section "$V")
+  if [ -z "$BODY" ]; then
+    BASE="${V%%-*}"
+    BODY=$(section "$BASE")
+    if [ -n "$BODY" ]; then
+      echo "> 这是 **${V}**（${BASE} 的预发布）。下面是 ${BASE} 的变更清单。"
+      echo
+    fi
+  fi
+  printf '%s\n' "$BODY"
 fi
 
 cat <<EOF
@@ -32,7 +48,7 @@ cat <<EOF
 |---|---|---|
 | Windows 10/11 x64 | \`hunter-launcher_${V}_x64-setup.exe\`（推荐）/ \`hunter-launcher_${V}_x64_en-US.msi\` | NSIS 安装包 / MSI |
 | macOS 12+ | \`hunter-launcher_${V}_universal.dmg\` | 通用二进制（Intel + Apple Silicon） |
-| Ubuntu 22.04+ / Debian 12+ x64 | \`hunter-launcher_${V}_amd64.deb\`（推荐）/ \`hunter-launcher_${V}_amd64.AppImage\` | deb 约 3 MB；AppImage 约 75 MB（自带整套 WebKitGTK，这是格式的固有代价） |
+| Ubuntu 22.04+ / Debian 12+ x64 | \`hunter-launcher_${V}_amd64.deb\`（推荐）/ \`hunter-launcher_${V}_amd64.AppImage\` | deb 约 4 MB；AppImage 约 76 MB（自带整套 WebKitGTK，这是格式的固有代价） |
 
 **国内下载**（腾讯云香港，不用翻墙）：
 \`${CN_BASE}/launcher/${V}/\`
@@ -66,7 +82,7 @@ Windows 代码签名证书（100–500 美元/年）与 Apple 开发者账号（
 
 ## 已知问题
 
-* AppImage 有 75 MB，远超设计目标里写的 40 MB —— 它要自带整套 WebKitGTK，压不下去。
+* AppImage 有 76 MB，远超设计目标里写的 40 MB —— 它要自带整套 WebKitGTK，压不下去。
   介意体积就用 deb。
 * \`.deb\` 装的启动器**不能就地自更新**（换 /usr 下的文件要 root）。点「更新」时启动器会把
   新包下到 \`~/.hunter/updates/\` 并给出一条 \`sudo apt install\` 命令，最后一步由你来。
