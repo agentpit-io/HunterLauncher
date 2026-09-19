@@ -493,6 +493,7 @@ pub fn pull(
             }
             on_progress(&snap);
             linfo!("离线模式：六个镜像都在本机，跳过拉取");
+            clear_offline(state);
             return Ok(());
         }
         lwarn!("标了离线模式，但本机还缺 {missing:?}，照常联网拉");
@@ -530,15 +531,7 @@ pub fn pull(
                 }
                 on_progress(&snap);
                 linfo!("拉取完成，用时 {} 秒", agg.elapsed().as_secs());
-                // 真的从网上拉成功了 = 这台机器连得上源，离线标志该退场了。
-                // 留着它会让以后每次安装都跳过拉取，镜像永远停在导入时的那一版。
-                if state.offline.swap(false, Ordering::SeqCst) {
-                    let mut c = state.config();
-                    c.install.offline = false;
-                    let _ = c.save();
-                    state.set_config(c);
-                    linfo!("已从网上拉取成功，离线标志清除");
-                }
+                clear_offline(state);
                 state.tele(
                     "pull_done",
                     &[
@@ -607,6 +600,28 @@ pub fn pull(
         }
     }
     Err(last_err.unwrap_or_else(|| AppError::new(Code::PullFailed, "拉取失败".to_string())))
+}
+
+/// 一轮拉取结束就把离线标志放掉（**不管这一轮是跳过的还是真拉的**）。
+///
+/// 为什么是「一次性」而不是「这台机器永远离线」：
+///
+/// M4 收尾时撞到的 —— 用离线包装过一次之后标志一直留着，后来跑
+/// `--upgrade 1.2.0` 时那六个镜像正好都在本机，于是**升级整个跳过了拉取**，
+/// 一次 registry 都没碰。容器最后是对的（镜像确实是 1.2.0），但
+/// 「升级」这件事的本意就是去取新版本，悄悄用本地的不该是默认行为。
+///
+/// 改成一次性之后语义和文档一致了：**导入离线包 → 紧接着的这一次安装跳过拉取**。
+/// air-gapped 的机器要重装就再 `--import-images` 一次（tar 就在手边，`docker load`
+/// 一个已经加载过的包只要十几秒）。
+fn clear_offline(state: &AppState) {
+    if state.offline.swap(false, Ordering::SeqCst) {
+        let mut c = state.config();
+        c.install.offline = false;
+        let _ = c.save();
+        state.set_config(c);
+        linfo!("这一轮拉取结束，离线标志已清除（下一次会照常测速与拉取）");
+    }
 }
 
 /// 换源之后重写 `.env` 的 `HUNTER_REGISTRY` 与覆盖文件里 postgres/redis 的镜像地址。
