@@ -989,8 +989,24 @@ const QUOTA_TTL: Duration = Duration::from_secs(60);
 /// 而运行面板每 10 秒刷新一次状态 —— 不缓存的话一个用户开着面板十分钟就把额度用光，
 /// 之后「有新版本」角标会无声无息地不再出现。
 pub fn latest_hunter_tag() -> Option<String> {
+    cached(latest_tag_slot(), LATEST_TAG_TTL, fetch_latest_hunter_tag)
+}
+
+/// 用户**亲手点了「检查更新」**时用这个：绕过缓存，真去问一次，并把缓存刷新掉。
+///
+/// 自动刷新走缓存是为了不被 GitHub 限流；但用户主动点的那一下如果也回一个
+/// 六小时前的答案，这个按钮就等于没有 —— 他点它正是因为想知道「现在」有没有新版本。
+/// 一次手点一次请求，离每小时 60 次的限额远得很。
+pub fn latest_hunter_tag_now() -> Option<String> {
+    // TTL 传 0 = 必定过期 = 必定重新取，而且取完会写回**同一格**缓存，
+    // 面板下一次自动刷新看到的就是刚问回来的这个值。
+    cached(latest_tag_slot(), Duration::ZERO, fetch_latest_hunter_tag)
+}
+
+/// 自动刷新与手动检查共用的那一格缓存。
+fn latest_tag_slot() -> &'static CacheSlot<Option<String>> {
     static CACHE: CacheSlot<Option<String>> = Mutex::new(None);
-    cached(&CACHE, LATEST_TAG_TTL, fetch_latest_hunter_tag)
+    &CACHE
 }
 
 /// 一格「值 + 取到它的时刻」。
@@ -1083,6 +1099,30 @@ mod tests {
         // TTL 为 0 = 每次都过期，必须重新取
         assert_eq!(cached(&slot, Duration::ZERO, take), 7);
         assert_eq!(hits.load(Ordering::SeqCst), 2, "过期之后必须重新取");
+    }
+
+    /// 手动点「检查更新」必须绕过缓存 —— 否则那个按钮等于没有。
+    #[test]
+    fn 手动检查更新与自动刷新共用一格缓存且手动必定重新取() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = AtomicUsize::new(0);
+        let slot: CacheSlot<u32> = Mutex::new(None);
+        let take = || {
+            hits.fetch_add(1, Ordering::SeqCst) as u32 + 1
+        };
+
+        // 自动刷新：第一次取，之后走缓存
+        assert_eq!(cached(&slot, Duration::from_secs(3600), take), 1);
+        assert_eq!(cached(&slot, Duration::from_secs(3600), take), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // 手动（TTL=0）：必定重新取
+        assert_eq!(cached(&slot, Duration::ZERO, take), 2);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        // 而且刚取回来的值写进了**同一格**，自动刷新拿到的是新值而不是旧的 1
+        assert_eq!(cached(&slot, Duration::from_secs(3600), take), 2);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "自动刷新不该又去取一次");
     }
 
     /// 方案 §11.3 写死的是「缓存 6 小时」。

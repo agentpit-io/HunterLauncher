@@ -264,7 +264,8 @@ pub fn run_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
         Action::CheckUpdate => {
             show_main(app);
             let _ = app.emit(EV_NAVIGATE, "dashboard");
-            let latest = crate::flow::latest_hunter_tag();
+            // 用户亲手点的这一下要绕过 6 小时缓存 —— 他点它正是想知道「现在」怎么样
+            let latest = crate::flow::latest_hunter_tag_now();
             let cur = app.state::<AppState>().config().hunter.tag;
             let msg = match latest {
                 Some(t) if t != cur => format!("有新版本 v{t}（当前 v{cur}）"),
