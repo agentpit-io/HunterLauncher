@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 发布通道标记。vite.config.ts 里有断言：这个值是 release 时不允许同时带 VITE_DEMO=1
+  HUNTER_CHANNEL: release
+
+jobs:
+  frontend:
+    name: 前端 · lint / typecheck / vitest / build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: ESLint
+        run: pnpm lint
+      - name: 类型检查
+        run: pnpm typecheck
+      - name: 单元测试
+        run: pnpm test
+      - name: 构建前端
+        run: pnpm exec vite build
+      - name: 红线 1 · 发布产物里不许有演示数据
+        run: |
+          set -e
+          if grep -rl "HUNTER_DEMO_DATA_MARKER" dist/ ; then
+            echo "::error::发布构建里出现了演示数据标记（总控规则红线 1）"
+            exit 1
+          fi
+          echo "OK：dist/ 里没有演示数据"
+      - name: 红线 1 · 演示构建必须带标记（确保检查本身是有效的）
+        run: |
+          set -e
+          HUNTER_CHANNEL=dev VITE_DEMO=1 pnpm exec vite build --outDir dist-demo
+          grep -rl "HUNTER_DEMO_DATA_MARKER" dist-demo/ >/dev/null
+          echo "OK：演示构建里有标记，说明上一步的检查不是空跑"
+          rm -rf dist-demo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+          retention-days: 7
+
+  rust:
+    name: Rust · cargo check / clippy / tauri build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Linux 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libssl-dev \
+            build-essential curl wget file pkg-config \
+            xdg-utils
+      # xdg-utils 不在 Tauri 官方依赖清单里，但 AppImage 打包要把 xdg-open 塞进 AppDir，
+      # 缺了会在打包最后一步才失败（M0 §6.3 踩过）
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 构建前端（tauri build 需要 dist/）
+        run: pnpm exec vite build
+      - name: cargo fmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: cargo clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked -- -D warnings
+      - name: tauri build（不打包，只验证能编出可执行文件）
+        run: pnpm exec tauri build --no-bundle
+      - name: 产物体积
+        run: ls -la src-tauri/target/release/hunter-launcher
+
+  cross:
+    name: 跨平台编译 · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vite build
+      # Windows / macOS 没有真机测试环境，CI 能编过 + 代码审阅是这两个平台唯一的验收手段
+      - name: cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked

@@ -1,0 +1,20 @@
+/* 由 scripts/build-fonts.py 生成，请勿手改。
+   两个都是可变字体的子集，一个文件覆盖全部字重；
+   子集只含界面用到的字形，未覆盖的字回落到 tokens.css 里列的系统中文字体。
+   Noto Sans SC 与 JetBrains Mono 均为 SIL OFL 1.1，许可证全文见 src/assets/fonts/。 */
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('../assets/fonts/noto-sans-sc-subset.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('../assets/fonts/jetbrains-mono-subset.woff2') format('woff2');
+}

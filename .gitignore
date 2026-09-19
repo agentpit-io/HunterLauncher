@@ -9,6 +9,7 @@ dist-ssr/
 *.local
 
 # ── Rust / Tauri ──────────────────────────────────────
+# Cargo.lock **要**提交：CI 用 --locked 构建，锁文件是可复现构建的前提
 src-tauri/target/
 src-tauri/gen/
 src-tauri/WixTools/
@@ -31,6 +32,9 @@ src-tauri/WixTools/
 .DS_Store
 Thumbs.db
 *.swp
+
+# ── 前端构建的临时产物 ─────────────────────────────────
+dist-demo/
 
 # ── 日志与临时 ────────────────────────────────────────
 *.log
