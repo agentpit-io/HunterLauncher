@@ -1,0 +1,39 @@
+# ── 依赖 ──────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# ── 前端构建产物 ───────────────────────────────────────
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# ── Rust / Tauri ──────────────────────────────────────
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+**/*.rs.bk
+
+# ── 密钥与凭证 · 绝不能进仓库 ──────────────────────────
+# Tauri updater 私钥(开发机 ~/.hunter-launcher-keys/,GitHub Secrets 里存一份)
+*.key
+!src-tauri/*.pub.key
+.env
+.env.*
+!.env.example
+# 测试用 hunter key(明文只在测试机 ~/.hunter-launcher-test/key)
+**/hunter-launcher-test/
+
+# ── 编辑器 / 系统 ─────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── 日志与临时 ────────────────────────────────────────
+*.log
+tmp/
+.cache/
+coverage/
