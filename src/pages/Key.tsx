@@ -111,6 +111,14 @@ export function Key() {
           )}
         </div>
         {error && <div className="mt-[10px] text-sm leading-none text-danger">{error}</div>}
+        {/* key 是好的、但今天额度用完了：不是错误，是**提醒**，所以用琥珀色而不是红色，
+            也不挡住「下一步」。I1 之前这条根本不存在 —— `/quota` 在额度用尽时仍然回 200，
+            校验直接过，用户要等装完在 Hunter 里对话被拒才知道（见 I1 迭代报告用例 6）。 */}
+        {!error && result?.valid && result.reason === 'exhausted' && result.message && (
+          <div data-testid="key-exhausted" className="mt-[10px] text-sm leading-[1.5] text-amber-text">
+            {result.message}
+          </div>
+        )}
       </div>
 
       <div className="mt-[23px] grid grid-cols-3 gap-gap">

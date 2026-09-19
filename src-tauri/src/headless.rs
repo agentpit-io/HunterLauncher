@@ -268,6 +268,10 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
         return Err(AppError::new(code, "key 没通过校验。".to_string()));
     }
     st.set_hunter_key(&key);
+    // key 是好的但额度用完了：照装，但把话说在前面（I1 实测，见迭代报告用例 6）
+    if check.reason == gateway::KeyReason::Exhausted {
+        println!("  ⚠ {}", check.message.clone().unwrap_or_default());
+    }
     match &check.quota {
         Some(q) => println!(
             "  ✓ key 有效 · 今日已用 {} / {} · 剩 {} · 每分钟 {} 次 · 并发 {}",
