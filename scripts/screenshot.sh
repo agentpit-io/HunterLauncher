@@ -16,7 +16,7 @@ DISPLAY_NUM="${DISPLAY_NUM:-:99}"
 # 截图前等多久。WebKitGTK 在软件渲染下首帧比较慢，宁可多等
 SETTLE="${SETTLE:-9}"
 
-PAGES=(welcome docker docker-missing key model pull start done dashboard settings logs feedback error)
+PAGES=(welcome docker docker-missing key model pull start done dashboard settings logs feedback update error)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }
