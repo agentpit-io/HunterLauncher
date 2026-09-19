@@ -13,7 +13,7 @@ const TAIL = 200
 export function Logs() {
   const { t, setOverlay } = useStore()
   const [source, setSource] = useState<'launcher' | 'compose'>('launcher')
-  const log = useAsync(() => ipc.launcherLog(TAIL), [source])
+  const log = useAsync(() => (source === 'launcher' ? ipc.launcherLog(TAIL) : ipc.composeLogs(undefined, TAIL)), [source])
   // 红线 2：复制出去的内容一定先脱敏
   const lines = (log.data ?? []).map(redact)
 

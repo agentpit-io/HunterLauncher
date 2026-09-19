@@ -27,16 +27,19 @@ export function TextInput({
   placeholder,
   mono = false,
   disabled,
+  password = false,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   mono?: boolean
   disabled?: boolean
+  /** 自带模型 key 这类敏感输入用它：不回显明文（红线 2） */
+  password?: boolean
 }) {
   return (
     <input
-      type="text"
+      type={password ? 'password' : 'text'}
       spellCheck={false}
       value={value}
       disabled={disabled}
@@ -118,9 +121,25 @@ export function SegmentedControl<T extends string>({
 }
 
 /** 复选框。 */
-export function Checkbox({ on, onChange, children }: { on: boolean; onChange: (v: boolean) => void; children: ReactNode }) {
+export function Checkbox({
+  on,
+  onChange,
+  children,
+  disabled = false,
+}: {
+  on: boolean
+  onChange: (v: boolean) => void
+  children: ReactNode
+  /** 只读展示用（例如 DeepSeek 自动勾上的 LLM_SCHEMA_SANITIZE，那不是用户的选择） */
+  disabled?: boolean
+}) {
   return (
-    <button type="button" onClick={() => onChange(!on)} className="flex items-start gap-3 text-left">
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`flex items-start gap-3 text-left ${disabled ? 'cursor-default' : ''}`}
+    >
       <span
         className={`mt-[2px] flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-colors duration-150 ${
           on ? 'border-amber bg-amber' : 'border-line-strong bg-transparent'

@@ -16,11 +16,14 @@
 
 import type {
   AppInfo,
+  BootState,
   DockerInfo,
   ImagePull,
   KeyCheckResult,
   LauncherSettings,
+  OwnKeyCheck,
   PullProgress,
+  RegistryProbe,
   RuntimeStatus,
 } from './types'
 
@@ -54,6 +57,8 @@ export const demoDocker: DockerInfo = {
   arch: 'x86_64',
   wsl: null,
   meetsMinimum: true,
+  problem: null,
+  installGuide: null,
 }
 
 /** 「没装 Docker」那一页的演示态（截图脚本用 HUNTER_DEMO_PAGE=docker-missing 打开）。 */
@@ -68,6 +73,19 @@ export const demoDockerMissing: DockerInfo = {
   arch: 'x86_64',
   wsl: null,
   meetsMinimum: false,
+  problem: '命令行里找不到 docker。',
+  installGuide: {
+    platform: 'linux',
+    title: '在 Linux 上装 Docker',
+    steps: [
+      { text: '官方便利脚本：curl -fsSL https://get.docker.com | sh（国内可以加 --mirror Aliyun）。', url: 'https://docs.docker.com/engine/install/' },
+      { text: '装完把自己加进 docker 组，免得每条命令都要 sudo：sudo usermod -aG docker $USER，然后**重新登录**一次。', url: null },
+      { text: '确认 compose 插件也在：docker compose version，要 v2.20 及以上。', url: 'https://docs.docker.com/compose/install/linux/' },
+      { text: '服务器没有桌面环境的话，用 hunter-launcher --headless 走纯命令行安装，流程和界面版完全一样。', url: null },
+    ],
+    licenseNote:
+      '提示：Docker Desktop 对「员工 250 人以上或年收入超过 1000 万美元」的企业是收费的。个人与小团队免费。不想用它的话，mac 上可以换 OrbStack，Linux 上直接用 Docker Engine（本来就免费），Podman 也能跑但属于实验支持。',
+  },
 }
 
 export const demoKeyCheck: KeyCheckResult = {
@@ -82,10 +100,34 @@ export const demoKeyCheck: KeyCheckResult = {
     concurrency: 4,
   },
   models: [
-    { id: 'hunter-chat', purpose: 'chat' },
-    { id: 'hunter-deep', purpose: 'deep_analysis' },
+    { id: 'hunter-chat', purpose: '默认对话与工具调用 · 快、便宜' },
+    { id: 'hunter-deep', purpose: '深度分析与长任务 · 更强但更贵' },
   ],
+  message: null,
+  code: null,
 }
+
+export const demoBootState: BootState = {
+  installed: false,
+  running: false,
+  locale: 'zh-CN',
+  hunterTag: '1.2.0',
+  workDir: '~/.hunter',
+}
+
+export const demoOwnKeyCheck: OwnKeyCheck = {
+  ok: true,
+  via: 'gateway',
+  message: '用 Hunter 内置额度网关 · 模型 hunter-chat',
+  schemaSanitize: false,
+  models: ['hunter-chat', 'hunter-deep'],
+}
+
+/** 镜像源测速的演示值。真实探测在 Rust 侧，这里只是让截图有内容。 */
+export const demoProbes: RegistryProbe[] = [
+  { id: 'ghcr', label: 'GHCR · GitHub', prefix: DEMO_REGISTRY, available: true, elapsedMs: 1993, detail: null },
+  { id: 'tencent', label: '腾讯云 · 香港', prefix: 'hkccr.ccs.tencentyun.com/agentpit', available: true, elapsedMs: 10765, detail: null },
+]
 
 /** 六个镜像的大小取自 M0 §4.1（linux/amd64 压缩后字节数）。 */
 const IMAGE_SIZES: { service: string; shortRef: string; tag: string; bytes: number }[] = [
@@ -118,17 +160,30 @@ export const demoImages: ImagePull[] = IMAGE_SIZES.map((it) => {
     totalBytes: it.bytes,
     downloadedBytes: Math.round(it.bytes * ratio),
     state: ratio >= 1 ? 'done' : 'downloading',
+    sizeUnknown: false,
+    seconds: ratio >= 1 ? Math.round(it.bytes / 4_800_000) : null,
   }
 })
 
+const demoDone = demoImages.reduce((a, i) => a + i.downloadedBytes, 0)
+const demoTotal = demoImages.reduce((a, i) => a + i.totalBytes, 0)
+
 export const demoPull: PullProgress = {
+  phase: 'pulling',
   registry: DEMO_REGISTRY,
+  registryLabel: DEMO_REGISTRY_LABEL,
   images: demoImages,
-  log: [
-    '17:42:08 pull api layer 7/12 sha256:4c1e… extracting',
-    '17:42:07 pull opencode layer 4/6 sha256:a9f2… downloading',
-  ],
+  totalBytes: demoTotal,
+  downloadedBytes: demoDone,
+  percent: Math.round((demoDone / demoTotal) * 100),
+  speedBps: 4_800_000,
   etaSeconds: 80,
+  attempt: 1,
+  log: [
+    '17:42:08 api layer 4c1efbb5d2e0 Pull complete',
+    '17:42:07 opencode layer a9f2c31b7ad4 Pull complete',
+  ],
+  error: null,
 }
 
 export const demoRuntime: RuntimeStatus = {
@@ -146,12 +201,12 @@ export const demoRuntime: RuntimeStatus = {
   uptimeSeconds: 3 * 86400 + 6 * 3600,
   webUrl: 'http://localhost:3100',
   services: [
-    { service: 'web', state: 'running', health: 'healthy', port: 3100 },
-    { service: 'api', state: 'running', health: 'healthy', port: 8100 },
-    { service: 'opencode', state: 'running', health: 'healthy', port: 3921 },
-    { service: 'llm-shim', state: 'running', health: 'healthy', port: null },
-    { service: 'postgres', state: 'running', health: 'healthy', port: 5442 },
-    { service: 'redis', state: 'running', health: 'healthy', port: 6479 },
+    { service: 'web', state: 'running', health: 'healthy', port: 3100, exitCode: null },
+    { service: 'api', state: 'running', health: 'healthy', port: 8100, exitCode: null },
+    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, exitCode: null },
+    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, exitCode: null },
+    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
+    { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
   ],
   env: [
     { key: 'model', value: '网关 · hunter-chat' },
@@ -167,22 +222,24 @@ export const demoRuntime: RuntimeStatus = {
     '08:29:38 kronos_forecast 601899 ok 3.2s',
     '00:00:00 quota reset 300,000 tokens',
   ],
+  apiKeyConfigured: true,
+  installed: true,
 }
 
 export const demoStartingServices: RuntimeStatus['services'] = [
-  { service: 'postgres', state: 'running', health: 'healthy', port: 5442 },
-  { service: 'redis', state: 'running', health: 'healthy', port: 6479 },
-  { service: 'llm-shim', state: 'running', health: 'healthy', port: null },
-  { service: 'api', state: 'running', health: 'healthy', port: 8100 },
-  { service: 'opencode', state: 'running', health: 'starting', port: 3921 },
-  { service: 'web', state: 'created', health: 'pending', port: 3100 },
+  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
+  { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
+  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, exitCode: null },
+  { service: 'api', state: 'running', health: 'healthy', port: 8100, exitCode: null },
+  { service: 'opencode', state: 'running', health: 'starting', port: 3921, exitCode: null },
+  { service: 'web', state: 'created', health: 'pending', port: 3100, exitCode: null },
 ]
 
 export const demoSettings: LauncherSettings = {
   locale: 'zh-CN',
   autostart: false,
   checkUpdate: true,
-  registry: DEMO_REGISTRY,
+  registry: 'ghcr',
   hunterTag: DEMO_HUNTER_TAG,
   workDir: '~/.hunter',
   telemetry: false,
@@ -199,4 +256,14 @@ export const demoLauncherLog: string[] = [
   '2026-09-19 17:39:29  INFO   gateway   key 校验通过，今日剩余 299,885 tokens',
   '2026-09-19 17:39:25  INFO   docker    Docker Engine 29.8.1 · Compose v5.5.1',
   '2026-09-19 17:39:24  INFO   launcher  Hunter 启动器 0.1.0 启动（linux/x86_64）',
+]
+
+/** 日志页「容器日志」那一档的演示内容。 */
+export const demoComposeLog: string[] = [
+  'hunter-api-1       | INFO:     127.0.0.1:52344 - "GET /api/health HTTP/1.1" 200 OK',
+  'hunter-web-1       | ready - started server on 0.0.0.0:3000',
+  'hunter-opencode-1  | opencode server listening on 127.0.0.1:3901',
+  'hunter-llm-shim-1  | shim ready, upstream=https://hunter.agentpit.io/api/saas/llm/v1',
+  'hunter-postgres-1  | database system is ready to accept connections',
+  'hunter-redis-1     | Ready to accept connections tcp',
 ]

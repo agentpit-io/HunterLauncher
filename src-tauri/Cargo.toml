@@ -21,6 +21,18 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 配置文件（~/.hunter/launcher.toml）
+toml = "1"
+# HTTP：阻塞式、纯 Rust TLS。启动器绝大部分工作本来就是阻塞的（等 docker 子进程），
+# 为几个请求把整套代码染成 async 不划算；Tauri 那边统一用 spawn_blocking 挪到工作线程。
+ureq = { version = "3", features = ["json"] }
+http = "1"
+# 校验下载回来的 compose 文件
+sha2 = "0.11"
+# 生成 JWT_SECRET / 数据库口令，用操作系统的 CSPRNG
+getrandom = "0.4"
+# headless 模式下输入 key 时不回显
+rpassword = "7"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

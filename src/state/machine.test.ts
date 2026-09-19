@@ -57,6 +57,7 @@ const ALL_STATES: State[] = [
 
 const ALL_EVENTS: Event[] = [
   { type: 'BOOT' },
+  { type: 'RESUME_READY' },
   { type: 'ACCEPT_TERMS' },
   { type: 'DOCKER_MISSING' },
   { type: 'DOCKER_FOUND' },
@@ -304,5 +305,50 @@ describe('页面映射', () => {
 
   it('Error 永远渲染错误页', () => {
     expect(pageOf({ name: 'Error', code: 'E_KEY_INVALID', from: 'NeedKey' })).toBe('error')
+  })
+})
+
+describe('第二次打开启动器（M2 新增）', () => {
+  it('RESUME_READY 从 Idle 直接进运行面板', () => {
+    expect(transition(INITIAL_STATE, { type: 'RESUME_READY' })).toEqual({ name: 'Ready' })
+  })
+
+  it('boot_state 是异步回来的，那时候通常已经在 Welcome 了，也要能跳', () => {
+    const welcome = transition(INITIAL_STATE, { type: 'BOOT' })
+    expect(welcome.name).toBe('Welcome')
+    expect(transition(welcome, { type: 'RESUME_READY' })).toEqual({ name: 'Ready' })
+  })
+
+  it('已经走进向导之后不再理会这个事件（免得把用户从半路拽走）', () => {
+    const inWizard = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }])
+    expect(inWizard.name).toBe('CheckDocker')
+    expect(transition(inWizard, { type: 'RESUME_READY' })).toEqual(inWizard)
+  })
+})
+
+describe('M2 新增的两个错误码', () => {
+  it('都在 ERROR_CODES 里且有确定的重试去向', () => {
+    for (const code of ['E_COMPOSE_FETCH', 'E_CONFIG_WRITE'] as const) {
+      expect(ERROR_CODES).toContain(code)
+      const err = transition({ name: 'Pulling' }, { type: 'FAIL', code })
+      expect(err).toMatchObject({ name: 'Error', code, from: 'Pulling' })
+      // 重试回到拉取页重来一遍：配置与 compose 文件都是在那一步写的
+      expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'Pulling' })
+    }
+  })
+})
+
+describe('Docker 页一次点击就该走到输入 key（M2 修的 UX 问题）', () => {
+  it('CheckDocker 连发两个事件后落在 NeedKey', () => {
+    const start = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }])
+    expect(start.name).toBe('CheckDocker')
+    // 页面在「装了 + daemon 在跑 + 版本够」时一次把两个事件都发出去
+    const after = run(start, [{ type: 'DOCKER_FOUND' }, { type: 'DAEMON_UP' }])
+    expect(after.name).toBe('NeedKey')
+  })
+
+  it('CheckDocker 与 CheckDaemon 渲染的确实是同一页（所以只发一个事件会看起来没反应）', () => {
+    expect(pageOf({ name: 'CheckDocker' })).toBe('docker')
+    expect(pageOf({ name: 'CheckDaemon' })).toBe('docker')
   })
 })

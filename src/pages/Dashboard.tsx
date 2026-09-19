@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Badge } from '../components/Badge'
 import { Button, ChevronRight } from '../components/Button'
 import { Card, CardHead } from '../components/Card'
@@ -25,7 +26,24 @@ import { useStore } from '../state/context'
 export function Dashboard() {
   const { t, locale, send, setOverlay, state } = useStore()
   const rt = useAsync(() => ipc.runtimeStatus(), [])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
   const d = rt.data
+
+  /** 停止 / 重启都是真的去动容器，做完再刷新一次面板。 */
+  async function act(action: 'stop' | 'restart') {
+    setBusy(action)
+    setNote(null)
+    try {
+      setNote(await ipc.stackAction(action))
+      send(action === 'stop' ? { type: 'STOP' } : { type: 'START' })
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+      rt.reload()
+    }
+  }
 
   const services = d?.services ?? []
   const healthy = services.filter((s) => s.health === 'healthy').length
@@ -68,6 +86,14 @@ export function Dashboard() {
         </Button>
       </header>
 
+      {/* api 自报 key 有没有落进容器（M0 §3.1 的意外收获）。只有明确是 false 才提示，
+          读不到就什么都不说 —— 没读到不等于没配上（红线 1）。 */}
+      {d?.apiKeyConfigured === false && (
+        <div className="mt-[14px] shrink-0 rounded-md border border-danger/40 bg-card px-4 py-2.5 text-sm text-danger">
+          {t.dashboard.keyMissing}
+        </div>
+      )}
+
       {/* 四张统计卡 */}
       <div className="mt-[30px] grid shrink-0 grid-cols-4 gap-gap">
         <StatCard
@@ -93,7 +119,7 @@ export function Dashboard() {
         <StatCard label={t.dashboard.cardBrief} value={null} reason={t.dashboard.noSource} />
         <StatCard
           label={t.dashboard.cardSource}
-          value={d ? 'Hunter 网关' : null}
+          value={d ? (envOf(d, 'model')?.startsWith('网关') ? 'Hunter 网关' : t.dashboard.ownModel) : null}
           mono={false}
           sub="DATA_SOURCE_PROVIDER=hunter"
           reason={t.app.noDataReason}
@@ -140,12 +166,13 @@ export function Dashboard() {
               ]}
             />
           </div>
+          {note && <div className="mt-[12px] text-sm leading-[1.5] text-amber-text">{note}</div>}
           <div className="mt-auto flex flex-wrap gap-[10px] pt-4">
-            <Button size="sm" onClick={() => send({ type: 'STOP' })}>
-              {t.common.stop}
+            <Button size="sm" disabled={busy !== null} onClick={() => void act('stop')}>
+              {busy === 'stop' ? t.common.working : t.common.stop}
             </Button>
-            <Button size="sm" onClick={() => send({ type: 'START' })}>
-              {t.common.restart}
+            <Button size="sm" disabled={busy !== null} onClick={() => void act('restart')}>
+              {busy === 'restart' ? t.common.working : t.common.restart}
             </Button>
             <Button size="sm" onClick={() => setOverlay('logs')}>
               {t.common.logs}

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { CandlestickDecor } from './CandlestickDecor'
 import { useStore } from '../state/context'
 import { stepperOf, type StepId, type StepStatus } from '../state/machine'
@@ -5,6 +6,7 @@ import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import { bytes } from '../lib/format'
 import type { Dict } from '../i18n'
+import type { PullProgress } from '../lib/types'
 
 /**
  * 左侧竖向步骤条（视觉稿第 1、2 张）。宽 250px，底色比内容区深一点（#0b0f1a）。
@@ -17,13 +19,33 @@ export function Stepper({ subtitles }: { subtitles: Partial<Record<StepId, strin
   // （「已检测到 …」「约 … · 镜像源」），所以在步骤条这一层取，而不是让每个页面各传一遍。
   // 拿不到就显示「—」并保留原因（总控规则红线 1）。
   const docker = useAsync(() => ipc.detectDocker(), [])
-  const pull = useAsync(() => ipc.pullProgress(), [])
+  const snapshot = useAsync(() => ipc.pullProgress(), [])
+  // 拉取开始之前快照是空的，副标题会停在「约 — · —」。订一份事件流，
+  // 镜像源与总大小一确定就跟着变（步骤条在每一页都显示，用户在拉取页之外也能看见）。
+  const [live, setLive] = useState<PullProgress | null>(null)
+  useEffect(() => {
+    let alive = true
+    let off: (() => void) | undefined
+    void ipc.onPullProgress((p) => alive && setLive(p)).then((f) => {
+      if (alive) off = f
+      else f()
+    })
+    return () => {
+      alive = false
+      off?.()
+    }
+  }, [])
+  const pull = { data: live ?? snapshot.data }
 
   const auto: Partial<Record<StepId, string>> = {}
-  if (docker.data?.runtimeLabel) auto.docker = `已检测到 ${docker.data.runtimeLabel}`
-  else if (docker.data?.installed === false) auto.docker = '未安装'
-  const totalBytes = pull.data?.images.reduce((a, i) => a + i.totalBytes, 0) ?? 0
-  auto.pull = t.steps.pull.sub(totalBytes > 0 ? bytes(totalBytes, 0) : t.app.noData, 'GHCR')
+  if (docker.data?.runtimeLabel) auto.docker = t.steps.docker.detected(docker.data.runtimeLabel)
+  else if (docker.data?.installed === false) auto.docker = t.steps.docker.missing
+  const totalBytes = pull.data?.totalBytes ?? 0
+  // 镜像源名字也用真实选中的那个：没测速之前显示「—」，不写死某个源（红线 1）
+  auto.pull = t.steps.pull.sub(
+    totalBytes > 0 ? bytes(totalBytes, 0) : t.app.noData,
+    pull.data?.registryLabel || t.app.noData,
+  )
 
   return (
     <aside className="relative flex w-[var(--hl-sidebar-w)] shrink-0 flex-col overflow-hidden border-r border-line bg-sidebar">

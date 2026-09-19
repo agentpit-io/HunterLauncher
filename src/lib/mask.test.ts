@@ -20,10 +20,26 @@ describe('key 形状', () => {
 describe('打码', () => {
   it('保留前缀与末 4 位，中段全是圆点', () => {
     const masked = maskKey(FAKE_KEY)
-    expect(masked.startsWith(`${KEY_PREFIX}9f2c7a41`)).toBe(true)
+    expect(masked.startsWith(KEY_PREFIX)).toBe(true)
     expect(masked.endsWith('b3e1')).toBe(true)
     expect(masked).toContain('•')
     expect(masked).not.toContain('aaaa')
+  })
+
+  /**
+   * 这一条守的是红线 2：界面截图被贴进 issue 是常事，打码态**一个随机位都不能露**。
+   * 视觉稿上是「前缀 + 8 位随机 + 末 4 位」，照抄会露出 12/32 个字符。
+   */
+  it('前缀之后除了末 4 位一个随机字符都不露', () => {
+    const secret = FAKE_KEY.slice(KEY_PREFIX.length) // 32 位随机段
+    const masked = maskKey(FAKE_KEY)
+    const visible = masked.slice(KEY_PREFIX.length).replace(/•/g, '')
+    expect(visible).toBe(secret.slice(-4))
+    expect(visible).toHaveLength(4)
+    // 随机段里任意 5 个连续字符都不该出现在打码结果里（末 4 位不足 5 个字符）
+    for (let i = 0; i + 5 <= secret.length; i++) {
+      expect(masked).not.toContain(secret.slice(i, i + 5))
+    }
   })
 
   it('长度与原串一致，界面不会跳宽', () => {

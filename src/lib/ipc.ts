@@ -2,23 +2,28 @@
  * 前端与 Rust 之间的唯一通道（技术方案附录 A：src/lib/ipc.ts）
  * ---------------------------------------------------------------------------
  * 两条路径：
- *   · 正常构建 → 真的 invoke 到 Tauri command。M1 的 Rust 侧只实现了 app_info，
- *     其余命令一律返回 E_NOT_IMPLEMENTED，界面因此显示「—」和原因（总控规则红线 1）。
+ *   · 正常构建 → 真的 invoke 到 Tauri command。M2 起 Rust 侧全部是真实现：
+ *     Docker 检测、key 校验、镜像源测速、拉镜像、写配置、起容器。
  *   · VITE_DEMO=1 的开发构建 → 走 demo.ts 的演示数据，界面右上角显示「演示数据」角标。
  *
- * 除了 app_info，本文件不做任何降级：拿不到就抛 IpcError，由页面决定怎么显示「—」。
+ * 除了失败时抛 IpcError，这一层不做任何降级：拿不到就抛，由页面决定怎么显示「—」。
  * 绝不在这里用假数据兜底，那正是红线 1 禁止的事。
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { IpcError } from './types'
 import type {
   AppInfo,
+  BootState,
   DockerInfo,
   KeyCheckResult,
   LauncherSettings,
+  OwnKeyCheck,
   PullProgress,
+  RegistryProbe,
   RuntimeStatus,
+  ServiceStatus,
 } from './types'
 import * as demo from './demo'
 
@@ -56,14 +61,19 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
-// ── 基础信息（M1 已实现，真实数据） ──────────────────────────────────────
+// ── 基础信息 ─────────────────────────────────────────────────────────────
 
 export async function appInfo(): Promise<AppInfo> {
   if (DEMO) return demo.demoAppInfo
   return call<AppInfo>('app_info')
 }
 
-// ── 窗口控制（M1 已实现） ────────────────────────────────────────────────
+export async function bootState(): Promise<BootState> {
+  if (DEMO) return demo.demoBootState
+  return call<BootState>('boot_state')
+}
+
+// ── 窗口控制 ─────────────────────────────────────────────────────────────
 
 export async function windowMinimize(): Promise<void> {
   if (DEMO) return
@@ -80,16 +90,62 @@ export async function windowClose(): Promise<void> {
   await call<void>('window_close')
 }
 
-// ── 以下都是 M2 / M3 的活，M1 只留签名 ───────────────────────────────────
+export async function openExternal(url: string): Promise<void> {
+  if (DEMO) return
+  await call<void>('open_external', { url })
+}
+
+// ── Docker ───────────────────────────────────────────────────────────────
 
 export async function detectDocker(): Promise<DockerInfo> {
   if (DEMO) return demoPage() === 'docker-missing' ? demo.demoDockerMissing : demo.demoDocker
   return call<DockerInfo>('detect_docker')
 }
 
+/** Linux 上试着 systemctl start docker；mac/Windows 上会如实返回「要自己点」。 */
+export async function startDaemon(): Promise<string> {
+  if (DEMO) return '演示模式不真的启动 daemon'
+  return call<string>('start_daemon')
+}
+
+// ── key 与模型 ───────────────────────────────────────────────────────────
+
 export async function validateKey(key: string): Promise<KeyCheckResult> {
   if (DEMO) return demo.demoKeyCheck
   return call<KeyCheckResult>('validate_key', { key })
+}
+
+export interface ModelChoice {
+  mode: 'gateway' | 'own'
+  baseUrl?: string
+  model?: string
+  apiKey?: string
+}
+
+/** 选模型。自带 key 模式下 Rust 侧会真发一次请求做连通性检查。 */
+export async function setModel(choice: ModelChoice): Promise<OwnKeyCheck> {
+  if (DEMO) return demo.demoOwnKeyCheck
+  return call<OwnKeyCheck>('set_model', { choice })
+}
+
+// ── 镜像源 ───────────────────────────────────────────────────────────────
+
+export async function probeRegistries(tag?: string): Promise<RegistryProbe[]> {
+  if (DEMO) return demo.demoProbes
+  return call<RegistryProbe[]>('probe_registries', { tag: tag ?? null })
+}
+
+// ── 安装 ─────────────────────────────────────────────────────────────────
+
+/** 启动一次安装。立刻返回，进度靠 onPullProgress 的事件推过来。 */
+export async function startInstall(registryId?: string): Promise<void> {
+  if (DEMO) return
+  await call<void>('start_install', { registryId: registryId ?? null })
+}
+
+export async function cancelInstall(): Promise<void> {
+  if (DEMO) return
+  await call<void>('cancel_install')
 }
 
 export async function pullProgress(): Promise<PullProgress> {
@@ -97,9 +153,9 @@ export async function pullProgress(): Promise<PullProgress> {
   return call<PullProgress>('pull_progress')
 }
 
-export async function runtimeStatus(): Promise<RuntimeStatus> {
-  if (DEMO) return demo.demoRuntime
-  return call<RuntimeStatus>('runtime_status')
+export async function startStack(): Promise<void> {
+  if (DEMO) return
+  await call<void>('start_stack')
 }
 
 export async function startingStatus(): Promise<RuntimeStatus> {
@@ -107,9 +163,21 @@ export async function startingStatus(): Promise<RuntimeStatus> {
   return call<RuntimeStatus>('starting_status')
 }
 
-export async function readSettings(): Promise<LauncherSettings> {
-  if (DEMO) return demo.demoSettings
-  return call<LauncherSettings>('read_settings')
+// ── 运行面板 ─────────────────────────────────────────────────────────────
+
+export async function runtimeStatus(): Promise<RuntimeStatus> {
+  if (DEMO) return demo.demoRuntime
+  return call<RuntimeStatus>('runtime_status')
+}
+
+export async function stackAction(action: 'stop' | 'start' | 'restart' | 'down'): Promise<string> {
+  if (DEMO) return '演示模式不真的操作容器'
+  return call<string>('stack_action', { action })
+}
+
+export async function composeLogs(service?: string, tail = 200): Promise<string[]> {
+  if (DEMO) return demo.demoComposeLog
+  return call<string[]>('compose_logs', { service: service ?? null, tail })
 }
 
 export async function launcherLog(tail: number): Promise<string[]> {
@@ -117,7 +185,44 @@ export async function launcherLog(tail: number): Promise<string[]> {
   return call<string[]>('launcher_log', { tail })
 }
 
-export async function openExternal(url: string): Promise<void> {
-  if (DEMO) return
-  await call<void>('open_external', { url })
+// ── 设置与诊断 ───────────────────────────────────────────────────────────
+
+export async function readSettings(): Promise<LauncherSettings> {
+  if (DEMO) return demo.demoSettings
+  return call<LauncherSettings>('read_settings')
+}
+
+export async function writeSettings(settings: LauncherSettings): Promise<LauncherSettings> {
+  if (DEMO) return settings
+  return call<LauncherSettings>('write_settings', { settings })
+}
+
+/** 脱敏后的诊断文本。红线 2：里面不会有 key。 */
+export async function diagnostics(): Promise<string> {
+  if (DEMO) return '演示模式没有真实诊断信息'
+  return call<string>('diagnostics')
+}
+
+// ── 事件 ─────────────────────────────────────────────────────────────────
+
+const EV_PULL = 'hunter://pull'
+const EV_START = 'hunter://start'
+const EV_LOG = 'hunter://log'
+
+async function on<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  if (DEMO) return () => {}
+  return listen<T>(name, (e) => cb(e.payload))
+}
+
+export function onPullProgress(cb: (p: PullProgress) => void): Promise<UnlistenFn> {
+  return on<PullProgress>(EV_PULL, cb)
+}
+
+export function onStartProgress(cb: (s: ServiceStatus[]) => void): Promise<UnlistenFn> {
+  return on<ServiceStatus[]>(EV_START, cb)
+}
+
+/** 准备阶段（选源 / 取 compose / 写配置）的逐行文字，拉取页底部的日志框显示它。 */
+export function onLogLine(cb: (line: string) => void): Promise<UnlistenFn> {
+  return on<string>(EV_LOG, cb)
 }

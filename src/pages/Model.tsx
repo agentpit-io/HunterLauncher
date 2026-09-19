@@ -2,40 +2,74 @@ import { useState } from 'react'
 import { Button, ChevronRight } from '../components/Button'
 import { Badge } from '../components/Badge'
 import { Checkbox, Field, TextInput } from '../components/Field'
-import { CheckCircle } from '../components/Icons'
+import { CheckCircle, Spinner } from '../components/Icons'
 import { WizardLayout } from '../components/WizardLayout'
 import { useStore } from '../state/context'
+import * as ipc from '../lib/ipc'
 
 type Mode = 'gateway' | 'own'
 
-/** 选择模型页：两张卡片（网关 / 自带 key），默认网关。 */
+/**
+ * 选择模型页：两张卡片（网关 / 自带 key），默认网关。
+ *
+ * 自带 key 那条路**会真发一次请求**做连通性检查（先试 GET /models，不行再发一次
+ * max_tokens=1 的 chat/completions）—— 不做「格式看起来对就算通过」那种假检查（红线 1）。
+ * DeepSeek 的 BASE_URL 会自动勾上 LLM_SCHEMA_SANITIZE=1（方案 §5.4）。
+ */
 export function Model() {
   const { t, send } = useStore()
   const [mode, setMode] = useState<Mode>('gateway')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [sanitize, setSanitize] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; message: string; sanitize: boolean } | null>(null)
 
   const ownReady = baseUrl.trim() !== '' && model.trim() !== '' && apiKey.trim() !== ''
+  // BASE_URL 一变就重新判一次是不是 DeepSeek（和 Rust 侧同一条规则：只看主机名）
+  const autoSanitize = /(^|\.)deepseek\./i.test(hostOf(baseUrl))
+
+  async function next() {
+    setChecking(true)
+    setResult(null)
+    try {
+      const r = await ipc.setModel(
+        mode === 'own' ? { mode, baseUrl, model, apiKey } : { mode: 'gateway' },
+      )
+      setResult({ ok: r.ok, message: r.message, sanitize: r.schemaSanitize })
+      if (r.ok) {
+        send({ type: 'MODEL_CHOSEN' })
+        send({ type: 'REGISTRY_CHOSEN' })
+      }
+    } catch (e) {
+      setResult({ ok: false, message: e instanceof Error ? e.message : String(e), sanitize: false })
+    } finally {
+      setChecking(false)
+    }
+  }
 
   return (
     <WizardLayout
       title={t.model.title}
       intro={t.model.intro}
+      footerLeft={
+        result ? (
+          <span className={`max-w-[560px] text-sm leading-[1.5] ${result.ok ? 'text-amber-text' : 'text-danger'}`}>
+            {result.message}
+          </span>
+        ) : undefined
+      }
       footerRight={
         <>
           <Button onClick={() => send({ type: 'BACK' })}>{t.common.back}</Button>
           <Button
             variant="primary"
-            trailing={<ChevronRight />}
-            disabled={mode === 'own' && !ownReady}
-            onClick={() => {
-              send({ type: 'MODEL_CHOSEN' })
-              send({ type: 'REGISTRY_CHOSEN' })
-            }}
+            trailing={checking ? undefined : <ChevronRight />}
+            leading={checking ? <Spinner size={14} /> : undefined}
+            disabled={checking || (mode === 'own' && !ownReady)}
+            onClick={() => void next()}
           >
-            {t.common.next}
+            {checking ? t.model.checking : t.common.next}
           </Button>
         </>
       }
@@ -68,17 +102,23 @@ export function Model() {
               <TextInput value={model} onChange={setModel} mono placeholder="deepseek-chat" />
             </Field>
             <Field label={t.model.ownKey}>
-              <TextInput value={apiKey} onChange={setApiKey} mono placeholder="sk-…" />
+              <TextInput value={apiKey} onChange={setApiKey} mono password placeholder="sk-…" />
             </Field>
-            <Checkbox on={sanitize} onChange={setSanitize}>
+            <Checkbox on={autoSanitize} onChange={() => {}} disabled>
               <span className="text-sm">{t.model.ownSanitize}</span>
-              <span className="ml-1.5 text-xs text-muted">{t.model.ownSanitizeHint}</span>
+              <span className="ml-1.5 text-xs text-muted">
+                {autoSanitize ? t.model.ownSanitizeAuto : t.model.ownSanitizeHint}
+              </span>
             </Checkbox>
           </div>
         </Choice>
       </div>
     </WizardLayout>
   )
+}
+
+function hostOf(url: string): string {
+  return url.split('://')[1]?.split('/')[0] ?? ''
 }
 
 /**

@@ -1,51 +1,120 @@
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button'
 import { LogBox } from '../components/LogBox'
 import { ProgressBar } from '../components/ProgressBar'
 import { WizardLayout } from '../components/WizardLayout'
-import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import { bytes, duration, percent } from '../lib/format'
 import { useStore } from '../state/context'
-import type { ImagePull } from '../lib/types'
+import type { ImagePull, PullProgress } from '../lib/types'
 
 /**
  * 拉取镜像页 —— 视觉稿第 2 张。
  *
+ * 数据全部来自 Rust 推过来的 `hunter://pull` 事件（`docker compose --progress json pull`
+ * 的逐行解析结果，M0 §5.1）。分母是拉取前从 registry manifest 算好的压缩大小，
+ * 所以进度条从第一秒起就是对的。
+ *
  * 与视觉稿的取值差异（M0 实测）：
- *   · 镜像源写 GHCR，不是「阿里云 · 杭州」—— M0 §4.2 实测阿里云 ACR 与 Docker Hub 上都没有镜像；
- *   · 总大小 849 MB（= 810.6 MiB，M0 §4.1 实测压缩后字节数），不是视觉稿的 2.1 GB；
- *   · 左列显示 compose 的服务名 + 完整短引用，视觉稿写的 hunter-opencode 不是真实镜像名。
+ *   · 镜像源写真实选中的那个（GHCR 或腾讯云 · 香港），不是稿上写死的「阿里云 · 杭州」；
+ *   · 总大小是 manifest 实测值（约 849 MB），不是稿上的 2.1 GB —— 那是解压后的磁盘占用；
+ *   · 左列显示真实的镜像短名，不是稿上的 hunter-opencode。
+ *
+ * 「准备」阶段（选源 / 取 compose / 写配置）没有字节进度，这一段显示逐行文字。
  */
 export function Pull() {
   const { t, send, locale } = useStore()
-  const pull = useAsync(() => ipc.pullProgress(), [])
-  const p = pull.data
+  const [p, setP] = useState<PullProgress | null>(null)
+  const [lines, setLines] = useState<string[]>([])
+  const [err, setErr] = useState<string | null>(null)
+  const advanced = useRef(false)
 
-  const total = p?.images.reduce((a, i) => a + i.totalBytes, 0) ?? 0
-  const doneBytes = p?.images.reduce((a, i) => a + i.downloadedBytes, 0) ?? 0
-  const pct = percent(doneBytes, total)
+  useEffect(() => {
+    let alive = true
+    const unlisten: (() => void)[] = []
+
+    void (async () => {
+      // 页面可能在事件已经发过之后才挂载，先补一份快照
+      try {
+        const snap = await ipc.pullProgress()
+        if (alive) setP(snap)
+      } catch {
+        /* 还没开始拉，快照是空的，正常 */
+      }
+      unlisten.push(await ipc.onPullProgress((next) => alive && setP(next)))
+      unlisten.push(
+        await ipc.onLogLine((line) => {
+          if (alive) setLines((old) => [...old.slice(-80), line])
+        }),
+      )
+      if (alive) {
+        try {
+          await ipc.startInstall()
+        } catch (e) {
+          if (alive) setErr(e instanceof Error ? e.message : String(e))
+        }
+      }
+    })()
+
+    return () => {
+      alive = false
+      unlisten.forEach((f) => f())
+    }
+    // 只在挂载时跑一次：这一页的生命周期就是一次拉取
+  }, [])
+
+  // 拉完自动往下走。配置在拉取**之前**就写好了（compose 要靠 .env 才知道拉哪些镜像），
+  // 所以这里 PULL_DONE 与 CONFIG_WRITTEN 一起发，状态机的 WriteConfig 是个瞬时状态。
+  useEffect(() => {
+    if (p?.phase === 'done' && !advanced.current) {
+      advanced.current = true
+      send({ type: 'PULL_DONE' })
+      send({ type: 'CONFIG_WRITTEN' })
+    }
+    if (p?.phase === 'failed' && p.error && !advanced.current) {
+      advanced.current = true
+      send({ type: 'PULL_FAILED', detail: p.error })
+    }
+  }, [p, send])
+
+  const preparing = !p || p.phase === 'preparing' || p.totalBytes === 0
+  const logLines = p && p.log.length > 0 ? [...lines, ...p.log].slice(-60) : lines
 
   return (
     <WizardLayout
       title={t.pull.title}
-      intro={p ? t.pull.intro(p.registry) : (pull.error?.message ?? t.common.loading)}
-      footerLeft={<span className="text-sm leading-[1.5] text-muted">{t.pull.failHint}</span>}
-      footerRight={<Button onClick={() => send({ type: 'BACK' })}>{t.common.cancel}</Button>}
+      intro={p && p.registryLabel ? t.pull.intro(p.registryLabel) : t.pull.preparingIntro}
+      footerLeft={
+        <span className="text-sm leading-[1.5] text-muted">
+          {err ?? (p && p.attempt > 1 ? t.pull.retrying(p.attempt) : t.pull.failHint)}
+        </span>
+      }
+      footerRight={
+        <Button
+          onClick={() => {
+            void ipc.cancelInstall()
+            send({ type: 'BACK' })
+          }}
+        >
+          {t.common.cancel}
+        </Button>
+      }
     >
       <div className="mt-[24px] flex items-end justify-between">
         <div className="flex items-baseline">
-          <span className="tnum text-5xl font-medium leading-none text-ink">{p ? pct : '—'}</span>
+          <span className="tnum text-5xl font-medium leading-none text-ink">{preparing ? '—' : p.percent}</span>
           <span className="ml-1 text-md leading-none text-muted">{t.pull.percentUnit}</span>
         </div>
         <div className="tnum text-md leading-none text-dim">
-          {p ? (
+          {preparing ? (
+            t.pull.preparing
+          ) : (
             <>
-              {t.pull.sizeLine(bytes(doneBytes, 2), bytes(total, 2))}
+              {t.pull.sizeLine(bytes(p.downloadedBytes, 2), bytes(p.totalBytes, 2))}
               {' · '}
+              {p.speedBps ? `${bytes(p.speedBps, 1)}/s · ` : ''}
               {p.etaSeconds === null ? t.pull.etaUnknown : t.pull.eta(duration(p.etaSeconds, locale))}
             </>
-          ) : (
-            t.app.noData
           )}
         </div>
       </div>
@@ -56,7 +125,7 @@ export function Pull() {
         ))}
       </div>
 
-      {p && <LogBox lines={p.log} className="mt-[18px] h-[80px]" autoScroll />}
+      <LogBox lines={logLines} className="mt-[18px] h-[92px]" autoScroll emptyText={t.pull.preparing} />
     </WizardLayout>
   )
 }
@@ -74,7 +143,7 @@ function ImageRow({ img }: { img: ImagePull }) {
           {img.shortRef}
         </div>
         <div className="mt-[3px] truncate text-xs leading-[1.3] text-muted">
-          {role} · {img.tag} · {bytes(img.totalBytes, 0)}
+          {role} · {img.tag} · {img.totalBytes > 0 ? bytes(img.totalBytes, 0) : '—'}
         </div>
       </div>
       <ProgressBar value={pct} done={done} className="mt-[12px] min-w-0 flex-1" />
@@ -83,9 +152,11 @@ function ImageRow({ img }: { img: ImagePull }) {
           ? t.pull.stateDone
           : img.state === 'failed'
             ? t.pull.stateFailed
-            : img.state === 'pending'
-              ? t.pull.statePending
-              : bytes(img.downloadedBytes, 0)}
+            : img.state === 'extracting'
+              ? t.pull.stateExtracting
+              : img.state === 'pending'
+                ? t.pull.statePending
+                : bytes(img.downloadedBytes, 0)}
       </div>
     </div>
   )

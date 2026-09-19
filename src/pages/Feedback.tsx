@@ -21,6 +21,20 @@ export function Feedback({ errorCode }: { errorCode?: string }) {
   const [desc, setDesc] = useState('')
   const [contact, setContact] = useState('')
   const [attach, setAttach] = useState(true)
+  const [diag, setDiag] = useState<string | null>(null)
+  const [loadingDiag, setLoadingDiag] = useState(false)
+
+  /** 取一份**脱敏后**的诊断文本。红线 2：里面不会有 key。这里只是拿到手，不发给任何人。 */
+  async function loadDiag() {
+    setLoadingDiag(true)
+    try {
+      setDiag(await ipc.diagnostics())
+    } catch (e) {
+      setDiag(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoadingDiag(false)
+    }
+  }
 
   return (
     <PlainLayout
@@ -30,7 +44,17 @@ export function Feedback({ errorCode }: { errorCode?: string }) {
         <>
           <span className="text-sm text-muted">{t.feedback.noUpload}</span>
           <div className="flex gap-[10px]">
-            <Button size="sm">{t.feedback.exportBundle}</Button>
+            <Button
+              size="sm"
+              disabled={loadingDiag}
+              onClick={() => {
+                void loadDiag().then(() => {
+                  if (diag) void navigator.clipboard?.writeText(diag)
+                })
+              }}
+            >
+              {loadingDiag ? t.common.working : t.feedback.exportBundle}
+            </Button>
             <Button
               size="sm"
               variant="primary"
@@ -76,8 +100,15 @@ export function Feedback({ errorCode }: { errorCode?: string }) {
               error_code = {errorCode}
             </div>
           )}
+          {diag && (
+            <pre className="tnum selectable mt-[14px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log px-3 py-2.5 text-xs leading-[1.5] text-dim">
+              {diag}
+            </pre>
+          )}
           <div className="mt-auto pt-4">
-            <Button size="sm">{t.feedback.preview}</Button>
+            <Button size="sm" disabled={loadingDiag} onClick={() => void loadDiag()}>
+              {loadingDiag ? t.common.working : t.feedback.preview}
+            </Button>
           </div>
         </Card>
       </div>
