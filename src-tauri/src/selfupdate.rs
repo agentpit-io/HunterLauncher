@@ -10,6 +10,13 @@
 //! https://github.com/agentpit-io/HunterLauncher/releases/latest/download/latest.json
 //! ```
 //!
+//! ⚠ **GitHub 那个端点现在是死的，而且是有原因的**：`releases/latest/download/…` 解析的是
+//! 「最新的**正式** Release」，而本项目的 Release 因为没有代码签名**一律标 prerelease**
+//! （总控规则红线 7），所以 GitHub 那条路会 404。这不是笔误 ——
+//! 它是留给「用户决定买证书、把某一版转成正式版」那天用的，到时候不用改代码就会自己活过来。
+//! 在那之前，实际生效的是 COS 那一个端点（它是静态路径，不受 prerelease 影响）。
+//! 这意味着**当前自更新只有一条链路**，COS 不可达时查更新会失败并如实报原因（不会谎称已是最新）。
+//!
 //! 清单是 minisign 签名的，公钥编译进程序（`tauri.conf.json` 的 `plugins.updater.pubkey`），
 //! 私钥只在开发机 `~/.hunter-launcher-keys/` 与仓库 secrets 里（总控规则红线 7）。
 //! **签名验不过就不装** —— 这是自更新唯一的安全边界：安装包本身没有代码签名证书，

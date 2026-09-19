@@ -481,10 +481,13 @@ fn rollback(
     let files = crate::backup::restore_config(backup_id)?;
     note(&format!("已写回升级前的 {}", files.join("、")));
     std::fs::write(paths::version_file(), format!("{}\n", cfg0.hunter.tag)).ok();
-    let mut cfg = state.config();
-    cfg.hunter.tag = cfg0.hunter.tag.clone();
-    let _ = cfg.save();
-    state.set_config(cfg);
+
+    // `launcher.toml` 整份写回升级前那一版，**不是只改 tag**。
+    // 因为升级过程中 `flow::pull` 可能已经换过镜像源并把它存进了 launcher.toml；
+    // 只改 tag 的话会留下「.env 是旧源、launcher.toml 是新源」这种对不上的状态，
+    // 下一次启动或换源时就会撞上。
+    let _ = cfg0.save();
+    state.set_config(cfg0.clone());
 
     compose::up()?;
     let list = compose::wait_healthy(compose::START_TIMEOUT, |v| {
