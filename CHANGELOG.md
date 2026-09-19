@@ -43,7 +43,9 @@ Windows 会触发 SmartScreen、macOS 需要手动放行（步骤见 README 与 
 
 **命令行模式** —— `--headless` 与界面版跑的是同一套代码。另有 `--status` / `--start` /
 `--stop` / `--restart` / `--down` / `--logs` / `--diagnose` / `--check-update` / `--upgrade` /
-`--backups` / `--pull-only`。
+`--backups` / `--pull-only` / `--self-update`。
+`--check-update` 与 `--self-update` 在没有桌面的服务器上也能用（GUI 走 Tauri 的 updater
+插件，它要 AppHandle；headless 自己读清单并用同一把公钥验签）。
 
 **反馈与诊断** —— 分节预览、逐节删减、整包脱敏自查、导出 zip、预填 GitHub issue。
 **不上传任何东西**，发不发由你决定。
