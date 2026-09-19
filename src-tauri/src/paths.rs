@@ -67,6 +67,26 @@ pub fn ensure_dirs() -> AppResult<()> {
             )
         })?;
     }
+    // 工作目录整体收成 700。`.env` 本身已经是 600（红线 2），
+    // 这一层是纵深防御：同一台机器上别的用户连目录都列不出来。
+    chmod_dir_700(&root())?;
+    Ok(())
+}
+
+/// 把目录权限收成 700。
+fn chmod_dir_700(path: &std::path::Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
+            AppError::new(
+                Code::ConfigWrite,
+                format!("设置 {} 权限失败：{e}", path.display()),
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -88,12 +108,43 @@ pub fn chmod_600(path: &std::path::Path) -> AppResult<()> {
     Ok(())
 }
 
+/// `HUNTER_HOME` 是**进程级**环境变量，两条测试同时改它必然打架。
+/// 凡是动这个变量的测试都要先拿这把锁。
+#[cfg(test)]
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
+    fn 工作目录建出来是_700() {
+        let _g = env_lock();
+        use std::os::unix::fs::PermissionsExt;
+        let old = std::env::var("HUNTER_HOME").ok();
+        let dir = std::env::temp_dir().join(format!("hunter-perm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("HUNTER_HOME", &dir);
+        ensure_dirs().expect("建目录应当成功");
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "工作目录必须是 700，实际是 {mode:o}");
+        let _ = std::fs::remove_dir_all(&dir);
+        match old {
+            Some(v) => std::env::set_var("HUNTER_HOME", v),
+            None => std::env::remove_var("HUNTER_HOME"),
+        }
+    }
+
+    #[test]
     fn hunter_home_能覆盖根目录() {
+        let _g = env_lock();
         // 注：单测里改进程级环境变量，同文件内的测试要串行跑（cargo 默认并行），
         // 所以这里用一个别处不会用到的值，并在断言后立刻恢复。
         let old = std::env::var("HUNTER_HOME").ok();

@@ -24,11 +24,19 @@ LABEL_H = 34
 BG = (5, 8, 15)
 FG = (142, 166, 194)
 
-PAIRS = [
-    ("m1-key.png", "hunter-launcher-01-输入key.jpg", "对照-01-输入key.png"),
-    ("m1-pull.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
-    ("m1-dashboard.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
-]
+# 每个里程碑的截图文件名不一样，按目录名挑一组
+PAIRS_BY_MILESTONE = {
+    "M1": [
+        ("m1-key.png", "hunter-launcher-01-输入key.jpg", "对照-01-输入key.png"),
+        ("m1-pull.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
+        ("m1-dashboard.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
+    ],
+    "M2": [
+        ("04-输入key-已验证.png", "hunter-launcher-01-输入key.jpg", "对照-01-输入key.png"),
+        ("08-拉取镜像-真实进度.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
+        ("11-运行面板.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
+    ],
+}
 
 
 def load_font(size: int):
@@ -61,7 +69,13 @@ def main() -> int:
     os.makedirs(out_dir, exist_ok=True)
     font = load_font(20)
 
-    for shot_name, mock_name, out_name in PAIRS:
+    milestone = os.path.basename(os.path.normpath(shots))
+    pairs = PAIRS_BY_MILESTONE.get(milestone)
+    if pairs is None:
+        print(f"不认识的里程碑目录：{milestone}（认得 {list(PAIRS_BY_MILESTONE)}）", file=sys.stderr)
+        return 1
+
+    for shot_name, mock_name, out_name in pairs:
         shot_path = os.path.join(shots, shot_name)
         mock_path = os.path.join(MOCK_DIR, mock_name)
         for p in (shot_path, mock_path):
@@ -72,7 +86,7 @@ def main() -> int:
         mock = scaled(Image.open(mock_path).convert("RGB").crop(WIN_BOX), TARGET_H)
         shot = scaled(Image.open(shot_path).convert("RGB"), TARGET_H)
         a = labelled(mock, "mockup (plan/UI)", font)
-        b = labelled(shot, "M1 build (Xvfb screenshot)", font)
+        b = labelled(shot, f"{milestone} build (Xvfb screenshot, real data)", font)
 
         gap = 16
         canvas = Image.new("RGB", (a.width + gap + b.width + gap * 2, a.height + gap * 2), BG)

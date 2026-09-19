@@ -149,6 +149,18 @@ macro_rules! lerror {
     ($($arg:tt)*) => {{ let _ = $crate::log::write_line($crate::log::Level::Error, &format!($($arg)*)); }};
 }
 
+/// 全局 logger 是**进程级**的单例（生产里本来就该如此：一个进程一份日志）。
+/// 测试默认并行跑，两条测试各自 `init()` 到不同路径会互相把对方的日志抢走，
+/// 所以凡是碰全局 logger 的测试都要先拿这把锁。
+#[cfg(test)]
+pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    // 上一条测试 panic 时锁会中毒，这里不在乎，拿到里面的值继续用
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +179,7 @@ mod tests {
     /// 这是总控规则红线 2 在 Rust 侧的看门测试：**落到盘上的日志文件里不能出现 key**。
     #[test]
     fn 落盘的日志里找不到_key() {
+        let _g = test_lock();
         let path = tmp("nokey");
         init(path.clone());
         crate::redact::register_secret(FAKE);
@@ -193,6 +206,7 @@ mod tests {
 
     #[test]
     fn 每行都带上海时间与级别() {
+        let _g = test_lock();
         let path = tmp("fmt");
         init(path.clone());
         let line = write_line(Level::Warn, "端口 3100 被占用，改用 3101");
@@ -206,6 +220,7 @@ mod tests {
 
     #[test]
     fn tail_返回最近的行() {
+        let _g = test_lock();
         let path = tmp("tail");
         init(path.clone());
         for i in 0..10 {

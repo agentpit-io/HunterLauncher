@@ -1,5 +1,6 @@
 import { useStore } from '../state/context'
 import * as ipc from '../lib/ipc'
+import { Gear } from './Icons'
 import type { AppInfo } from '../lib/types'
 
 /**
@@ -14,7 +15,7 @@ import type { AppInfo } from '../lib/types'
  *     已在 M1 报告里记为「按稿实现」）。
  */
 export function TitleBar({ info }: { info: AppInfo | null }) {
-  const { t, demo } = useStore()
+  const { t, demo, overlay, setOverlay } = useStore()
   const native = info?.windowChrome === 'native'
 
   return (
@@ -45,6 +46,20 @@ export function TitleBar({ info }: { info: AppInfo | null }) {
             {t.app.demoBadge}
           </span>
         )}
+        {/* 设置入口。视觉稿里没有画它，但设置页必须有地方进得去 ——
+            运行面板右下角那四个按钮是「停止 / 重启 / 日志 / 反馈」，没有设置，
+            所以放在标题栏右侧（M1 把这一页做出来了却没有入口，M2 补上）。 */}
+        <button
+          type="button"
+          title={t.common.settings}
+          aria-label={t.common.settings}
+          onClick={() => setOverlay(overlay === 'settings' ? null : 'settings')}
+          className={`flex size-[26px] items-center justify-center rounded-md transition-colors duration-150 hover:bg-card ${
+            overlay === 'settings' ? 'text-amber-text' : 'text-faint hover:text-body'
+          }`}
+        >
+          <Gear size={15} />
+        </button>
         <div className="tnum text-sm text-faint">{t.app.versionLabel(info?.launcherVersion ?? '—')}</div>
       </div>
     </header>

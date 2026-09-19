@@ -337,3 +337,18 @@ describe('M2 新增的两个错误码', () => {
     }
   })
 })
+
+describe('Docker 页一次点击就该走到输入 key（M2 修的 UX 问题）', () => {
+  it('CheckDocker 连发两个事件后落在 NeedKey', () => {
+    const start = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }])
+    expect(start.name).toBe('CheckDocker')
+    // 页面在「装了 + daemon 在跑 + 版本够」时一次把两个事件都发出去
+    const after = run(start, [{ type: 'DOCKER_FOUND' }, { type: 'DAEMON_UP' }])
+    expect(after.name).toBe('NeedKey')
+  })
+
+  it('CheckDocker 与 CheckDaemon 渲染的确实是同一页（所以只发一个事件会看起来没反应）', () => {
+    expect(pageOf({ name: 'CheckDocker' })).toBe('docker')
+    expect(pageOf({ name: 'CheckDaemon' })).toBe('docker')
+  })
+})

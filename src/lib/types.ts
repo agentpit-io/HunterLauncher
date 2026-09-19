@@ -134,6 +134,8 @@ export interface ImagePull {
   state: PullState
   /** manifest 没读到，分母是观测值而不是真值 */
   sizeUnknown: boolean
+  /** 这个镜像从第一个字节到拉完花了多少秒；没拉完就是 null */
+  seconds: number | null
 }
 
 export interface PullProgress {

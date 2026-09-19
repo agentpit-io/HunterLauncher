@@ -79,7 +79,13 @@ export function Docker() {
             variant="primary"
             trailing={<ChevronRight />}
             disabled={!ok}
-            onClick={() => send(state.name === 'CheckDocker' ? { type: 'DOCKER_FOUND' } : { type: 'DAEMON_UP' })}
+            onClick={() => {
+              // 一次检测同时得出「装没装」与「daemon 起没起」两个结论，所以两个事件一起发。
+              // 状态机里 CheckDocker 与 CheckDaemon 渲染的是**同一页**，只发一个事件的话
+              // 用户会看到点了「下一步」页面纹丝不动，得再点一次（M2 用 xdotool 走真实流程时撞出来的）。
+              if (state.name === 'CheckDocker') send({ type: 'DOCKER_FOUND' })
+              send({ type: 'DAEMON_UP' })
+            }}
           >
             {t.common.next}
           </Button>

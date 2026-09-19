@@ -14,8 +14,13 @@ export function isKeyShape(key: string): boolean {
 /**
  * 输入框里显示用的打码：保留前 head 个字符与后 tail 个字符，中间换成圆点。
  * 视觉稿第 1 张就是这个样子（前缀 + 一串圆点 + 末 4 位）。
+ *
+ * **head 默认就是前缀长度（11），一个随机位都不露**。
+ * 视觉稿上是 `hk_9f2c7a41••••b3e1`（前缀 + 8 位随机），照抄到 43 位的真 key 上会露出
+ * 12/32 个随机字符 —— 用户把界面截图发到 issue 里就等于泄漏了三分之一把 key。
+ * 末 4 位保留：它的用处是让用户确认「我贴的是哪一把」，4 位够用了（红线 2）。
  */
-export function maskKey(key: string, head = 19, tail = 4, dot = '•'): string {
+export function maskKey(key: string, head = KEY_PREFIX.length, tail = 4, dot = '•'): string {
   if (!key) return ''
   if (key.length <= head + tail) return key
   return key.slice(0, head) + dot.repeat(Math.max(4, key.length - head - tail)) + key.slice(-tail)

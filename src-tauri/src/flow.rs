@@ -219,7 +219,18 @@ pub fn prepare(
     }
 
     // ③ 端口 + .env + 覆盖文件
-    let (ports, changes) = config::resolve_ports(&cfg.hunter.ports)?;
+    // 先问清楚哪些端口是**我们自己这一套**正占着的：重装 / 第二次打开时它们不算冲突
+    let own_ports: Vec<u16> = compose::ps()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| s.port)
+        .collect();
+    if !own_ports.is_empty() {
+        note(&format!(
+            "现有的这一套 hunter 正占着端口 {own_ports:?}，这些不算冲突"
+        ));
+    }
+    let (ports, changes) = config::resolve_ports(&cfg.hunter.ports, &own_ports)?;
     for c in &changes {
         note(&format!(
             "端口 {} 被占用，自动改用 {}（服务 {}）",
@@ -892,6 +903,7 @@ mod tests {
 
     #[test]
     fn 状态里的_key_一登记就不会进日志() {
+        let _g = crate::log::test_lock();
         let st = AppState::new();
         st.set_hunter_key("hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2");
         let line = crate::log::write_line(

@@ -10,8 +10,20 @@ import { useStore } from '../state/context'
 import { LOCALES, type Locale } from '../i18n'
 import type { LauncherSettings } from '../lib/types'
 
-/** 出站地址白名单（技术方案第 15 节；telemetry.agentpit.io 与 dl.agentpit.io 实测不存在，不列）。 */
-const OUTBOUND = ['hunter.agentpit.io', 'ghcr.io', 'api.github.com', 'raw.githubusercontent.com']
+/**
+ * 出站地址白名单（技术方案第 15 节）。
+ * 方案里写的 telemetry.agentpit.io 与 dl.agentpit.io **实测不存在**（M0），列上去是误导，去掉。
+ * 这里列的是启动器**真的会连**的：网关、两个候选镜像源、Docker Hub（postgres/redis 的 manifest）、
+ * GitHub（版本检查与 compose 文件）。自带模型 key 模式下还会连用户自己填的那个 BASE_URL。
+ */
+const OUTBOUND = [
+  'hunter.agentpit.io',
+  'ghcr.io',
+  'hkccr.ccs.tencentyun.com',
+  'registry-1.docker.io',
+  'api.github.com',
+  'raw.githubusercontent.com',
+]
 
 export function Settings() {
   const { t, locale, setLocale, setOverlay } = useStore()
@@ -119,7 +131,7 @@ export function Settings() {
               items={[
                 { label: t.settings.version, value: app.data?.launcherVersion ?? null, reason },
                 {
-                  label: 'Docker',
+                  label: t.settings.system,
                   value: app.data ? `${app.data.platform} · ${app.data.arch}` : null,
                   reason,
                 },

@@ -161,6 +161,7 @@ export const demoImages: ImagePull[] = IMAGE_SIZES.map((it) => {
     downloadedBytes: Math.round(it.bytes * ratio),
     state: ratio >= 1 ? 'done' : 'downloading',
     sizeUnknown: false,
+    seconds: ratio >= 1 ? Math.round(it.bytes / 4_800_000) : null,
   }
 })
 

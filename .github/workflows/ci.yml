@@ -60,7 +60,7 @@ jobs:
           retention-days: 7
 
   rust:
-    name: Rust · cargo check / clippy / tauri build
+    name: Rust · fmt / test / clippy / tauri build
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
@@ -100,8 +100,10 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: cargo check
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: cargo test（单元测试，含红线 2 的「日志里不许有 key」看门测试）
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
       - name: cargo clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - name: tauri build（不打包，只验证能编出可执行文件）
         run: pnpm exec tauri build --no-bundle
       - name: 产物体积
@@ -130,6 +132,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vite build
-      # Windows / macOS 没有真机测试环境，CI 能编过 + 代码审阅是这两个平台唯一的验收手段
+      # Windows / macOS 没有真机测试环境，CI 能编过 + 单测通过 + 代码审阅是这两个平台唯一的验收手段
       - name: cargo check
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: cargo test（三平台共用的纯逻辑部分在这里也要过）
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked

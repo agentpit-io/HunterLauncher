@@ -31,6 +31,10 @@ pub struct Args {
     pub tag: Option<String>,
     pub action: Option<String>,
     pub yes: bool,
+    /// 只把镜像拉下来，不起容器。
+    /// 用处：网速慢的机器可以先在空闲时间预下载，装的时候就快了；
+    /// 也方便在不动现有容器的前提下换源重拉一遍。
+    pub pull_only: bool,
     pub help: bool,
     pub version: bool,
 }
@@ -45,6 +49,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         tag: None,
         action: None,
         yes: false,
+        pull_only: false,
         help: false,
         version: false,
     };
@@ -66,6 +71,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 i += 1;
             }
             "-y" | "--yes" => a.yes = true,
+            "--pull-only" => {
+                a.pull_only = true;
+                a.headless = true;
+            }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose" => {
@@ -103,6 +112,7 @@ Hunter 启动器 · 命令行模式
   --key-file <路径>   从文件读 hunter key（文件建议权限 600）。不给就交互式输入
   --registry <源>     固定镜像源：ghcr | tencent | 自定义前缀。不给就自动测速选
   --tag <版本>        Hunter 版本，默认 1.2.0
+  --pull-only         只拉镜像不起容器（网速慢时可以先预下载）
   -y, --yes           不要任何确认，一路走完
   -h, --help          这段说明
   -V, --version       版本号
@@ -157,11 +167,16 @@ pub fn run(args: &Args) -> i32 {
 
 fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     let t0 = Instant::now();
-    title("Hunter 启动器 · 命令行安装");
+    let steps = if args.pull_only { 4 } else { 6 };
+    title(if args.pull_only {
+        "Hunter 启动器 · 只拉镜像"
+    } else {
+        "Hunter 启动器 · 命令行安装"
+    });
     println!("工作目录 {}", paths::root().display());
 
     // 1) Docker
-    step(1, 6, "检查 Docker");
+    step(1, steps, "检查 Docker");
     let d = crate::runtime::docker::detect();
     if !d.ready() {
         println!(
@@ -192,7 +207,7 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     );
 
     // 2) key
-    step(2, 6, "hunter key");
+    step(2, steps, "hunter key");
     let key = read_key(args)?;
     let check = gateway::check_key(&key, Duration::from_secs(25));
     if !check.valid {
@@ -231,7 +246,7 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     }
 
     // 3) 准备（选源 / compose / 端口 / .env）
-    step(3, 6, "准备配置");
+    step(3, steps, "准备配置");
     let mut cfg = st.config();
     if let Some(t) = &args.tag {
         cfg.hunter.tag = t.clone();
@@ -244,7 +259,7 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     let prep = flow::prepare(st, &opts, |line| println!("  {line}"))?;
 
     // 4) 拉镜像
-    step(4, 6, "拉取镜像");
+    step(4, steps, "拉取镜像");
     let tty = std::io::stdout().is_terminal();
     let pull_t0 = Instant::now();
     let mut last_line_len = 0usize;
@@ -292,11 +307,31 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
         .unwrap_or_else(|_| compose::PullProgress::empty());
     println!("  ✓ 拉取完成，用时 {}", human_secs(pull_secs));
     for i in &snap.images {
-        println!("    {:<24} {}", i.short_ref, human_bytes(i.total_bytes));
+        println!(
+            "    {:<26} {:>9}  {}",
+            i.short_ref,
+            human_bytes(i.total_bytes),
+            i.seconds.map(human_secs).unwrap_or_else(|| "—".into())
+        );
+        crate::linfo!(
+            "镜像 {} · {} · {:?} 秒",
+            i.short_ref,
+            human_bytes(i.total_bytes),
+            i.seconds
+        );
+    }
+
+    if args.pull_only {
+        println!(
+            "\n  只拉镜像模式，不起容器。总用时 {}\n",
+            human_secs(t0.elapsed().as_secs())
+        );
+        crate::linfo!("--pull-only 完成，拉取 {} 秒", pull_secs);
+        return Ok(());
     }
 
     // 5) 起容器
-    step(5, 6, "启动服务");
+    step(5, steps, "启动服务");
     let start_t0 = Instant::now();
     let mut last_summary = String::new();
     let services = flow::start(st, |v| {
@@ -317,7 +352,7 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     );
 
     // 6) 完成
-    step(6, 6, "完成");
+    step(6, steps, "完成");
     let status = flow::runtime_status(st);
     let url = status
         .web_url
@@ -590,6 +625,15 @@ mod tests {
         let y = a(&["--logs"]);
         assert_eq!(y.action.as_deref(), Some("logs"));
         assert!(y.tag.is_none());
+    }
+
+    #[test]
+    fn pull_only_隐含_headless() {
+        let x = a(&["--pull-only", "--tag", "1.1.0"]);
+        assert!(x.pull_only);
+        assert!(x.headless, "--pull-only 单独给也要能跑起来");
+        assert_eq!(x.tag.as_deref(), Some("1.1.0"));
+        assert!(!a(&["--headless"]).pull_only);
     }
 
     #[test]

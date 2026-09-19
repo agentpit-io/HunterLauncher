@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,9 @@ pub struct ImagePull {
     pub state: PullState,
     /// manifest 没读到时为 true，界面要标明这一条的分母是估的
     pub size_unknown: bool,
+    /// 这个镜像从第一个字节到 `Pulled` 花了多少秒；还没完成时为 None。
+    /// 成果文档要记「各镜像耗时」，靠的就是它。
+    pub seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -164,6 +167,11 @@ struct Layer {
     current: u64,
     total: u64,
     complete: bool,
+    /// 这一层是不是真的走了网络。
+    /// 本机内容存储里已经有的层会直接报 `Already exists`，一瞬间就「完成」了 ——
+    /// 把它们算进速度，进度条右边就会显示 67 MB/s 这种一看就假的数字。
+    /// 进度百分比要算上它们（用户关心的是整体完成度），**速度和剩余时间不算**。
+    downloaded: bool,
 }
 
 /// 把一条条进度行累积成可以直接上屏的 [`PullProgress`]。
@@ -178,6 +186,8 @@ pub struct PullAggregator {
     started: Instant,
     /// (时刻, 已下载字节) 的采样，算速度用
     samples: Vec<(Instant, u64)>,
+    /// 每个镜像第一次出现进度的时刻，用来算单镜像耗时
+    first_seen: BTreeMap<usize, Instant>,
     registry: String,
     registry_label: String,
     attempt: u32,
@@ -203,6 +213,7 @@ impl PullAggregator {
                 downloaded_bytes: 0,
                 state: PullState::Pending,
                 size_unknown: total == 0,
+                seconds: None,
             });
             by_ref.insert(s.reference.clone(), i);
         }
@@ -213,6 +224,7 @@ impl PullAggregator {
             log: Vec::new(),
             started: Instant::now(),
             samples: Vec::new(),
+            first_seen: BTreeMap::new(),
             registry: registry.to_string(),
             registry_label: registry_label.to_string(),
             attempt: 1,
@@ -253,6 +265,10 @@ impl PullAggregator {
                         if t > 0 {
                             self.images[idx].downloaded_bytes = t;
                         }
+                        if self.images[idx].seconds.is_none() {
+                            let since = self.first_seen.get(&idx).copied().unwrap_or(self.started);
+                            self.images[idx].seconds = Some(since.elapsed().as_secs());
+                        }
                     }
                     "Error" => self.images[idx].state = PullState::Failed,
                     _ => {}
@@ -271,11 +287,13 @@ impl PullAggregator {
             return;
         };
         let Some(layer_id) = p.id.clone() else { return };
+        self.first_seen.entry(idx).or_insert_with(Instant::now);
         let key = (idx, layer_id.clone());
         let entry = self.layers.entry(key).or_default();
 
         match text {
             "Downloading" => {
+                entry.downloaded = true;
                 if let Some(c) = p.current {
                     entry.current = c;
                 }
@@ -369,9 +387,16 @@ impl PullAggregator {
     pub fn snapshot(&mut self, phase: PullPhase, error: Option<String>) -> PullProgress {
         let total: u64 = self.images.iter().map(|i| i.total_bytes).sum();
         let done: u64 = self.images.iter().map(|i| i.downloaded_bytes).sum();
+        // 只有真的走过网络的层才计入速度（见 Layer::downloaded 的注释）
+        let transferred: u64 = self
+            .layers
+            .values()
+            .filter(|l| l.downloaded)
+            .map(|l| l.current)
+            .sum();
 
         let now = Instant::now();
-        self.samples.push((now, done));
+        self.samples.push((now, transferred));
         // 只留最近 20 秒的采样
         self.samples
             .retain(|(t, _)| now.duration_since(*t) <= Duration::from_secs(20));
@@ -386,8 +411,15 @@ impl PullAggregator {
             }
             _ => None,
         };
+        // 剩余时间同样按「还要过网络的字节」算：已经在本机的层不用等
+        let remaining_net: u64 = self
+            .layers
+            .values()
+            .filter(|l| l.downloaded && l.total > l.current)
+            .map(|l| l.total - l.current)
+            .sum();
         let eta = match speed {
-            Some(s) if s > 0 && total > done => Some((total - done) / s),
+            Some(s) if s > 0 && remaining_net > 0 => Some(remaining_net / s),
             _ => None,
         };
 
@@ -432,7 +464,11 @@ fn short_of(s: &str) -> &str {
 // ── 拉取 ──────────────────────────────────────────────────────────────────
 
 /// 流式跑 `compose pull`，每收到一批进度就调一次 `on_progress`。
-/// `cancel` 置位时杀掉子进程并返回 `Ok(false)`。
+/// `cancel` 置位时杀掉子进程并返回 `Err`。
+///
+/// **进度流在 stderr 上**。M0 §5.1 记的是 stdout，M2 实测下来是 stderr ——
+/// 按 stdout 读的话拉取过程中一行都收不到，所有进度会在进程结束后一次性涌出来
+/// （表现为「进度条一直 0%，最后瞬间 100%」）。这里两个流都读，谁有内容都吃得下。
 pub fn pull_streaming(
     agg: &mut PullAggregator,
     cancel: &Arc<AtomicBool>,
@@ -458,37 +494,56 @@ pub fn pull_streaming(
             )
         })?;
 
-    // compose 的 json 进度走 stdout，普通日志走 stderr。两边都读，两边都喂给解析器
-    // （解析不了的行会被丢进日志框，正好）。
-    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let stderr_lines = Arc::clone(&lines);
-    let stderr = child.stderr.take();
-    let h = std::thread::spawn(move || {
-        if let Some(e) = stderr {
-            for l in BufReader::new(e).lines().map_while(Result::ok) {
-                if let Ok(mut g) = stderr_lines.lock() {
-                    g.push(l);
+    let (tx, rx) = mpsc::channel::<String>();
+    let mut readers = Vec::new();
+    for (stream, is_err) in [
+        (child.stdout.take().map(Either::Out), false),
+        (child.stderr.take().map(Either::Err), true),
+    ] {
+        let Some(stream) = stream else { continue };
+        let tx = tx.clone();
+        // 非 JSON 的 stderr 行要留着做失败分类，所以顺手收一份
+        let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&collected);
+        let h = std::thread::spawn(move || {
+            let reader: Box<dyn BufRead> = match stream {
+                Either::Out(s) => Box::new(BufReader::new(s)),
+                Either::Err(s) => Box::new(BufReader::new(s)),
+            };
+            for line in reader.lines().map_while(Result::ok) {
+                if is_err {
+                    if let Ok(mut g) = sink.lock() {
+                        g.push(line.clone());
+                        if g.len() > 400 {
+                            let n = g.len() - 400;
+                            g.drain(..n);
+                        }
+                    }
+                }
+                if tx.send(line).is_err() {
+                    break;
                 }
             }
-        }
-    });
+        });
+        readers.push((h, collected, is_err));
+    }
+    drop(tx); // 两个读线程都结束后，rx 才会断开
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::new(Code::PullFailed, "拿不到 compose 的 stdout".to_string()))?;
     let mut last_emit = Instant::now() - Duration::from_secs(1);
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+    loop {
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(line) => agg.feed(&line),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = h.join();
             return Err(AppError::new(
                 Code::PullFailed,
                 "用户取消了拉取".to_string(),
             ));
         }
-        agg.feed(&line);
         // 每 300ms 推一次，别把前端淹了
         if last_emit.elapsed() >= Duration::from_millis(300) {
             last_emit = Instant::now();
@@ -499,10 +554,14 @@ pub fn pull_streaming(
     let status = child
         .wait()
         .map_err(|e| AppError::new(Code::PullFailed, format!("等 compose pull 结束失败：{e}")))?;
-    let _ = h.join();
-    let err_text = lines.lock().map(|g| g.join("\n")).unwrap_or_default();
-    for l in err_text.lines() {
-        agg.feed(l);
+    let mut err_text = String::new();
+    for (h, collected, is_err) in readers {
+        let _ = h.join();
+        if is_err {
+            if let Ok(g) = collected.lock() {
+                err_text = extract_error_text(&g);
+            }
+        }
     }
     on_progress(&agg.snapshot(PullPhase::Pulling, None));
 
@@ -513,6 +572,53 @@ pub fn pull_streaming(
             Code::PullFailed,
             classify_pull_error(&err_text, status.code()),
         ))
+    }
+}
+
+/// 两个管道类型不同，又想用同一段读取代码，包一层。
+enum Either {
+    Out(std::process::ChildStdout),
+    Err(std::process::ChildStderr),
+}
+
+/// 从 stderr 的全部行里挑出「能说明失败原因」的部分。
+///
+/// compose 在 `--progress json` 下把**报错也塞进 JSON 行**（`text` 是 `Error`，
+/// 具体原因在 `details` 里），纯文本行常常一条都没有。
+/// 只挑非 JSON 行的话，用户看到的就是「退出码 1。原话：」后面空一片（M2 用例 6c 实测）。
+pub fn extract_error_text(lines: &[String]) -> String {
+    let mut plain: Vec<String> = Vec::new();
+    let mut from_json: Vec<String> = Vec::new();
+    for l in lines {
+        let t = l.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with('{') {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+                let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+                let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("");
+                if text.eq_ignore_ascii_case("error") || status.eq_ignore_ascii_case("error") {
+                    let detail = v
+                        .get("details")
+                        .and_then(|x| x.as_str())
+                        .or_else(|| v.get("status").and_then(|x| x.as_str()))
+                        .unwrap_or("");
+                    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                    let line = format!("{id} {detail}").trim().to_string();
+                    if !line.is_empty() {
+                        from_json.push(line);
+                    }
+                }
+            }
+            continue;
+        }
+        plain.push(t.to_string());
+    }
+    if !plain.is_empty() {
+        plain.join("\n")
+    } else {
+        from_json.join("；")
     }
 }
 
@@ -620,8 +726,19 @@ pub fn parse_ps(stdout: &str) -> Vec<ServiceStatus> {
             out.push(to_status(p));
         }
     }
-    out.sort_by(|a, b| a.service.cmp(&b.service));
+    out.sort_by_key(|s| (display_order(&s.service), s.service.clone()));
     out
+}
+
+/// 服务在界面上的固定排序，照视觉稿第 3 张的服务网格来：
+/// web / api / opencode 一行，llm-shim / postgres / redis 一行。
+/// **不按字母序** —— 那样 api 会排到 web 前面，和稿子对不上。
+fn display_order(service: &str) -> usize {
+    const ORDER: [&str; 6] = ["web", "api", "opencode", "llm-shim", "postgres", "redis"];
+    ORDER
+        .iter()
+        .position(|s| *s == service)
+        .unwrap_or(ORDER.len())
 }
 
 fn to_status(p: PsLine) -> ServiceStatus {
@@ -925,6 +1042,46 @@ mod tests {
     }
 
     #[test]
+    fn 每个镜像记下自己的耗时() {
+        let mut agg = PullAggregator::new(&specs(), &sizes(), "x", "x");
+        let img = "Image ghcr.io/agentpit-io/hunter-community-web:1.2.0";
+        agg.feed(&format!(
+            r#"{{"id":"l1","parent_id":"{img}","text":"Downloading","current":1,"total":2}}"#
+        ));
+        let mid = agg.snapshot(PullPhase::Pulling, None);
+        assert!(
+            mid.images
+                .iter()
+                .find(|i| i.service == "web")
+                .unwrap()
+                .seconds
+                .is_none(),
+            "没拉完不该有耗时"
+        );
+        agg.feed(&format!(
+            r#"{{"id":"{img}","status":"Done","text":"Pulled"}}"#
+        ));
+        let end = agg.snapshot(PullPhase::Pulling, None);
+        assert!(
+            end.images
+                .iter()
+                .find(|i| i.service == "web")
+                .unwrap()
+                .seconds
+                .is_some(),
+            "拉完要记下耗时"
+        );
+        // 没出现过的镜像不该凭空有耗时
+        assert!(end
+            .images
+            .iter()
+            .find(|i| i.service == "redis")
+            .unwrap()
+            .seconds
+            .is_none());
+    }
+
+    #[test]
     fn pulled_之后进度补齐到百分之百() {
         let mut agg = PullAggregator::new(&specs(), &sizes(), "x", "x");
         let img = "Image ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0";
@@ -974,6 +1131,39 @@ mod tests {
         assert!(s.log.iter().all(|l| !l.contains("q6sK")), "{:?}", s.log);
     }
 
+    /// 本机已经有的层（`Already exists`）会瞬间「完成」。
+    /// 它们要算进百分比（用户关心整体完成度），但**不能**算进速度 ——
+    /// 否则进度条右边会冒出 67 MB/s 这种一看就假的数字（M2 第一版实测踩过）。
+    #[test]
+    fn 已在本机的层不计入速度() {
+        let mut agg = PullAggregator::new(&specs(), &sizes(), "x", "x");
+        let img = "Image ghcr.io/agentpit-io/hunter-community-web:1.2.0";
+        // 一层是本机已有的（只有 Already exists，没有 Downloading）
+        agg.feed(&format!(
+            r#"{{"id":"cached","parent_id":"{img}","text":"Already exists"}}"#
+        ));
+        // 另一层真的在下
+        agg.feed(&format!(
+            r#"{{"id":"net","parent_id":"{img}","text":"Downloading","current":1000,"total":4000}}"#
+        ));
+        let s1 = agg.snapshot(PullPhase::Pulling, None);
+        // 第一次采样还算不出速度（样本不足一秒），但不能因为缓存层就算出一个天文数字
+        assert!(
+            s1.speed_bps.is_none() || s1.speed_bps.unwrap() < 10_000_000,
+            "{:?}",
+            s1.speed_bps
+        );
+        // 百分比里缓存层照样算数：web 的已下载字节应当包含两层
+        assert!(
+            s1.images
+                .iter()
+                .find(|i| i.service == "web")
+                .unwrap()
+                .downloaded_bytes
+                >= 1000
+        );
+    }
+
     #[test]
     fn 总进度与百分比() {
         let mut agg = PullAggregator::new(&specs(), &sizes(), "x", "x");
@@ -989,6 +1179,36 @@ mod tests {
         assert_eq!(s.downloaded_bytes, 331_344_498 + 214_680_985);
         assert_eq!(s.total_bytes, 849_198_109);
         assert_eq!(s.percent, 64, "两个大镜像下完刚好 64%");
+    }
+
+    /// 这一条用的是 M2 在测试机上抓到的**真实 stderr 流**的行型
+    /// （M0 §5.1 记成 stdout 是错的，M2 实测是 stderr —— 见成果文档）。
+    #[test]
+    fn 真实流的六个镜像都能对上号() {
+        let mut agg = PullAggregator::new(&specs(), &sizes(), "ghcr.io/agentpit-io", "GHCR");
+        let real = [
+            r#"{"id":"Image ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0","status":"Working","text":"Pulling"}"#,
+            r#"{"id":"Image postgres:16-alpine","status":"Working","text":"Pulling"}"#,
+            r#"{"id":"Image redis:7-alpine","status":"Working","text":"Pulling"}"#,
+            r#"{"id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.0","status":"Working","text":"Pulling"}"#,
+            r#"{"id":"Image ghcr.io/agentpit-io/hunter-community-api:1.2.0","status":"Working","text":"Pulling"}"#,
+            r#"{"id":"Image ghcr.io/agentpit-io/hunter-community-opencode:1.2.0","status":"Working","text":"Pulling"}"#,
+        ];
+        for l in real {
+            agg.feed(l);
+        }
+        let s = agg.snapshot(PullPhase::Pulling, None);
+        // 六个都从 Pending 变成了 Downloading，说明 id 全部匹配上了
+        // （postgres / redis 的 id 里没有 docker.io/library 前缀，靠后缀匹配认出来）
+        assert_eq!(
+            s.images
+                .iter()
+                .filter(|i| i.state == PullState::Downloading)
+                .count(),
+            6,
+            "{:?}",
+            s.images
+        );
     }
 
     #[test]
@@ -1020,11 +1240,30 @@ mod tests {
     }
 
     #[test]
+    fn 按视觉稿的顺序排而不是字母序() {
+        let lines = ["redis", "postgres", "llm-shim", "opencode", "api", "web"]
+            .map(|s| {
+                format!("{{\"Service\":\"{s}\",\"State\":\"running\",\"Health\":\"healthy\"}}")
+            })
+            .join("\n");
+        let v = parse_ps(&lines);
+        assert_eq!(
+            v.iter().map(|s| s.service.as_str()).collect::<Vec<_>>(),
+            vec!["web", "api", "opencode", "llm-shim", "postgres", "redis"],
+            "视觉稿第 3 张就是这个顺序"
+        );
+        // 不认识的服务排到最后，不会把已知的挤乱
+        let extra = format!("{lines}\n{{\"Service\":\"zzz\",\"State\":\"running\"}}");
+        let v = parse_ps(&extra);
+        assert_eq!(v.last().unwrap().service, "zzz");
+    }
+
+    #[test]
     fn 多行与数组两种格式都能吃() {
         let multi = "{\"Service\":\"web\",\"State\":\"running\",\"Health\":\"healthy\"}\n{\"Service\":\"redis\",\"State\":\"running\",\"Health\":\"starting\"}";
         let v = parse_ps(multi);
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0].service, "redis", "按服务名排过序");
+        assert_eq!(v[0].service, "web", "按视觉稿顺序：web 排在 redis 前面");
         let arr = r#"[{"Service":"web","State":"running","Health":"healthy"}]"#;
         assert_eq!(parse_ps(arr).len(), 1);
     }
@@ -1036,6 +1275,32 @@ mod tests {
         assert!(service_ready(&v[0]));
         let v = parse_ps(r#"{"Service":"x","State":"exited","Health":""}"#);
         assert!(!service_ready(&v[0]));
+    }
+
+    /// compose 在 --progress json 下把报错也塞进 JSON 行，纯文本行可能一条都没有。
+    /// 只挑非 JSON 行的话用户看到的是「原话：」后面空一片（M2 用例 6c 实测撞出来的）。
+    #[test]
+    fn 报错藏在_json_行里时也要能挑出来() {
+        let lines: Vec<String> = vec![
+            r#"{"id":"Image hkccr.ccs.tencentyun.com/agentpit/hunter-community-web:1.2.0","status":"Error","text":"Error","details":"failed to resolve reference: dial tcp: connect: connection refused"}"#.into(),
+            r#"{"id":"abc","parent_id":"Image x","text":"Downloading","current":1,"total":2}"#.into(),
+        ];
+        let t = extract_error_text(&lines);
+        assert!(t.contains("connection refused"), "{t}");
+
+        // 有纯文本行时优先用纯文本
+        let mixed: Vec<String> = vec![
+            r#"{"id":"x","text":"Error","details":"json 里的原因"}"#.into(),
+            "Error response from daemon: 明文原因".into(),
+        ];
+        assert_eq!(
+            extract_error_text(&mixed),
+            "Error response from daemon: 明文原因"
+        );
+
+        // 一条错误都没有时返回空串，classify 会退回「退出码 N」的说法
+        let clean: Vec<String> = vec![r#"{"id":"a","text":"Pulling"}"#.into()];
+        assert_eq!(extract_error_text(&clean), "");
     }
 
     #[test]

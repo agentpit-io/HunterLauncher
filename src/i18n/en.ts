@@ -43,7 +43,7 @@ const en: Dict = {
   },
   steps: {
     welcome: { title: 'Welcome', sub: 'Language & terms' },
-    docker: { title: 'Docker', sub: 'Detect container runtime' },
+    docker: { title: 'Docker', sub: 'Detect container runtime' , detected: (label: string) => `Detected ${label}`, missing: 'not installed' },
     key: { title: 'Enter key', sub: 'One key for data and models' },
     model: { title: 'Choose model', sub: 'Hunter gateway by default' },
     pull: { title: 'Pull images', sub: (size: string, registry: string) => `~${size} · ${registry}` },
@@ -247,6 +247,7 @@ const en: Dict = {
     resetKey: 'Re-enter key',
     exportDiag: 'Export diagnostic bundle',
     version: 'Launcher version',
+    system: 'System',
     licenses: 'Third-party licenses',
   },
   logs: {

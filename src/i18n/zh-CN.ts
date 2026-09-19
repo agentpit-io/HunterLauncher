@@ -40,7 +40,7 @@ const zhCN = {
   },
   steps: {
     welcome: { title: '欢迎', sub: '语言与协议' },
-    docker: { title: 'Docker', sub: '检测容器运行时' },
+    docker: { title: 'Docker', sub: '检测容器运行时' , detected: (label: string) => `已检测到 ${label}`, missing: '未安装' },
     key: { title: '输入 key', sub: '一把 key 解锁数据与模型' },
     model: { title: '选择模型', sub: '默认走 Hunter 网关' },
     pull: { title: '拉取镜像', sub: (size: string, registry: string) => `约 ${size} · ${registry}` },
@@ -233,6 +233,7 @@ const zhCN = {
     resetKey: '重新输入 key',
     exportDiag: '导出诊断包',
     version: '启动器版本',
+    system: '系统',
     licenses: '第三方许可证',
   },
   logs: {

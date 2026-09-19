@@ -223,11 +223,12 @@ pub fn port_free(port: u16, all_interfaces: bool) -> bool {
     TcpListener::bind(addr).is_ok()
 }
 
-/// 从 `want` 开始往上找一个没被占的端口，最多找 200 个。`taken` 里的一律跳过。
-fn next_free(want: u16, all_interfaces: bool, taken: &[u16]) -> AppResult<u16> {
+/// 从 `want` 开始往上找一个没被占的端口，最多找 200 个。
+/// `taken` 里的一律跳过；`own` 里的（现在正被**我们自己这一套**占着的）一律当成可用。
+fn next_free(want: u16, all_interfaces: bool, taken: &[u16], own: &[u16]) -> AppResult<u16> {
     let mut p = want;
     for _ in 0..200 {
-        if !taken.contains(&p) && port_free(p, all_interfaces) {
+        if !taken.contains(&p) && (own.contains(&p) || port_free(p, all_interfaces)) {
             return Ok(p);
         }
         p = p
@@ -241,14 +242,18 @@ fn next_free(want: u16, all_interfaces: bool, taken: &[u16]) -> AppResult<u16> {
 }
 
 /// 解决端口冲突：逐个检查，被占的自动往上挪。返回定下来的端口与改动清单。
-pub fn resolve_ports(want: &Ports) -> AppResult<(Ports, Vec<PortChange>)> {
+///
+/// `own` 是**当前 `hunter` 项目自己已经在用**的端口。第二次打开启动器时，
+/// 3101 正被我们自己的 web 容器占着 —— 要是把它也算成「被占用」，
+/// 每开一次启动器端口就往上挪一格，用户存的书签全会失效（M2 用例 9 实测撞出来的）。
+pub fn resolve_ports(want: &Ports, own: &[u16]) -> AppResult<(Ports, Vec<PortChange>)> {
     let mut taken: Vec<u16> = Vec::new();
     let mut changes = Vec::new();
     let mut out = want.clone();
 
     for (name, wanted) in want.as_pairs() {
         let all_if = name == "web";
-        let actual = next_free(wanted, all_if, &taken)?;
+        let actual = next_free(wanted, all_if, &taken, own)?;
         taken.push(actual);
         if actual != wanted {
             changes.push(PortChange {
@@ -984,7 +989,7 @@ mod tests {
             postgres: 5442,
             redis: 6479,
         };
-        let (got, changes) = resolve_ports(&want).unwrap();
+        let (got, changes) = resolve_ports(&want, &[]).unwrap();
         assert_ne!(got.api, pa, "被占的端口必须换掉");
         assert!(changes.iter().any(|c| c.service == "api" && c.wanted == pa));
         // 五个端口互不相同
@@ -1007,10 +1012,39 @@ mod tests {
             postgres: free + 3,
             redis: free + 4,
         };
-        let (got, changes) = resolve_ports(&want).unwrap();
+        let (got, changes) = resolve_ports(&want, &[]).unwrap();
         if changes.is_empty() {
             assert_eq!(got, want);
         }
+    }
+
+    /// 第二次打开启动器时，端口正被**我们自己的容器**占着。
+    /// 要是把它也算成冲突，每开一次就往上挪一格，用户存的书签全失效（M2 用例 9 实测撞出来的）。
+    #[test]
+    fn 自己这一套占着的端口不算冲突() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let p = l.local_addr().unwrap().port();
+        let want = Ports {
+            web: 3100,
+            api: p,
+            opencode: 3921,
+            postgres: 5442,
+            redis: 6479,
+        };
+
+        // 不告诉它这是自己的 → 换端口
+        let (got, changes) = resolve_ports(&want, &[]).unwrap();
+        assert_ne!(got.api, p);
+        assert!(!changes.is_empty());
+
+        // 告诉它这是自己的 → 原样保留，也不产生「端口已改」的提示
+        let (got, changes) = resolve_ports(&want, &[p]).unwrap();
+        assert_eq!(got.api, p, "自己占着的端口应当原样保留");
+        assert!(
+            changes.iter().all(|c| c.service != "api"),
+            "不该报 api 换过端口"
+        );
+        drop(l);
     }
 
     #[test]
