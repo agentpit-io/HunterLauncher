@@ -29,7 +29,7 @@
 HunterCode 开源版是一套跑在你自己机器上的多智能体投研终端，用 `docker compose` 起 6 个容器。
 对愿意敲命令行的人，这没什么难度；但它的目标用户里有相当一部分**正是怕命令行的那批人**。
 
-Hunter 启动器是一个 20–40 MB 的跨平台桌面程序，替这批用户做完全部的部署动作：
+Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完全部的部署动作（Linux `.deb` 实测 2.3 MB，AppImage 约 74 MB —— 后者要自带整套 WebKitGTK）：
 
 | 启动器替你做的事 | 原来要手动做的 |
 |---|---|
@@ -49,7 +49,7 @@ Hunter 启动器是一个 20–40 MB 的跨平台桌面程序，替这批用户�
 |---|---|---|---|
 | Windows | 10 21H2+ / 11 · x64 | NSIS `.exe` + MSI | CI 编译 + 代码审阅（暂无真机） |
 | macOS | 12+ · Intel / Apple Silicon | `.dmg`（通用二进制） | CI 编译 + 代码审阅（暂无真机） |
-| Linux | Ubuntu 22.04+ / Debian 12+ · x64 | `.AppImage` + `.deb` | ✅ 真机测试（Ubuntu 24.04） |
+| Linux | Ubuntu 22.04+ / Debian 12+ · x64 | `.deb`（约 2.3 MB，推荐）+ `.AppImage`（约 74 MB，免安装） | ✅ 真机测试（Ubuntu 24.04） |
 
 > 只有 Linux 有真实测试环境。Windows / macOS 以「CI 能编译通过 + 代码路径审阅」为准，
 > 每个里程碑的报告里会写明哪些是未真机验证的。
