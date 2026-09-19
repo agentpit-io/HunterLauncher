@@ -268,6 +268,9 @@ fn ensure_postgres_up(note: &mut impl FnMut(&str)) -> AppResult<()> {
         return Ok(());
     }
     note("postgres 没在运行，先把它单独拉起来再备份");
+    // 这一句也是 `up -d`，同样要先确认 `hunter` 这个项目名是我们的（待办池 P0-5）——
+    // 备份跑在升级之前，比 `compose::up` 那道闸门更早
+    compose::guard_project_owner()?;
     let r = compose::run(&["up", "-d", "postgres"], Duration::from_secs(180))?;
     if !r.ok() {
         return Err(AppError::new(
