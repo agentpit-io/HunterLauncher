@@ -115,6 +115,13 @@ impl AppState {
             *g = Some(k.to_string());
         }
     }
+
+    /// 记一条遥测事件。**开关默认关着**，绝大多数机器上这一句什么都不做
+    /// （`telemetry::record` 第一件事就是看这个布尔值）。
+    pub fn tele(&self, event: &str, fields: &[(&str, crate::telemetry::Field)]) {
+        let c = self.config();
+        crate::telemetry::record(c.telemetry.enabled, &c.telemetry.install_id, event, fields);
+    }
 }
 
 /// 一次安装的入参。
@@ -453,6 +460,23 @@ pub fn pull(
                 }
                 on_progress(&snap);
                 linfo!("拉取完成，用时 {} 秒", agg.elapsed().as_secs());
+                state.tele(
+                    "pull_done",
+                    &[
+                        ("registry", crate::telemetry::Field::Enum(prefix.clone())),
+                        (
+                            "total_mb",
+                            crate::telemetry::Field::Int(
+                                (sizes.values().sum::<u64>() / 1_000_000) as i64,
+                            ),
+                        ),
+                        (
+                            "duration_ms",
+                            crate::telemetry::Field::Int(agg.elapsed().as_millis() as i64),
+                        ),
+                        ("retries", crate::telemetry::Field::Int(attempt as i64 - 1)),
+                    ],
+                );
                 return Ok(());
             }
             Err(e) => {
@@ -558,6 +582,7 @@ pub fn start(
     state: &AppState,
     mut on_tick: impl FnMut(&[ServiceStatus]),
 ) -> AppResult<Vec<ServiceStatus>> {
+    let t0 = std::time::Instant::now();
     compose::up()?;
     let r = compose::wait_healthy(compose::START_TIMEOUT, |v| {
         if let Ok(mut g) = state.services.lock() {
@@ -575,12 +600,41 @@ pub fn start(
             if let Ok(mut g) = state.services.lock() {
                 *g = v.clone();
             }
+            let remapped = state
+                .port_changes
+                .lock()
+                .map(|g| !g.is_empty())
+                .unwrap_or(false);
+            state.tele(
+                "hunter_started",
+                &[
+                    (
+                        "hunter_tag",
+                        crate::telemetry::Field::Enum(state.config().hunter.tag),
+                    ),
+                    (
+                        "duration_ms",
+                        crate::telemetry::Field::Int(t0.elapsed().as_millis() as i64),
+                    ),
+                    ("ports_remapped", crate::telemetry::Field::Bool(remapped)),
+                ],
+            );
             Ok(v)
         }
         Err(e) => {
             if let Ok(mut g) = state.start_note.lock() {
                 *g = Some(e.msg.clone());
             }
+            state.tele(
+                "error",
+                &[
+                    ("component", crate::telemetry::Field::Enum("start".into())),
+                    (
+                        "error_code",
+                        crate::telemetry::Field::Enum(e.code.as_str().into()),
+                    ),
+                ],
+            );
             Err(e)
         }
     }
@@ -612,6 +666,31 @@ pub struct RuntimeStatus {
     /// api 的 `/api/health` 说这个实例到底有没有配上 key（M0 §3.1 的意外收获）
     pub api_key_configured: Option<bool>,
     pub installed: bool,
+    /// 从本机 api 读回来的那几项（数据源卡片靠它）。读不到就是 `reachable=false` + 原因
+    pub upstream: crate::upstream::UpstreamFacts,
+    /// 「数据源」卡片的主值与副行。主值为 `None` 时界面显示「—」
+    pub data_source: Option<String>,
+    pub data_source_sub: String,
+    /// 上游确实没有、因此只能显示「—」的几项（前端按 id 取说明）
+    pub missing: Vec<MissingEndpoint>,
+}
+
+/// 一条「需上游配合」的接口。界面与成果文档用的是同一份清单。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingEndpoint {
+    pub id: String,
+    pub endpoint: String,
+}
+
+pub fn missing_endpoints() -> Vec<MissingEndpoint> {
+    crate::upstream::MISSING_ENDPOINTS
+        .iter()
+        .map(|(id, ep)| MissingEndpoint {
+            id: (*id).to_string(),
+            endpoint: (*ep).to_string(),
+        })
+        .collect()
 }
 
 /// 组装运行面板要的全部数据。每一项拿不到就是 `None` + 原因，绝不填假值（红线 1）。
@@ -635,7 +714,10 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         .find(|s| s.service == "api")
         .and_then(|s| s.port)
         .unwrap_or(cfg.hunter.ports.api);
-    let (api_ok, uptime) = api_health(api_port);
+    let up = crate::upstream::fetch(api_port, Duration::from_secs(5));
+    let api_ok = up.api_key_configured;
+    let uptime = container_uptime();
+    let (data_source, data_source_sub) = crate::upstream::data_source_label(&up);
 
     let quota = state
         .hunter_key()
@@ -696,7 +778,7 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
 
     let mut log = compose::logs(None, 40).unwrap_or_default();
     if log.is_empty() {
-        log = crate::log::tail(40);
+        log = crate::log::tail_file(40);
     }
 
     RuntimeStatus {
@@ -711,23 +793,10 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         log,
         api_key_configured: api_ok,
         installed: cfg.install.done,
-    }
-}
-
-/// 打 api 的 `/api/health`。除了「活着没有」，它还会回一个 `hunter_api_key` 字段
-/// 告诉我们 key 到底有没有落进容器 —— 少一整类「服务全绿但工具全 403」的排查（M0 §3.1）。
-fn api_health(port: u16) -> (Option<bool>, Option<u64>) {
-    let url = format!("http://127.0.0.1:{port}/api/health");
-    match crate::http::get(&url, &[], Duration::from_secs(5)) {
-        Ok(r) if r.ok() => {
-            let configured = r.json().and_then(|v| {
-                v.get("hunter_api_key")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s != "missing")
-            });
-            (configured, container_uptime())
-        }
-        _ => (None, container_uptime()),
+        upstream: up,
+        data_source,
+        data_source_sub,
+        missing: missing_endpoints(),
     }
 }
 
@@ -784,6 +853,129 @@ fn cfg_docker_label() -> Option<String> {
         Some(a) => format!("{l} · {a}"),
         None => l,
     })
+}
+
+/// 切换模型模式（网关 ↔ 自带 key）。里程碑 M3 第 3 项：
+/// **切换后重写 `.env` 并重启相关服务**。
+///
+/// 三步，缺一不可：
+///
+/// 1. 用**当前配置 + 内存里的 key** 重新渲染一次 `.env`（`write_env` 自带 sticky：
+///    JWT_SECRET / 数据库口令 / opencode 口令都会被原样读回来，绝不换新）；
+/// 2. `docker compose up -d --force-recreate api opencode llm-shim` ——
+///    只有重新创建容器才会带上新的环境变量（见 `compose::up_services` 的注释）；
+/// 3. 等这三个服务重新健康。
+///
+/// web / postgres / redis 不动：它们不读 `LLM_*`，白重启一遍只是让用户多等。
+pub fn apply_model_change(state: &AppState) -> AppResult<String> {
+    let cfg = state.config();
+    let hunter_key = state
+        .hunter_key()
+        .ok_or_else(|| AppError::new(Code::KeyInvalid, "读不到 hunter key，没法重写 .env"))?;
+    let own_key = state
+        .own_key
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default();
+
+    let (llm_base, llm_model, llm_key, sanitize) = if cfg.model.mode == "own" {
+        if own_key.is_empty() {
+            // 内存里没有自带 key（比如重开了启动器），从 .env 里读回上一次写进去的那把
+            let from_env = config::parse_env_file(&paths::env_file())
+                .get("LLM_API_KEY")
+                .cloned()
+                .unwrap_or_default();
+            if from_env.is_empty() || from_env == hunter_key {
+                return Err(AppError::new(
+                    Code::KeyInvalid,
+                    "切到自带 key 模式要先填一次你自己的 key（启动器不保存它的副本）",
+                ));
+            }
+            crate::redact::register_secret(&from_env);
+            (
+                cfg.model.base_url.clone(),
+                cfg.model.model.clone(),
+                from_env,
+                cfg.model.schema_sanitize,
+            )
+        } else {
+            (
+                cfg.model.base_url.clone(),
+                cfg.model.model.clone(),
+                own_key,
+                cfg.model.schema_sanitize,
+            )
+        }
+    } else {
+        (
+            gateway::LLM_BASE_URL.to_string(),
+            gateway::DEFAULT_MODEL.to_string(),
+            hunter_key.clone(),
+            false,
+        )
+    };
+
+    config::write_env(&config::EnvInput {
+        tag: &cfg.hunter.tag,
+        registry_prefix: &cfg.hunter.registry_prefix,
+        ports: &cfg.hunter.ports,
+        hunter_key: &hunter_key,
+        model_mode: &cfg.model.mode,
+        llm_base_url: &llm_base,
+        llm_model: &llm_model,
+        llm_api_key: &llm_key,
+        schema_sanitize: sanitize,
+    })?;
+    linfo!(
+        "已按模型模式 {} 重写 .env（模型 {}，地址 {}）",
+        cfg.model.mode,
+        llm_model,
+        crate::http::host_of(&llm_base)
+    );
+
+    // 容器没在跑就只写配置，不去硬起 —— 用户可能就是想先改设置再启动
+    if !compose::is_up() {
+        return Ok(format!(
+            "已重写 .env（模型模式 {}）。容器当前没在运行，下次启动就会用新配置。",
+            cfg.model.mode
+        ));
+    }
+
+    compose::up_services(&["api", "opencode", "llm-shim"])?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let list = compose::ps().unwrap_or_default();
+        let done = ["api", "opencode", "llm-shim"].iter().all(|n| {
+            list.iter()
+                .any(|s| s.service == *n && compose::service_ready(s))
+        });
+        if done {
+            return Ok(format!(
+                "已重写 .env 并重建 api / opencode / llm-shim，三个服务都已就绪（模型模式 {}，模型 {llm_model}）。",
+                cfg.model.mode
+            ));
+        }
+        if std::time::Instant::now() >= deadline {
+            let bad: Vec<String> = ["api", "opencode", "llm-shim"]
+                .iter()
+                .filter(|n| {
+                    !list
+                        .iter()
+                        .any(|s| s.service == **n && compose::service_ready(s))
+                })
+                .map(|n| (*n).to_string())
+                .collect();
+            return Err(AppError::new(
+                Code::StartTimeout,
+                format!(
+                    ".env 已经改好了，但等了 180 秒这几个服务还没就绪：{}。用「查看日志」看它们的输出。",
+                    bad.join("、")
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
 }
 
 /// Hunter 的最新版本：打 GitHub Release 接口。

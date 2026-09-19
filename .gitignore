@@ -41,3 +41,7 @@ dist-demo/
 tmp/
 .cache/
 coverage/
+
+# Python 缓存（scripts/ 下的脚本互相 import 时会生成）
+__pycache__/
+*.pyc

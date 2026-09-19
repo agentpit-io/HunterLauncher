@@ -118,6 +118,11 @@ pub struct TelemetrySection {
     /// 默认关。M0 实测 telemetry.agentpit.io 根本不存在，开了也没地方发
     pub enabled: bool,
     pub install_id: String,
+    /// 上报端点。**默认空 = 不上报**，事件只进本地队列
+    /// `~/.hunter/telemetry/queue.jsonl`。界面上如实写「暂未开启上报」（红线 1）。
+    /// 留成可配置项是为了日后真建好服务时改一行配置就能用，不用改代码。
+    #[serde(default)]
+    pub endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

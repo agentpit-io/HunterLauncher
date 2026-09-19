@@ -527,7 +527,7 @@ fn cmd_diagnose(st: &AppState) -> AppResult<()> {
         ));
     }
     s.push_str("\n## 启动器日志\n");
-    for l in crate::log::tail(80) {
+    for l in crate::log::tail_file(80) {
         s.push_str(&l);
         s.push('\n');
     }

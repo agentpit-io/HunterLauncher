@@ -37,6 +37,18 @@ pub fn logs_dir() -> PathBuf {
 pub fn backups_dir() -> PathBuf {
     root().join("backups")
 }
+/// 遥测本地队列所在目录（里程碑 M3 第 6 项、方案 §12）。
+pub fn telemetry_dir() -> PathBuf {
+    root().join("telemetry")
+}
+/// 遥测本地队列文件。**只写本机，默认没有任何上报地址**。
+pub fn telemetry_queue() -> PathBuf {
+    telemetry_dir().join("queue.jsonl")
+}
+/// 诊断包的默认落地目录（反馈页导出 zip 用）。
+pub fn diagnostics_dir() -> PathBuf {
+    root().join("diagnostics")
+}
 pub fn launcher_toml() -> PathBuf {
     root().join("launcher.toml")
 }
@@ -59,7 +71,14 @@ pub fn launcher_log() -> PathBuf {
 /// 建好全部目录。失败一律报 `E_CONFIG_WRITE` 并带上真实路径，
 /// 「写不进去」这种事只有说清是哪个目录才有得查。
 pub fn ensure_dirs() -> AppResult<()> {
-    for d in [root(), app_dir(), logs_dir(), backups_dir()] {
+    for d in [
+        root(),
+        app_dir(),
+        logs_dir(),
+        backups_dir(),
+        telemetry_dir(),
+        diagnostics_dir(),
+    ] {
         std::fs::create_dir_all(&d).map_err(|e| {
             AppError::new(
                 Code::ConfigWrite,

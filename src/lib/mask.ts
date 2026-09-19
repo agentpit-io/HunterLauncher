@@ -39,13 +39,25 @@ const REDACTIONS: [RegExp, string][] = [
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer ****'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '****@****'],
   [/\b1[3-9]\d{9}\b/g, '1**********'],
-  [/\b(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}\b/g, '$1.x'],
 ]
+
+/**
+ * IPv4 末段打掉：`203.0.113.42` → `203.0.113.x`。
+ * **本机地址与广播地址原样保留** —— 它们不是隐私，而且日志里「api 绑在 127.0.0.1」
+ * 这条信息恰恰是排查端口问题时最要紧的（与 Rust 侧 `redact::mask_ip_last_octet` 的规则一致）。
+ */
+const IP_KEEP = new Set(['127.0.0.1', '0.0.0.0', '255.255.255.255'])
+
+function maskIp(text: string): string {
+  return text.replace(/\b(\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d{1,3})\b/g, (whole, head: string) =>
+    IP_KEEP.has(whole) ? whole : `${head}.x`,
+  )
+}
 
 /**
  * 日志 / 诊断包脱敏。规则来自技术方案 12.3，顺序有讲究：
  * 先去掉各种 key（它们可能出现在 Bearer 后面），再处理邮箱、手机号、IP。
  */
 export function redact(text: string): string {
-  return REDACTIONS.reduce((acc, [re, to]) => acc.replace(re, to), text)
+  return maskIp(REDACTIONS.reduce((acc, [re, to]) => acc.replace(re, to), text))
 }

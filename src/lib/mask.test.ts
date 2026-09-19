@@ -75,6 +75,18 @@ describe('脱敏', () => {
     expect(redact('client 192.168.31.77 connected')).toBe('client 192.168.31.x connected')
   })
 
+  it('本机与广播地址原样保留', () => {
+    // 它们不是隐私，而且「api 绑在 127.0.0.1」这条信息正是排查端口问题时最要紧的
+    // （与 Rust 侧 redact::mask_ip_last_octet 的规则一致；红线 4 的自查也靠这个串）
+    expect(redact('0.0.0.0:3101->3000/tcp')).toBe('0.0.0.0:3101->3000/tcp')
+    expect(redact('api listening on 127.0.0.1:8101')).toBe('api listening on 127.0.0.1:8101')
+    expect(redact('mask 255.255.255.255')).toBe('mask 255.255.255.255')
+  })
+
+  it('版本号不会被当成 IP', () => {
+    expect(redact('compose v2.20.1 docker 29.8.1')).toBe('compose v2.20.1 docker 29.8.1')
+  })
+
   it('一行里有多个敏感串时全部处理', () => {
     const line = `key=${FAKE_KEY} ip=10.0.0.9 mail=a@b.cn`
     expect(redact(line)).toBe('key=hunt_tools_**** ip=10.0.0.x mail=****@****')

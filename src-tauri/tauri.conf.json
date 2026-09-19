@@ -28,11 +28,6 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Hunter 启动器",
-    "longDescription": "把 HunterCode 开源版的部署从「clone → 改 .env → 敲命令行」变成「下载 → 填一把 key → 等几分钟」。",
-    "linux": {
-      "deb": {
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
-      }
-    }
+    "longDescription": "把 HunterCode 开源版的部署从「clone → 改 .env → 敲命令行」变成「下载 → 填一把 key → 等几分钟」。"
   }
 }

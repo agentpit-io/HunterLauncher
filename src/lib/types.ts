@@ -173,6 +173,24 @@ export interface EnvRow {
   reason?: string
 }
 
+/** 从本机 api 读回来的那几项。读不到就是 reachable=false + reason（红线 1）。 */
+export interface UpstreamFacts {
+  reachable: boolean
+  apiKeyConfigured: boolean | null
+  /** env | db | none */
+  llmSource: string | null
+  llmModel: string | null
+  builtinQuota: boolean | null
+  dataSupplyConfigured: boolean | null
+  reason: string | null
+}
+
+/** 上游确实没有、因此界面只能显示「—」的接口。与成果文档「需上游配合」同一份清单。 */
+export interface MissingEndpoint {
+  id: string
+  endpoint: string
+}
+
 export interface RuntimeStatus {
   hunterTag: string | null
   /** 今日额度，来自网关的 /api/saas/llm/quota；拿不到就是 null */
@@ -188,6 +206,11 @@ export interface RuntimeStatus {
   /** api 的 /api/health 自报 key 有没有落进容器；读不到为 null（M0 §3.1） */
   apiKeyConfigured: boolean | null
   installed: boolean
+  upstream: UpstreamFacts
+  /** 「数据源」卡片的主值；null 时界面显示「—」 */
+  dataSource: string | null
+  dataSourceSub: string
+  missing: MissingEndpoint[]
 }
 
 export interface LauncherSettings {
@@ -198,6 +221,46 @@ export interface LauncherSettings {
   hunterTag: string
   workDir: string
   telemetry: boolean
+  /** 空 = 暂未开启上报。界面按这个如实写文案（红线 1） */
+  telemetryEndpoint: string
+  /** gateway | own */
+  modelMode: string
+  modelBaseUrl: string
+  modelName: string
+  registryPrefix: string
+}
+
+/** 「查看本机将要发送的数据」。lines 就是 queue.jsonl 的原文。 */
+export interface TelemetryView {
+  enabled: boolean
+  endpoint: string
+  queuePath: string
+  lines: string[]
+  events: string[]
+}
+
+/** 诊断包里的一节。用户可以逐节勾掉不带（方案 §11.1）。 */
+export interface DiagSection {
+  id: string
+  title: string
+  /** 已经脱敏过的正文 */
+  body: string
+  defaultOn: boolean
+  /** 这一节为什么是空的 */
+  note: string | null
+}
+
+export interface FeedbackForm {
+  /** deploy | result | feature | other */
+  kind: string
+  description: string
+  contact: string
+  errorCode: string
+}
+
+export interface ExportResult {
+  path: string
+  bytes: number
 }
 
 /** 统一的失败形状。所有 ipc 调用失败都变成这个，界面据此显示「—」和原因。 */

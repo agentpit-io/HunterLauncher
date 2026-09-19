@@ -18,7 +18,12 @@ fn main() {
         std::process::exit(headless::run(&parsed));
     }
 
-    if !args.is_empty() {
+    // `--tray-menu <id>`：交给**已经在跑的那个实例**去执行（single-instance 插件转发）。
+    // 没有实例在跑的话这一路就是正常启动一次界面，参数被忽略 —— 下面那句提示不该出现。
+    let tray_cmd = hunter_launcher_lib::tray_menu_arg(&args);
+    let minimized = hunter_launcher_lib::minimized_arg(&args);
+
+    if !args.is_empty() && tray_cmd.is_none() && !minimized {
         // 有参数但不是我们认得的：提示一下再照常开界面，别让用户以为程序坏了
         eprintln!("没认出这些参数：{}。用 --help 看用法。", args.join(" "));
     }

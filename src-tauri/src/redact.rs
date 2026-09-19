@@ -77,6 +77,57 @@ fn mask_shapes(input: &str) -> String {
     out
 }
 
+/// 对话内容的整段抹除（技术方案 §12.3 第三条）。
+///
+/// opencode / api 的日志里会把模型的输入输出原样打出来，形如
+/// `... content: "帮我看看 600519 ..."` 或 `"text":"..."`。这些既不是我们要排查的信息，
+/// 又是用户最不愿意外传的东西 —— **整段换成 `[redacted]`**，不做任何取舍。
+///
+/// 识别的形状：`content`、`text`、`message`、`prompt`、`completion` 这几个 key
+/// 后面跟 `:` 或 `=`（中间允许有引号、空格），一直吃到行尾或下一个明显的字段边界。
+/// 这里故意做得宽 —— 宁可多抹掉一些日志，也不能漏一句用户的话。
+pub fn mask_content_fields(s: &str) -> String {
+    const KEYS: [&str; 5] = ["content", "text", "message", "prompt", "completion"];
+    let mut out = String::with_capacity(s.len());
+    for (i, line) in s.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&mask_content_in_line(line, &KEYS));
+    }
+    out
+}
+
+fn mask_content_in_line(line: &str, keys: &[&str]) -> String {
+    let lower = line.to_ascii_lowercase();
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hit = keys.iter().find(|k| {
+            lower[i..].starts_with(**k)
+                && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_')
+        });
+        if let Some(k) = hit {
+            // key 之后允许 `"`、空格，然后必须是 `:` 或 `=`
+            let mut j = i + k.len();
+            while j < bytes.len() && matches!(bytes[j], b'"' | b'\'' | b' ') {
+                j += 1;
+            }
+            if j < bytes.len() && matches!(bytes[j], b':' | b'=') {
+                out.push_str(&line[i..i + k.len()]);
+                out.push_str(&line[i + k.len()..=j]);
+                out.push_str("[redacted]");
+                return out; // 吃到行尾：值里可能有任意字符，切不干净就别切
+            }
+        }
+        let ch_len = utf8_len(bytes[i]);
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
 /// 把 `<前缀><一串 token 字符>` 换成 `<前缀>****`。
 /// token 字符 = 字母数字 + `-` + `_`（覆盖 base64url 与常见 key 编码）。
 fn mask_prefixed(s: &str, prefix: &str) -> String {
@@ -270,6 +321,58 @@ fn match_ipv4(bytes: &[u8], at: usize) -> Option<(usize, usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 方案 §12.3 第三条：opencode / api 日志里的 `content:` / `text:` **整段**换成 `[redacted]`。
+    #[test]
+    fn 对话内容整段抹除() {
+        let line = r#"2026-09-20 01:00:00 opencode INFO content: "帮我看看 600519 这两天怎么了，要不要加仓""#;
+        let out = mask_content_fields(line);
+        assert!(out.contains("[redacted]"), "{out}");
+        assert!(!out.contains("600519"), "股票代码不该留下来：{out}");
+        assert!(!out.contains("加仓"), "用户的话不该留下来：{out}");
+        // 时间戳与来源要留着 —— 排查还得靠它们
+        assert!(
+            out.starts_with("2026-09-20 01:00:00 opencode INFO content:"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn json_形状的_text_字段也抹() {
+        let line = r#"{"role":"assistant","text":"茅台今天收 1257.12，跌 0.78%"}"#;
+        let out = mask_content_fields(line);
+        assert!(!out.contains("1257.12"), "{out}");
+        assert!(out.contains("[redacted]"), "{out}");
+    }
+
+    #[test]
+    fn 逐行处理不会把整份日志吃掉() {
+        let logs = "api-1 | INFO: GET /api/health 200 OK\n                    opencode-1 | content: 用户说的话\n                    api-1 | INFO: GET /api/setup/status 200 OK";
+        let out = mask_content_fields(logs);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3, "行数不该变：{out}");
+        assert!(
+            lines[0].contains("/api/health"),
+            "第一行不该动：{}",
+            lines[0]
+        );
+        assert!(lines[1].contains("[redacted]"), "第二行要抹：{}", lines[1]);
+        assert!(!lines[1].contains("用户说的话"), "{}", lines[1]);
+        assert!(
+            lines[2].contains("/api/setup/status"),
+            "第三行不该动：{}",
+            lines[2]
+        );
+    }
+
+    /// 不是「字段名」的地方不许乱抹 —— 比如日志里提到 `content-type` 这个词。
+    #[test]
+    fn 不是字段名的地方不动() {
+        let line = "api-1 | INFO: response content-type=application/json size=42";
+        assert_eq!(mask_content_fields(line), line);
+        let line2 = "compose pull: extracting contents";
+        assert_eq!(mask_content_fields(line2), line2);
+    }
 
     /// 测试里用的都是**编造的假 key**，不是测试机上那把真的（红线 2）。
     const FAKE: &str = "hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2";

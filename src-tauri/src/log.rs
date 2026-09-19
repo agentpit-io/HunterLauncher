@@ -121,7 +121,46 @@ fn with_suffix(path: &std::path::Path, n: usize) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// 界面「启动器日志」面板用的最近 n 行（已脱敏）。
+/// **落盘日志**的最近 n 行。日志页与诊断包用的是这个。
+///
+/// 为什么不用内存里的那个环（[`tail`]）：那个环只有**当前这个进程**说过的话。
+/// 用户点开日志页多半是因为刚才出了问题，而「刚才」往往是上一次启动 ——
+/// 只给内存环就等于把他要找的那段藏起来了，页脚还写着「最近 400 行」，是误导。
+/// 诊断包同理：附一份只有三行的启动器日志，对排查毫无用处。
+///
+/// 文件里的每一行在 [`write_line`] 那一步就已经脱敏过了（红线 2），这里不必再过一遍。
+/// 读不到文件（首次运行、权限问题）时退回内存环，并且**不假装**读到了文件。
+pub fn tail_file(n: usize) -> Vec<String> {
+    let path = inner()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|st| st.path.clone()));
+    let Some(path) = path else {
+        return tail(n);
+    };
+    // 日志单个文件上限 5 MB（见 MAX_BYTES），整份读进来再取尾巴是可接受的
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return tail(n);
+    };
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    // 还不够 n 行就把上一卷也接上，用户要看的那段常常正好跨在卷边界上
+    if lines.len() < n {
+        if let Ok(prev) = std::fs::read_to_string(with_suffix(&path, 1)) {
+            let mut older: Vec<String> = prev.lines().map(|l| l.to_string()).collect();
+            older.extend(lines);
+            lines = older;
+        }
+    }
+    if lines.len() > n {
+        lines.drain(..lines.len() - n);
+    }
+    if lines.is_empty() {
+        return tail(n);
+    }
+    lines
+}
+
+/// 进程内存里的最近 n 行（已脱敏）。只有当前这次运行说过的话。
 pub fn tail(n: usize) -> Vec<String> {
     inner()
         .lock()
@@ -174,6 +213,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         p.push("launcher.log");
         p
+    }
+
+    /// 日志页与诊断包读的必须是**文件**，不是当前进程的内存环。
+    ///
+    /// 这条测试盯的是一个真实的误导：用户点开日志页多半是因为上一次运行出了问题，
+    /// 而内存环里只有这一次启动说过的三五句话，页脚却写着「最近 400 行」。
+    #[test]
+    fn 日志页读的是文件而不是只有本次进程的内存环() {
+        let _g = test_lock();
+        let path = tmp("tailfile");
+        // 先伪造一份「上一次运行」留下的日志文件
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "2026-09-20 01:00:00 [info] 上一次运行第 1 行\n             2026-09-20 01:00:01 [error] 上一次运行崩在这里\n",
+        )
+        .unwrap();
+
+        init(path.clone());
+        write_line(Level::Info, "这一次运行的第一行");
+
+        let from_file = tail_file(100);
+        assert!(
+            from_file.iter().any(|l| l.contains("上一次运行崩在这里")),
+            "必须能看到上一次运行的日志：{from_file:?}"
+        );
+        assert!(
+            from_file.iter().any(|l| l.contains("这一次运行的第一行")),
+            "也要能看到这一次的：{from_file:?}"
+        );
+        // 内存环里只有这一次的 —— 两者确实不同，说明上面那条断言不是巧合
+        let from_mem = tail(100);
+        assert!(
+            !from_mem.iter().any(|l| l.contains("上一次运行")),
+            "{from_mem:?}"
+        );
+
+        // n 起作用
+        assert_eq!(tail_file(1).len(), 1);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// 这是总控规则红线 2 在 Rust 侧的看门测试：**落到盘上的日志文件里不能出现 key**。

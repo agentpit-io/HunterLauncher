@@ -388,6 +388,52 @@ mod tests {
         );
     }
 
+    /// 广州区的镜像仓库与下载桶**已于 2026-09-19 删除**
+    /// （`plan/国内镜像与下载源.md` 第一节的警告框），代码里一处都不许再引用。
+    ///
+    /// 这条测试盯的是一个真实发生过的事故形状：M2 开工时读到的还是广州地址，
+    /// 中途用户把基础设施换到了香港区 —— 地址写错的结果不是报错，而是
+    /// 「国内用户拉镜像永远失败，还不知道为什么」。
+    #[test]
+    fn 候选源里不许出现已停用的广州区地址() {
+        // 注意「广州区是 `ccr.`，香港区是 `hkccr.`」—— 前者是后者的后缀，
+        // 用 `contains` 判会把正确的香港地址也误判成停用地址。所以这里按**主机名整体**比。
+        const RETIRED_HOSTS: [&str; 2] = [
+            "ccr.ccs.tencentyun.com",            // 广州区镜像仓库（已删除）
+            "registry.cn-hangzhou.aliyuncs.com", // 方案里那个实测不存在的阿里云 ACR
+        ];
+        const RETIRED_SUBSTRINGS: [&str; 1] = [
+            "hunter-dl-1253756459", // 广州区下载桶（已删除，香港桶是 hunter-dl-hk-…）
+        ];
+        for c in CANDIDATES {
+            for h in RETIRED_HOSTS {
+                assert_ne!(c.host, h, "候选源 {} 用的是已停用的主机 {h}", c.id);
+                assert!(
+                    !c.prefix.starts_with(&format!("{h}/"))
+                        && !c.base_prefix.starts_with(&format!("{h}/")),
+                    "候选源 {} 的前缀落在已停用的主机 {h} 上",
+                    c.id
+                );
+            }
+            for r in RETIRED_SUBSTRINGS {
+                assert!(
+                    !c.prefix.contains(r) && !c.base_prefix.contains(r) && !c.host.contains(r),
+                    "候选源 {} 里出现了已停用的地址 {r}",
+                    c.id
+                );
+            }
+        }
+        // 腾讯云那个源的主机名必须是香港区的 hk 前缀，不能是广州区的裸 ccr
+        let cn = by_id("tencent").expect("腾讯云应当在候选里");
+        assert!(cn.host.starts_with("hkccr."), "实际是 {}", cn.host);
+        assert!(!cn.label.contains("广州"), "文案里不许写广州：{}", cn.label);
+        assert!(
+            !cn.label.contains("阿里云"),
+            "文案里不许写阿里云：{}",
+            cn.label
+        );
+    }
+
     #[test]
     fn 解析_www_authenticate() {
         let c =

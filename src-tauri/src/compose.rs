@@ -906,6 +906,30 @@ pub fn down() -> AppResult<()> {
     }
 }
 
+/// 只重建指定的几个服务（切换模型模式后用）。
+///
+/// 为什么是 `up -d <服务…>` 而不是 `restart <服务…>`：`restart` 只是把进程重启一遍，
+/// **容器里的环境变量还是老的**；`.env` 改了要生效必须让 compose 重新创建容器。
+/// 这一点是真跑出来的 —— 只 `restart` 的话切完模型对话仍然走旧网关。
+pub fn up_services(services: &[&str]) -> AppResult<()> {
+    let mut args: Vec<&str> = vec!["up", "-d", "--force-recreate"];
+    args.extend_from_slice(services);
+    let r = run(&args, Duration::from_secs(300))?;
+    if r.ok() {
+        crate::linfo!("docker compose up -d {} 完成", services.join(" "));
+        Ok(())
+    } else {
+        Err(AppError::new(
+            Code::StartTimeout,
+            format!(
+                "docker compose up -d {} 失败：{}",
+                services.join(" "),
+                r.err_line()
+            ),
+        ))
+    }
+}
+
 pub fn restart() -> AppResult<()> {
     let r = run(&["restart"], Duration::from_secs(240))?;
     if r.ok() {
