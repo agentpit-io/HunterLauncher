@@ -623,25 +623,22 @@ pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Op
     match crate::http::get(&url, &[], timeout) {
         Ok(r) if r.ok() => match validate_compose(&r.body) {
             Ok(()) => {
-                let sha = sha256_hex(r.body.as_bytes());
+                let body = r.body.replace("\r\n", "\n");
+                let sha = sha256_hex(body.as_bytes());
                 if tag == BUNDLED_TAG && sha != BUNDLED_COMPOSE_SHA256 {
                     let note = format!(
                         "下载到的 {tag} compose 校验和是 {sha}，与启动器内置副本的 {BUNDLED_COMPOSE_SHA256} 不一致。\
                          同一个 git tag 的内容不该变，这次改用内置副本。"
                     );
                     crate::lwarn!("{note}");
-                    return (
-                        BUNDLED_COMPOSE.to_string(),
-                        ComposeSource::Bundled,
-                        Some(note),
-                    );
+                    return (bundled_compose(), ComposeSource::Bundled, Some(note));
                 }
                 crate::linfo!(
                     "已从 raw.githubusercontent 取到 v{tag} 的 compose（{} 字节 · sha256 {}）",
-                    r.body.len(),
+                    body.len(),
                     &sha[..16]
                 );
-                (r.body, ComposeSource::Download, None)
+                (body, ComposeSource::Download, None)
             }
             Err(e) => {
                 let note = format!(
@@ -649,11 +646,7 @@ pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Op
                     e.msg
                 );
                 crate::lwarn!("{note}");
-                (
-                    BUNDLED_COMPOSE.to_string(),
-                    ComposeSource::Bundled,
-                    Some(note),
-                )
+                (bundled_compose(), ComposeSource::Bundled, Some(note))
             }
         },
         Ok(r) => {
@@ -662,11 +655,7 @@ pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Op
                 r.status
             );
             crate::lwarn!("{note}");
-            (
-                BUNDLED_COMPOSE.to_string(),
-                ComposeSource::Bundled,
-                Some(note),
-            )
+            (bundled_compose(), ComposeSource::Bundled, Some(note))
         }
         Err(e) => {
             let note = format!(
@@ -674,11 +663,7 @@ pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Op
                 e.msg
             );
             crate::lwarn!("{note}");
-            (
-                BUNDLED_COMPOSE.to_string(),
-                ComposeSource::Bundled,
-                Some(note),
-            )
+            (bundled_compose(), ComposeSource::Bundled, Some(note))
         }
     }
 }
@@ -731,8 +716,15 @@ pub fn write_compose(content: &str) -> AppResult<()> {
     Ok(())
 }
 
-pub fn bundled_compose() -> &'static str {
-    BUNDLED_COMPOSE
+/// 启动器内置的 compose 副本，**换行统一成 LF**。
+///
+/// 为什么要归一化：这份文件是 `include_str!` 编进二进制的，而 Windows 的 git checkout
+/// 默认把 LF 换成 CRLF —— 同一份源码在 Linux 与 Windows 上编出来的内容就不一样，
+/// 跟写死的 sha256 对不上（M2 的 CI 在 windows-latest 上实测撞到）。
+/// 仓库里已经用 `.gitattributes` 强制 LF，这里再归一一次是双保险：
+/// 别人用别的 checkout 设置克隆时也能编出一致的产物。
+pub fn bundled_compose() -> String {
+    BUNDLED_COMPOSE.replace("\r\n", "\n")
 }
 
 /// sha256 的十六进制串。
@@ -767,10 +759,12 @@ mod tests {
     fn 内置的_compose_副本与记录的校验和一致() {
         // 这条测试守的是「内置副本被人改过但忘了改校验和」
         assert_eq!(
-            sha256_hex(BUNDLED_COMPOSE.as_bytes()),
+            sha256_hex(bundled_compose().as_bytes()),
             BUNDLED_COMPOSE_SHA256
         );
-        validate_compose(BUNDLED_COMPOSE).expect("内置副本必须能通过自己的校验");
+        validate_compose(&bundled_compose()).expect("内置副本必须能通过自己的校验");
+        // Windows 的 checkout 会把 LF 换成 CRLF，归一化之后不该再有 \r（M2 的 CI 实测撞过）
+        assert!(!bundled_compose().contains('\r'), "内置副本里还有 CRLF");
     }
 
     #[test]
