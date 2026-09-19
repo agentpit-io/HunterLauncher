@@ -160,9 +160,23 @@ pub fn release_url(version: &str) -> String {
     format!("https://github.com/{REPO}/releases/tag/launcher-v{version}")
 }
 
-/// 装 `.deb` 用的那条命令。`apt install ./x.deb` 比 `dpkg -i` 好：会自己补依赖。
+/// 装 `.deb` 用的那条命令。
+///
+/// 两个选择都是被真实失败教出来的：
+///
+/// * **`apt install` 而不是 `dpkg -i`**：前者会自己补依赖，后者缺依赖时会留下一个半装的包。
+/// * **`--allow-downgrades`**：**dpkg 对预发布版的排序和 semver 相反**。
+///   实测（Ubuntu 24.04）：`dpkg --compare-versions 0.1.0 gt 0.1.0-rc.2` 是**假** ——
+///   在 Debian 的版本语法里 `-rc.2` 是「Debian 修订号」，所以 `0.1.0-rc.2` 比 `0.1.0` **新**。
+///   于是从 rc 升到正式版时 apt 会判成降级并直接拒绝：
+///   `E: Packages were downgraded and -y was used without --allow-downgrades`。
+///   加上这个开关就通了；它只在真的需要时才起作用，正常升级不受影响。
+///
+/// > 更彻底的修法是让 `.deb` 的版本号用 Debian 的写法（`0.1.0~rc.2`，波浪号排在一切之前，
+/// > 实测 `dpkg --compare-versions 0.1.0 gt 0.1.0~rc.2` 为**真**）。但 Tauri 目前没有
+/// > 单独覆盖 deb 版本号的配置项，只能等上游或者自己改打包脚本。记在待办池里。
 pub fn deb_install_command(path: &str) -> String {
-    format!("sudo apt install -y {path}")
+    format!("sudo apt install -y --allow-downgrades {path}")
 }
 
 // ── 真去问一次 ────────────────────────────────────────────────────────────
@@ -380,6 +394,17 @@ mod tests {
         let c = deb_install_command("/home/u/.hunter/updates/hunter-launcher_0.1.0_amd64.deb");
         assert!(c.starts_with("sudo apt install"), "{c}");
         assert!(c.contains("hunter-launcher_0.1.0_amd64.deb"));
+    }
+
+    /// dpkg 对预发布版的排序和 semver **相反**（`0.1.0-rc.2` 在 dpkg 眼里比 `0.1.0` 新），
+    /// 所以从 rc 升到正式版时 apt 会判成降级并拒绝。这条测试盯住那个开关别被删掉。
+    #[test]
+    fn 装_deb_的命令要带_allow_downgrades() {
+        let c = deb_install_command("/tmp/x.deb");
+        assert!(
+            c.contains("--allow-downgrades"),
+            "少了它，从 rc 升到正式版会报 `Packages were downgraded`：{c}"
+        );
     }
 
     #[test]
