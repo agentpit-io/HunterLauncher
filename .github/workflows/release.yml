@@ -1,0 +1,325 @@
+name: Release
+
+# 技术方案 §17 的发布流水线。打 `launcher-v*` 的 tag 就跑。
+#
+# 三件事：
+#   1. 三平台各自 tauri build，产物统一改成**不带空格**的文件名（待办池 P2-14）；
+#   2. 汇总成一个 GitHub Release（**prerelease**，因为没有代码签名证书，见下）；
+#   3. 生成 updater 的 latest.json（两份：GitHub 一份、COS 香港一份）并同步到 COS。
+#
+# ## 签名（总控规则红线 7）
+#
+# Windows 代码签名证书与 Apple 开发者账号都要花钱，用户已决定**不申请**。
+# 所以：
+#   · 签名 / 公证的步骤写好了，但都带 `if: 有对应 secret`，没有就整步跳过；
+#   · 产出的是**未签名包**，Release 说明里写清楚 SmartScreen / Gatekeeper 怎么放行；
+#   · Release 一律标 prerelease —— 未签名的东西不该摆成正式版。
+#
+# **updater 的签名是另一回事，它是必须的**：`TAURI_SIGNING_PRIVATE_KEY` 是我们自己
+# 生成的 minisign 私钥（红线 7 允许），公钥编译在程序里。没有它 updater 的清单验不过，
+# 自更新直接不可用 —— 所以这个 secret 缺失时流水线会**红**，不是跳过。
+
+on:
+  push:
+    tags:
+      - 'launcher-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 launcher-v0.1.0-rc.1）。必须已经存在'
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  HUNTER_CHANNEL: release
+
+jobs:
+  # ── 三平台构建 ────────────────────────────────────────────────────────────
+  build:
+    name: 构建 · ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    # 签名相关的 secret 放在 job 级 env 里：步骤的 `if:` 只能读 job/workflow 级的 env，
+    # 读不到步骤自己那个 env 块（这是 GitHub Actions 的规则，不是笔误）。
+    # 没配的 secret 在这里就是空字符串，对应的步骤整步跳过（红线 7）。
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: Linux（deb + AppImage）
+            bundles: deb,appimage
+            rust_targets: ''
+          - os: macos-latest
+            label: macOS（universal dmg）
+            bundles: dmg,app
+            # 通用二进制要两个 target 都装上，缺一个 `--target universal-apple-darwin` 会直接失败
+            rust_targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - os: windows-latest
+            label: Windows（NSIS + MSI）
+            bundles: nsis,msi
+            rust_targets: ''
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: 已停用的国内源地址不许再出现在仓库里
+        if: runner.os == 'Linux'
+        run: ./scripts/check-retired-mirrors.sh
+
+      - name: 安装 Linux 系统依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libssl-dev \
+            build-essential curl wget file pkg-config \
+            xdg-utils
+        # xdg-utils 不在 Tauri 官方依赖清单里，但 AppImage 打包要把 xdg-open 塞进 AppDir，
+        # 缺了会在打包最后一步才失败（M0 §6.3 踩过）
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-${{ matrix.os }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: 前端自查（发布包里不许有演示数据 · 红线 1）
+        shell: bash
+        run: |
+          set -e
+          pnpm exec vite build
+          if grep -rl "HUNTER_DEMO_DATA_MARKER" dist/ ; then
+            echo "::error::发布构建里出现了演示数据标记（总控规则红线 1）"
+            exit 1
+          fi
+          echo "OK：dist/ 里没有演示数据"
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      # ── 签名相关的 secrets（没有就整步跳过，红线 7）────────────────────
+      - name: macOS 证书导入（没有证书就跳过）
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
+          rm -f /tmp/cert.p12
+
+      - name: tauri build
+        env:
+          # updater 的签名密钥。**这个是必须的**（见文件头），缺了下面会显式报错
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -e
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::缺 secret TAURI_SIGNING_PRIVATE_KEY。这是 updater 的签名密钥（我们自己生成的，不花钱），"
+            echo "::error::没有它产出的 latest.json 验不过签，自更新会整个失效。先 gh secret set 再重跑。"
+            exit 1
+          fi
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && [ "$RUNNER_OS" = "macOS" ]; then
+            echo "::notice::没有 Apple 证书，产出未签名、未公证的 .app / .dmg（红线 7：不申请付费证书）"
+          fi
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            pnpm exec tauri build --target universal-apple-darwin --bundles ${{ matrix.bundles }}
+          else
+            pnpm exec tauri build --bundles ${{ matrix.bundles }}
+          fi
+
+      - name: macOS 公证（没有 Apple 账号就跳过）
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: |
+          DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Windows 代码签名（没有证书就跳过）
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("$env:TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          Get-ChildItem -Recurse src-tauri/target/release/bundle -Include *.exe,*.msi |
+            ForEach-Object { signtool sign /f "$env:TEMP\cert.pfx" /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $_.FullName }
+          Remove-Item "$env:TEMP\cert.pfx"
+
+      # ── 统一改名（待办池 P2-14）────────────────────────────────────────
+      # Tauri 用 productName（"Hunter Launcher"）当文件名，带一个空格，下载地址会变成 %20。
+      # selfupdate.rs 里 .deb 的下载地址是按 `hunter-launcher_<版本>_amd64.deb` 硬拼的，
+      # 两边对不上就是 404 —— 那条测试（selfupdate.rs 的「下载地址与 release.yml 的命名一致」）
+      # 盯的就是这件事。
+      - name: 产物改名并收拢到 out/
+        shell: bash
+        run: |
+          set -e
+          V=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          mkdir -p out
+          case "$RUNNER_OS" in
+            Linux)  ROOT=src-tauri/target/release/bundle ;;
+            macOS)  ROOT=src-tauri/target/universal-apple-darwin/release/bundle ;;
+            Windows) ROOT=src-tauri/target/release/bundle ;;
+          esac
+          # 连 .sig 一起搬：签名是按文件内容算的，改名不影响它
+          find "$ROOT" -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.exe' \
+               -o -name '*.msi' -o -name '*.app.tar.gz' -o -name '*.sig' \) -print0 |
+          while IFS= read -r -d '' f; do
+            b=$(basename "$f")
+            # "Hunter Launcher_0.1.0_amd64.deb" → "hunter-launcher_0.1.0_amd64.deb"
+            n=${b//Hunter Launcher/hunter-launcher}
+            n=${n//hunter Launcher/hunter-launcher}
+            cp "$f" "out/$n"
+          done
+          echo "── out/ ──"
+          ls -la out/
+          # 有包必须有签名：少一个 .sig 就等于那个平台的自更新是坏的
+          for p in out/*.AppImage out/*-setup.exe out/*.app.tar.gz; do
+            [ -e "$p" ] || continue
+            [ -e "$p.sig" ] || { echo "::error::$p 没有 .sig"; exit 1; }
+          done
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: 产物体积
+        shell: bash
+        run: ls -la out/ | awk '{print $5, $9}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.os }}
+          path: out/*
+          retention-days: 14
+          if-no-files-found: error
+
+  # ── 汇总发布 ──────────────────────────────────────────────────────────────
+  release:
+    name: 汇总 · GitHub Release + latest.json + COS
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          pattern: bundle-*
+          merge-multiple: true
+
+      - name: 算出版本号与 tag
+        id: v
+        run: |
+          set -e
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          V="${TAG#launcher-v}"
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$V" != "$CONF" ]; then
+            echo "::error::tag 是 $TAG（版本 $V），但 tauri.conf.json 里写的是 $CONF。"
+            echo "::error::updater 比的是程序里编译进去的版本号，对不上会出现「装了新版还提示有新版」。"
+            exit 1
+          fi
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          echo "version=$V"   >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          ls -la staged/
+
+      - name: 生成两份 latest.json（GitHub 与 COS）
+        run: |
+          set -e
+          python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
+            "https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}" \
+            staged/latest.json --pub-date "${{ steps.v.outputs.date }}"
+          python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
+            "${{ vars.CN_DOWNLOAD_BASE }}/launcher/${{ steps.v.outputs.version }}" \
+            latest.cn.json --pub-date "${{ steps.v.outputs.date }}"
+          cat staged/latest.json
+
+      - name: 生成 Release 说明
+        run: bash scripts/release-notes.sh "${{ steps.v.outputs.version }}" > NOTES.md
+
+      - name: 建 / 更新 Release（一律 prerelease：包没有代码签名）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="${{ steps.v.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Hunter 启动器 ${{ steps.v.outputs.version }}" \
+              --notes-file NOTES.md --prerelease
+          else
+            gh release create "$TAG" --title "Hunter 启动器 ${{ steps.v.outputs.version }}" \
+              --notes-file NOTES.md --prerelease
+          fi
+          gh release upload "$TAG" staged/* --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name'
+
+      - name: 同步到腾讯云 COS（香港）· 没有 secrets 就跳过
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ vars.COS_BUCKET }}
+          COS_REGION: ${{ vars.COS_REGION }}
+        run: |
+          set -e
+          pip install --quiet boto3
+          # 安装包进 /launcher/<版本>/；GitHub 那份 latest.json 不上传（地址不对）
+          rm -f staged/latest.json
+          python3 scripts/cos-upload.py staged "launcher/${{ steps.v.outputs.version }}"
+          # 国内版清单固定在 /launcher/latest.json，启动器的第一个 updater 端点就是它
+          python3 scripts/cos-upload.py latest.cn.json "launcher/latest.json"
+
+      - name: 小结
+        run: |
+          {
+            echo "### Hunter 启动器 ${{ steps.v.outputs.version }}"
+            echo
+            echo "- Release https://github.com/${{ github.repository }}/releases/tag/${{ steps.v.outputs.tag }}"
+            echo "- 国内下载 ${{ vars.CN_DOWNLOAD_BASE }}/launcher/${{ steps.v.outputs.version }}/"
+            echo "- updater 清单 ${{ vars.CN_DOWNLOAD_BASE }}/launcher/latest.json"
+            echo
+            echo '```'
+            cat latest.cn.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

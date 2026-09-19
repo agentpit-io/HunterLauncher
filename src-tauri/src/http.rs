@@ -51,6 +51,34 @@ pub fn get(url: &str, headers: &[(&str, &str)], timeout: Duration) -> AppResult<
     finish(req.call(), url)
 }
 
+/// 下一个二进制文件（自更新下 `.deb` 用）。上限 200 MB —— 我们的安装包最大的
+/// AppImage 也只有 75 MB 出头，收到比这还大的东西说明拿错了地址。
+pub fn get_bytes(url: &str, timeout: Duration) -> AppResult<Vec<u8>> {
+    const MAX: u64 = 200 * 1024 * 1024;
+    let a = agent(timeout);
+    let mut resp = a
+        .get(url)
+        .call()
+        .map_err(|e| AppError::new(Code::Unknown, format!("请求 {} 失败：{e}", host_of(url))))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(AppError::new(
+            Code::Unknown,
+            format!("{} 返回 HTTP {status}", host_of(url)),
+        ));
+    }
+    resp.body_mut()
+        .with_config()
+        .limit(MAX)
+        .read_to_vec()
+        .map_err(|e| {
+            AppError::new(
+                Code::Unknown,
+                format!("读 {} 的响应体失败：{e}", host_of(url)),
+            )
+        })
+}
+
 pub fn post_json(
     url: &str,
     headers: &[(&str, &str)],

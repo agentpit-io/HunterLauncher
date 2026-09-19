@@ -263,6 +263,93 @@ export interface ExportResult {
   bytes: number
 }
 
+// ── M4 · 更新 / 升级 / 备份 / 离线包 ────────────────────────────────────
+
+/** 启动器自己有没有新版本（方案 §10）。 */
+export interface LauncherUpdate {
+  available: boolean
+  current: string
+  version: string | null
+  notes: string | null
+  date: string | null
+  /** 这台机器上能不能就地装：AppImage / Windows / macOS 能，.deb 不能 */
+  canSelfInstall: boolean
+  /** appimage | deb | windows | macos | unknown */
+  installKind: string
+  /** 查不到时的原因（红线 1：拿不到要给原因） */
+  reason: string | null
+}
+
+/** `.deb` 这类装不了自己的格式：包下好了，给一条要用户自己敲的命令。 */
+export interface ManualInstall {
+  path: string
+  bytes: number
+  command: string
+  message: string
+}
+
+/** Hunter 有没有新版本 + Release Notes 摘要。 */
+export interface UpgradeCheck {
+  current: string
+  latest: string | null
+  hasUpdate: boolean
+  notes: string | null
+  notesUrl: string | null
+  publishedAt: string | null
+  /** 跨大版本（方案 §10 第 4 条：要提示读升级须知） */
+  majorJump: boolean
+  reason: string | null
+}
+
+export interface UpgradeResult {
+  ok: boolean
+  from: string
+  to: string
+  backupId: string | null
+  backupSqlBytes: number | null
+  rolledBack: boolean
+  message: string
+}
+
+export interface UpgradeStatus {
+  running: boolean
+  steps: string[]
+  result: UpgradeResult | null
+  error: string | null
+}
+
+/** 一次备份。`sqlBytes` 为 null 说明数据库那一半没做成，原因在 `sqlError`。 */
+export interface BackupMeta {
+  id: string
+  tag: string
+  at: string
+  sqlBytes: number | null
+  sqlError: string | null
+  files: string[]
+}
+
+export interface MatchedImage {
+  service: string
+  reference: string
+  bytes: number | null
+}
+
+/** 离线包导入的结果（方案 §9）。 */
+export interface OfflineImport {
+  path: string
+  bytes: number
+  seconds: number
+  loaded: string[]
+  matched: MatchedImage[]
+  /** 还缺的服务名。非空就说明包不完整 */
+  missing: string[]
+  registryPrefix: string | null
+  basePrefix: string | null
+  tag: string | null
+  /** 够不够跳过拉取 */
+  complete: boolean
+}
+
 /** 统一的失败形状。所有 ipc 调用失败都变成这个，界面据此显示「—」和原因。 */
 export interface IpcFailure {
   code: string

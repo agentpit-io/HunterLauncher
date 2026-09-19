@@ -34,9 +34,14 @@ sha2 = "0.11"
 getrandom = "0.4"
 # headless 模式下输入 key 时不回显
 rpassword = "7"
+# 离线包导入要选文件（方案 §9）。系统原生的文件选择框，比让用户手抄路径靠谱
+tauri-plugin-dialog = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
+# 启动器自更新（方案 §10）。端点是 COS（国内）与 GitHub Release 两个 latest.json，
+# 公钥写在 tauri.conf.json 里，私钥只在开发机 ~/.hunter-launcher-keys/ 与仓库 secrets 里（红线 7）
+tauri-plugin-updater = "2"
 
 [features]
 # 默认的 custom-protocol 特性。`tauri build` 会自动带上它；

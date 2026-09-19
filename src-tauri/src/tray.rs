@@ -101,10 +101,53 @@ pub fn status_text(services: &[compose::ServiceStatus], err: Option<&str>) -> St
 
 /// 托盘 tooltip。鼠标悬停时看到的一行。
 pub fn tooltip(status: &str, web_url: Option<&str>) -> String {
-    match web_url {
-        Some(u) => format!("Hunter 启动器 · {status}\n{u}"),
-        None => format!("Hunter 启动器 · {status}"),
+    tooltip_with_update(status, web_url, None)
+}
+
+/// 带「启动器有新版本」提示的 tooltip（方案 §10：「有更新时托盘提示」）。
+pub fn tooltip_with_update(
+    status: &str,
+    web_url: Option<&str>,
+    launcher_update: Option<&str>,
+) -> String {
+    let mut s = format!("Hunter 启动器 · {status}");
+    if let Some(u) = web_url {
+        s.push('\n');
+        s.push_str(u);
     }
+    if let Some(v) = launcher_update {
+        s.push_str(&format!("\n启动器有新版本 v{v}，点开界面可以更新"));
+    }
+    s
+}
+
+/// 后台查到的「启动器有新版本」。托盘的 tooltip 与菜单项文字都看它。
+fn pending_launcher_update() -> &'static std::sync::Mutex<Option<String>> {
+    static P: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    &P
+}
+
+pub fn launcher_update_pending() -> Option<String> {
+    pending_launcher_update()
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+}
+
+/// [`crate::selfupdate`] 的后台检查查到新版本时叫这个：
+/// 记下来、把菜单项改成「启动器有新版本 v0.1.1」、刷新 tooltip。
+pub fn note_launcher_update<R: Runtime>(app: &AppHandle<R>, version: Option<&str>) {
+    if let Ok(mut g) = pending_launcher_update().lock() {
+        *g = version.map(str::to_string);
+    }
+    if let Some(h) = app.try_state::<TrayHandles<R>>() {
+        let text = match version {
+            Some(v) => format!("检查更新（启动器有新版本 v{v}）"),
+            None => "检查更新".to_string(),
+        };
+        let _ = h.update_item.set_text(text);
+    }
+    refresh_status(app);
 }
 
 /// 点一个菜单项以后该干什么。**不碰托盘、不碰窗口**，只回一个指令 ——
@@ -148,6 +191,8 @@ pub fn handle_menu(id: &str) -> Action {
 pub struct TrayHandles<R: Runtime> {
     pub status_item: MenuItem<R>,
     pub autostart_item: CheckMenuItem<R>,
+    /// 「检查更新」那一项。查到启动器有新版本时它的文字会变（方案 §10 的「托盘提示」）
+    pub update_item: MenuItem<R>,
     pub tray_id: tauri::tray::TrayIconId,
 }
 
@@ -214,6 +259,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     app.manage(TrayHandles {
         status_item: status,
         autostart_item: autostart,
+        update_item: update,
         tray_id: tray.id().clone(),
     });
     spawn_status_poller(app.clone());
@@ -264,14 +310,21 @@ pub fn run_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
         Action::CheckUpdate => {
             show_main(app);
             let _ = app.emit(EV_NAVIGATE, "dashboard");
+            // 「检查更新」要一次把**两件事**都查了：Hunter 有没有新版本、启动器自己有没有。
+            // 用户点它的时候心里想的是「有没有什么要更新的」，分成两个入口只会让人漏掉一个。
+            //
             // 用户亲手点的这一下要绕过 6 小时缓存 —— 他点它正是想知道「现在」怎么样
             let latest = crate::flow::latest_hunter_tag_now();
             let cur = app.state::<AppState>().config().hunter.tag;
-            let msg = match latest {
-                Some(t) if t != cur => format!("有新版本 v{t}（当前 v{cur}）"),
-                Some(t) => format!("已经是最新版 v{t}"),
-                None => "查不到最新版本（GitHub 接口没返回）".to_string(),
+            let hunter = match latest {
+                Some(t) if crate::upgrade::is_newer(&t, &cur) => {
+                    format!("Hunter 有新版本 v{t}（当前 v{cur}）")
+                }
+                Some(t) => format!("Hunter 已经是最新版 v{t}"),
+                None => "查不到 Hunter 的最新版本（GitHub 接口没返回）".to_string(),
             };
+            let launcher = check_launcher_update_blocking(app);
+            let msg = format!("{hunter}；{launcher}");
             crate::linfo!("托盘检查更新：{msg}");
             let _ = app.emit(EV_TRAY_ACTION, msg);
         }
@@ -307,6 +360,21 @@ pub fn run_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
     }
 }
 
+/// 托盘里同步地查一次「启动器自己有没有新版本」。
+///
+/// [`crate::selfupdate::check`] 是 async 的（Tauri 的 updater 就是 async）。
+/// 这里在托盘的工作线程上用 `block_on` 等它 —— 这条线程是 `run_action` 自己起的普通线程，
+/// 不是运行时的线程，阻塞它不会死锁。
+fn check_launcher_update_blocking<R: Runtime>(app: &AppHandle<R>) -> String {
+    let u = tauri::async_runtime::block_on(crate::selfupdate::check(app));
+    note_launcher_update(app, u.version.as_deref());
+    match (&u.version, &u.reason) {
+        (Some(v), _) => format!("启动器有新版本 v{v}（当前 v{}）", u.current),
+        (None, Some(r)) => format!("查不到启动器的最新版本：{r}"),
+        (None, None) => format!("启动器已经是最新版 v{}", u.current),
+    }
+}
+
 fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -327,10 +395,15 @@ pub fn refresh_status<R: Runtime>(app: &AppHandle<R>) {
         .find(|s| s.service == "web" && s.state == "running")
         .and_then(|s| s.port)
         .map(|p| format!("http://localhost:{p}"));
+    let pending = launcher_update_pending();
     if let Some(h) = app.try_state::<TrayHandles<R>>() {
         let _ = h.status_item.set_text(format!("状态：{text}"));
         if let Some(tray) = app.tray_by_id(&h.tray_id) {
-            let _ = tray.set_tooltip(Some(tooltip(&text, url.as_deref())));
+            let _ = tray.set_tooltip(Some(tooltip_with_update(
+                &text,
+                url.as_deref(),
+                pending.as_deref(),
+            )));
         }
     }
 }
@@ -459,5 +532,19 @@ mod tests {
             "Hunter 启动器 · 运行中 · 6/6 健康\nhttp://localhost:3101"
         );
         assert_eq!(tooltip("已停止", None), "Hunter 启动器 · 已停止");
+    }
+
+    /// 方案 §10：「有更新时托盘提示」。
+    #[test]
+    fn 启动器有新版本时_tooltip_会说一句() {
+        let t = tooltip_with_update(
+            "运行中 · 6/6 健康",
+            Some("http://localhost:3101"),
+            Some("0.1.1"),
+        );
+        assert!(t.contains("启动器有新版本 v0.1.1"), "{t}");
+        // 没有新版本时不能凭空多一行
+        let t0 = tooltip_with_update("已停止", None, None);
+        assert_eq!(t0, "Hunter 启动器 · 已停止");
     }
 }

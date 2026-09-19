@@ -21,11 +21,16 @@
 //! | [`telemetry`] | §12 | 本地事件队列（默认关、默认不上报） |
 //! | [`feedback`] / [`zip`] | §11.1、§12.3 | 诊断包收集、脱敏自查、导出 zip |
 //! | [`upstream`] | §13 | 从本机 api 读面板要的数字（读不到就 `—`） |
+//! | [`selfupdate`] | §10 | 启动器自更新（Tauri updater + 两个端点 + 签名校验） |
+//! | [`upgrade`] | §5.6、§10 | Hunter 版本检查与升级，失败自动回滚 |
+//! | [`backup`] | §10 | 升级前的 `pg_dump` 与配置备份 |
+//! | [`offline`] | §9 | 离线包导入 / 导出（`docker load` / `save`） |
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub mod autostart;
+pub mod backup;
 pub mod commands;
 pub mod compose;
 pub mod config;
@@ -36,15 +41,18 @@ pub mod gateway;
 pub mod headless;
 pub mod http;
 pub mod log;
+pub mod offline;
 pub mod paths;
 pub mod proc;
 pub mod redact;
 pub mod registry;
 pub mod runtime;
 pub mod secretgen;
+pub mod selfupdate;
 pub mod telemetry;
 pub mod timefmt;
 pub mod tray;
+pub mod upgrade;
 pub mod upstream;
 pub mod zip;
 
@@ -107,7 +115,14 @@ pub fn run() {
         }));
     }
 
+    // updater：桌面三平台才有。端点与公钥在 tauri.conf.json 的 plugins.updater 里
+    #[cfg(all(desktop, not(any(target_os = "android", target_os = "ios"))))]
+    {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
     builder
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(flow::AppState::new())
         .invoke_handler(tauri::generate_handler![
@@ -146,6 +161,17 @@ pub fn run() {
             commands::quit_app,
             commands::missing_endpoints,
             commands::reveal_path,
+            commands::check_launcher_update,
+            commands::install_launcher_update,
+            commands::check_hunter_update,
+            commands::upgrade_hunter,
+            commands::upgrade_status,
+            commands::list_backups,
+            commands::create_backup,
+            commands::restore_backup,
+            commands::pick_offline_tar,
+            commands::import_offline,
+            commands::offline_ready,
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -170,6 +196,11 @@ pub fn run() {
                     }
                 });
             }
+
+            // 自更新：启动时 + 每 24 小时查一次（方案 §10）。
+            // 查到新版本会发 `hunter://launcher-update` 事件并改托盘的 tooltip；
+            // 装不装由用户在界面上决定，**绝不自动装**。
+            crate::selfupdate::spawn_periodic(handle.clone());
 
             // 第一条遥测事件。开关默认关着，这一句在绝大多数机器上什么都不会写。
             {

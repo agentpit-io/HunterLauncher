@@ -35,6 +35,12 @@ pub struct Args {
     /// 用处：网速慢的机器可以先在空闲时间预下载，装的时候就快了；
     /// 也方便在不动现有容器的前提下换源重拉一遍。
     pub pull_only: bool,
+    /// `--upgrade <tag>`：把 Hunter 升到这个版本（方案 §10）
+    pub upgrade_to: Option<String>,
+    /// `--import-images <tar>`：导入离线包（方案 §9）
+    pub import_images: Option<String>,
+    /// `--export-images <tar>`：把本机的六个镜像打成离线包
+    pub export_images: Option<String>,
     pub help: bool,
     pub version: bool,
 }
@@ -50,6 +56,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         action: None,
         yes: false,
         pull_only: false,
+        upgrade_to: None,
+        import_images: None,
+        export_images: None,
         help: false,
         version: false,
     };
@@ -75,9 +84,32 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.pull_only = true;
                 a.headless = true;
             }
+            "--upgrade" => {
+                a.upgrade_to = v.get(i + 1).cloned();
+                a.action = Some("upgrade".into());
+                a.headless = true;
+                i += 1;
+            }
+            "--import-images" => {
+                a.import_images = v.get(i + 1).cloned();
+                a.action = Some("import-images".into());
+                a.headless = true;
+                i += 1;
+            }
+            "--export-images" => {
+                a.export_images = v.get(i + 1).cloned();
+                a.action = Some("export-images".into());
+                a.headless = true;
+                i += 1;
+            }
+            "--check-update" => {
+                a.action = Some("check-update".into());
+                a.headless = true;
+            }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
-            "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose" => {
+            "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
+            | "--backups" => {
                 a.action = Some(v[i].trim_start_matches("--").to_string());
                 a.headless = true;
             }
@@ -107,6 +139,11 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --start | --stop | --restart | --down
   hunter-launcher --logs [服务名]       看容器日志（已脱敏）
   hunter-launcher --diagnose            打印脱敏诊断信息
+  hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
+  hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
+  hunter-launcher --backups             列出 ~/.hunter/backups/ 里的备份
+  hunter-launcher --import-images <tar> 从离线包导入镜像，之后安装不再联网拉
+  hunter-launcher --export-images <tar> 把本机的六个镜像打成离线包
 
 选项
   --key-file <路径>   从文件读 hunter key（文件建议权限 600）。不给就交互式输入
@@ -150,6 +187,11 @@ pub fn run(args: &Args) -> i32 {
         Some("down") => cmd_simple("down"),
         Some("logs") => cmd_logs(args.tag.as_deref()),
         Some("diagnose") => cmd_diagnose(&st),
+        Some("check-update") => cmd_check_update(&st),
+        Some("upgrade") => cmd_upgrade(&st, args),
+        Some("backups") => cmd_backups(),
+        Some("import-images") => cmd_import_images(&st, args),
+        Some("export-images") => cmd_export_images(&st, args),
         _ => cmd_install(&st, args),
     };
     match r {
@@ -541,6 +583,221 @@ fn cmd_diagnose(st: &AppState) -> AppResult<()> {
     Ok(())
 }
 
+// ── M4 的子命令 ───────────────────────────────────────────────────────────
+
+/// `--check-update`：Hunter 与启动器各查一次。
+///
+/// 启动器那一半在 headless 下**只查不装**：装要么要替换 AppImage、要么要 root 装 `.deb`，
+/// 都不是一个没有界面的进程该背着用户做的事。查到了就把下载地址打出来。
+fn cmd_check_update(st: &AppState) -> AppResult<()> {
+    title("检查更新");
+    let cur = st.config().hunter.tag;
+    let c = crate::upgrade::check(&cur, true);
+    println!("Hunter 当前 v{cur}");
+    match (&c.latest, &c.reason) {
+        (Some(t), _) if c.has_update => {
+            println!(
+                "  有新版本 v{t}{}",
+                if c.major_jump {
+                    "（跨大版本）"
+                } else {
+                    ""
+                }
+            );
+            if let Some(d) = &c.published_at {
+                println!("  发布时间 {d}");
+            }
+            if let Some(n) = &c.notes {
+                println!("\n  Release Notes 摘要：");
+                for line in n.lines() {
+                    println!("    {line}");
+                }
+            }
+            if let Some(u) = &c.notes_url {
+                println!("\n  完整说明 {u}");
+            }
+            println!("\n  升级：hunter-launcher --upgrade {t}");
+        }
+        (Some(t), _) => println!("  已经是最新版（最新 v{t}）"),
+        (None, Some(r)) => println!("  查不到：{r}"),
+        (None, None) => println!("  查不到最新版本"),
+    }
+
+    println!("\n启动器当前 v{}", env!("CARGO_PKG_VERSION"));
+    let kind = crate::selfupdate::install_kind();
+    println!("  安装形式 {}", kind.as_str());
+    println!(
+        "  {}",
+        if kind.can_self_install() {
+            "这种形式支持就地自更新（在界面里点「更新」）"
+        } else {
+            "这种形式（.deb 等）换包要 root，启动器只会把新包下到 ~/.hunter/updates/ 再给你一条命令"
+        }
+    );
+    println!(
+        "  Release 页 https://github.com/{}/releases",
+        crate::selfupdate::REPO
+    );
+    Ok(())
+}
+
+/// `--upgrade <tag>`：命令行升级。和界面上点「升级」走的是**同一个** [`crate::upgrade::upgrade`]。
+fn cmd_upgrade(st: &AppState, args: &Args) -> AppResult<()> {
+    let target = args
+        .upgrade_to
+        .clone()
+        .filter(|s| !s.trim().is_empty() && !s.starts_with('-'))
+        .ok_or_else(|| {
+            AppError::new(
+                Code::UpdateFailed,
+                "--upgrade 后面要跟版本号，例如 --upgrade 1.2.0".to_string(),
+            )
+        })?;
+    let from = st.config().hunter.tag.clone();
+    title(&format!("升级 Hunter v{from} → v{target}"));
+
+    if !args.yes && std::io::stdin().is_terminal() {
+        let c = crate::upgrade::check(&from, true);
+        if let Some(n) = &c.notes {
+            println!("Release Notes 摘要：\n{n}\n");
+        }
+        println!(
+            "升级前会自动 pg_dump 到 {}。",
+            paths::backups_dir().display()
+        );
+        print!("继续吗？[y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("已取消，什么都没有改动。");
+            return Ok(());
+        }
+    }
+
+    let tty = std::io::stdout().is_terminal();
+    let mut last_print = Instant::now() - Duration::from_secs(5);
+    let r = crate::upgrade::upgrade(
+        st,
+        &target,
+        |line| println!("  {line}"),
+        |p| {
+            let should = if tty {
+                last_print.elapsed() >= Duration::from_millis(800)
+            } else {
+                last_print.elapsed() >= Duration::from_secs(10)
+            };
+            if !should {
+                return;
+            }
+            last_print = Instant::now();
+            println!(
+                "  {:>3}% {} / {}",
+                p.percent,
+                human_bytes(p.downloaded_bytes),
+                human_bytes(p.total_bytes)
+            );
+        },
+    )?;
+    println!("\n  ✓ {}\n", r.message);
+    Ok(())
+}
+
+/// `--backups`：列一下备份。
+fn cmd_backups() -> AppResult<()> {
+    title("备份");
+    println!("目录 {}", paths::backups_dir().display());
+    for line in crate::backup::summary_lines() {
+        println!("  {line}");
+    }
+    println!("\n恢复某次备份的数据库：");
+    println!("  docker compose -p hunter exec -T postgres psql -U hunter -d hunter < <备份目录>/hunter.sql");
+    Ok(())
+}
+
+/// `--import-images <tar>`：导入离线包（方案 §9）。
+fn cmd_import_images(st: &AppState, args: &Args) -> AppResult<()> {
+    let path = args
+        .import_images
+        .clone()
+        .filter(|s| !s.trim().is_empty() && !s.starts_with('-'))
+        .ok_or_else(|| {
+            AppError::new(
+                Code::PullFailed,
+                "--import-images 后面要跟 tar 文件的路径".to_string(),
+            )
+        })?;
+    title("导入离线镜像包");
+    let r = crate::offline::import(std::path::Path::new(&path), |line| println!("  {line}"))?;
+    if !r.complete {
+        return Err(AppError::new(
+            Code::PullFailed,
+            format!(
+                "这个包不完整，缺 {}。缺的那几个还要联网拉。",
+                r.missing.join("、")
+            ),
+        ));
+    }
+    let mut cfg = st.config();
+    if let Some(p) = &r.registry_prefix {
+        cfg.hunter.registry_prefix = p.clone();
+        cfg.hunter.registry_id = "custom".into();
+        if let Some(c) = crate::registry::CANDIDATES
+            .iter()
+            .find(|c| c.prefix == p.as_str())
+        {
+            cfg.hunter.registry_id = c.id.to_string();
+        }
+    }
+    if let Some(b) = &r.base_prefix {
+        cfg.hunter.base_prefix = b.clone();
+    }
+    if let Some(t) = &r.tag {
+        cfg.hunter.tag = t.clone();
+    }
+    cfg.save()?;
+    st.set_config(cfg.clone());
+    st.offline.store(true, std::sync::atomic::Ordering::SeqCst);
+    println!(
+        "\n  ✓ 六个镜像都在本机了（v{} · 源 {}）。",
+        cfg.hunter.tag, cfg.hunter.registry_prefix
+    );
+    println!("  接着跑 `hunter-launcher --headless --key-file <路径>` 完成安装，这一次不会再联网拉镜像。\n");
+    Ok(())
+}
+
+/// `--export-images <tar>`：打离线包。给有网的那台机器用。
+fn cmd_export_images(st: &AppState, args: &Args) -> AppResult<()> {
+    let path = args
+        .export_images
+        .clone()
+        .filter(|s| !s.trim().is_empty() && !s.starts_with('-'))
+        .ok_or_else(|| {
+            AppError::new(
+                Code::PullFailed,
+                "--export-images 后面要跟输出 tar 的路径".to_string(),
+            )
+        })?;
+    let cfg = st.config();
+    let tag = args.tag.clone().unwrap_or_else(|| cfg.hunter.tag.clone());
+    title(&format!("导出离线镜像包 v{tag}"));
+    let (out, bytes, secs) = crate::offline::export(
+        std::path::Path::new(&path),
+        &cfg.hunter.registry_prefix,
+        &cfg.hunter.base_prefix,
+        &tag,
+        |line| println!("  {line}"),
+    )?;
+    println!(
+        "\n  ✓ {}（{}，用时 {}）",
+        out.display(),
+        human_bytes(bytes),
+        human_secs(secs)
+    );
+    println!("  拷到目标机器上用 `hunter-launcher --import-images <这个文件>` 导入。\n");
+    Ok(())
+}
+
 // ── 打印辅助 ──────────────────────────────────────────────────────────────
 
 fn title(s: &str) {
@@ -657,11 +914,54 @@ mod tests {
             "--key-file",
             "--registry",
             "--status",
+            "--upgrade",
+            "--import-images",
+            "--export-images",
+            "--check-update",
             "HUNTER_HOME",
             "600",
         ] {
             assert!(HELP.contains(k), "帮助里缺 {k}");
         }
+    }
+
+    #[test]
+    fn m4_的四个子命令都能解析出来() {
+        let x = a(&["--upgrade", "1.2.0"]);
+        assert_eq!(x.action.as_deref(), Some("upgrade"));
+        assert_eq!(x.upgrade_to.as_deref(), Some("1.2.0"));
+        assert!(x.headless);
+
+        let y = a(&["--import-images", "/tmp/hunter-images-1.2.0.tar"]);
+        assert_eq!(y.action.as_deref(), Some("import-images"));
+        assert_eq!(
+            y.import_images.as_deref(),
+            Some("/tmp/hunter-images-1.2.0.tar")
+        );
+
+        let z = a(&["--export-images", "/tmp/out.tar", "--tag", "1.1.0"]);
+        assert_eq!(z.action.as_deref(), Some("export-images"));
+        assert_eq!(z.export_images.as_deref(), Some("/tmp/out.tar"));
+        assert_eq!(z.tag.as_deref(), Some("1.1.0"));
+
+        let w = a(&["--check-update"]);
+        assert_eq!(w.action.as_deref(), Some("check-update"));
+        assert!(w.headless);
+
+        let b = a(&["--backups"]);
+        assert_eq!(b.action.as_deref(), Some("backups"));
+    }
+
+    #[test]
+    fn 升级命令少了版本号不会去升一个空版本() {
+        // `--upgrade` 后面什么都不跟，或者跟了另一个开关
+        let x = a(&["--upgrade"]);
+        assert_eq!(x.action.as_deref(), Some("upgrade"));
+        assert!(x.upgrade_to.is_none());
+        let y = a(&["--upgrade", "--yes"]);
+        assert_eq!(y.upgrade_to.as_deref(), Some("--yes"));
+        // cmd_upgrade 里会把以 `-` 开头的值当成没给，这条由那里的 filter 保证
+        assert!(y.upgrade_to.as_deref().unwrap().starts_with('-'));
     }
 
     #[test]

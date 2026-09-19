@@ -13,6 +13,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Settings } from './pages/Settings'
 import { Logs } from './pages/Logs'
 import { Feedback } from './pages/Feedback'
+import { Update } from './pages/Update'
 import { ErrorPage } from './pages/ErrorPage'
 import { pageOf } from './state/machine'
 import { useStore } from './state/context'
@@ -30,7 +31,7 @@ export function App() {
     void ipc
       .onNavigate((page) => {
         setOverlay(
-          page === 'logs' || page === 'feedback' || page === 'settings'
+          page === 'logs' || page === 'feedback' || page === 'settings' || page === 'update'
             ? (page as OverlayName)
             : null,
         )
@@ -146,9 +147,10 @@ function Page() {
   }
 }
 
-function Overlay({ which }: { which: 'settings' | 'logs' | 'feedback' }) {
+function Overlay({ which }: { which: 'settings' | 'logs' | 'feedback' | 'update' }) {
   const { state } = useStore()
   if (which === 'settings') return <Settings />
   if (which === 'logs') return <Logs />
+  if (which === 'update') return <Update />
   return <Feedback errorCode={state.name === 'Error' ? state.code : undefined} />
 }

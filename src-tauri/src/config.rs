@@ -673,6 +673,57 @@ pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Op
     }
 }
 
+/// 国内备用的 compose 地址（`plan/国内镜像与下载源.md` 的目录约定 `/hunter/<tag>/docker-compose.yml`）。
+pub fn cn_compose_url(tag: &str) -> String {
+    format!("{CN_DOWNLOAD_BASE}/hunter/{tag}/docker-compose.yml")
+}
+
+/// 国内下载源前缀。与 GitHub 仓库变量 `CN_DOWNLOAD_BASE` 保持一致。
+pub const CN_DOWNLOAD_BASE: &str = "https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com";
+
+/// **升级专用**的 compose 获取：拿不到就是拿不到，**绝不退回内置副本**。
+///
+/// 和 [`fetch_compose`] 的区别只有这一条，但它很关键：安装时退回内置的 1.2.0 副本是合理的兜底
+/// （用户要的就是"一套能跑的 Hunter"）；而升级时用户点的是**某个具体版本**，
+/// 这时候悄悄换成内置的 1.2.0 就是拿另一件事冒充他要的事 —— 他会以为自己升到了 9.9.9，
+/// 实际跑的是 1.2.0。宁可报错让他知道那个版本取不到（红线 1）。
+///
+/// 两个源按顺序试：raw.githubusercontent（主）→ COS 香港（国内备用）。
+pub fn fetch_compose_strict(tag: &str, timeout: Duration) -> AppResult<(String, String)> {
+    let urls = [
+        format!(
+            "https://raw.githubusercontent.com/agentpit-io/hunter-community/v{tag}/docker-compose.yml"
+        ),
+        cn_compose_url(tag),
+    ];
+    let mut why: Vec<String> = Vec::new();
+    for url in urls {
+        let host = crate::http::host_of(&url);
+        match crate::http::get(&url, &[], timeout) {
+            Ok(r) if r.ok() => match validate_compose(&r.body) {
+                Ok(()) => {
+                    let body = r.body.replace("\r\n", "\n");
+                    crate::linfo!(
+                        "升级：已从 {host} 取到 v{tag} 的 compose（{} 字节）",
+                        body.len()
+                    );
+                    return Ok((body, host));
+                }
+                Err(e) => why.push(format!("{host} 返回的内容不合格（{}）", e.msg)),
+            },
+            Ok(r) => why.push(format!("{host} HTTP {}", r.status)),
+            Err(e) => why.push(format!("{host} {}", e.msg)),
+        }
+    }
+    Err(AppError::new(
+        Code::ComposeFetch,
+        format!(
+            "取不到 v{tag} 的 docker-compose.yml：{}。这个版本可能不存在。",
+            why.join("；")
+        ),
+    ))
+}
+
 /// 校验下载回来的 compose 是不是真的那个文件。
 /// 不做完整 YAML 解析 —— `docker compose config` 稍后会替我们做，而且做得更彻底。
 /// 这里拦的是「拿回来一个登录页 / 404 页 / 空文件」这类明显不对的东西。

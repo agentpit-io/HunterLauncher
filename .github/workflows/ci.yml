@@ -150,14 +150,22 @@ jobs:
   cross:
     name: 跨平台编译 · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            rust_targets: ''
+          - os: macos-latest
+            # universal 要两个 target 都在，release.yml 打包时用的就是它们 ——
+            # 在 CI 里就把 target 装齐，别等到发版那天才发现少一个
+            rust_targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -175,3 +183,9 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
       - name: cargo test（三平台共用的纯逻辑部分在这里也要过）
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      # M4 起 PR 上也真编一次 release 二进制。
+      # `cargo check` 编不出 `custom-protocol` 那条路径，而正是那条路径出过问题
+      # （M1 §9：不带这个特性的产物会去连 devUrl，表现为白屏）。
+      # 这里只编不打包（--no-bundle）：真打包在 release.yml 里，PR 上没必要等那十几分钟。
+      - name: tauri build --no-bundle（真编一次发布二进制）
+        run: pnpm exec tauri build --no-bundle

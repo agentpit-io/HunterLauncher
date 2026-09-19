@@ -4,6 +4,7 @@ import { Card } from '../components/Card'
 import { EnvList } from '../components/EnvList'
 import { Field, SegmentedControl, TextInput, Toggle } from '../components/Field'
 import { Modal } from '../components/Modal'
+import { OfflineImport } from '../components/OfflineImport'
 import { PlainLayout } from '../components/WizardLayout'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
@@ -135,7 +136,7 @@ export function Settings() {
               <li key={h}>{h}</li>
             ))}
           </ul>
-          <div className="mt-[16px] flex gap-[10px]">
+          <div className="mt-[16px] flex flex-wrap gap-[10px]">
             <Button size="sm" data-testid="view-queue" onClick={() => setShowQueue(true)}>
               {t.settings.viewQueue}
             </Button>
@@ -161,6 +162,13 @@ export function Settings() {
                 { label: t.settings.licenses, value: 'Noto Sans SC · JetBrains Mono · SIL OFL 1.1' },
               ]}
             />
+          </div>
+          {/* 更新与备份都在更新页里（方案 §10）。这里只留一个入口，不把两套界面抄两遍 */}
+          <div className="mt-[16px] flex flex-wrap gap-[10px]">
+            <Button size="sm" data-testid="settings-update" onClick={() => setOverlay('update')}>
+              {t.update.hunterCheck}
+            </Button>
+            <OfflineImport variant="button" />
           </div>
         </Card>
       </div>
