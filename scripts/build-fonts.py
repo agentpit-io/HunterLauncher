@@ -90,8 +90,26 @@ def collect_chars() -> str:
         paths += [os.path.join(dirpath, f) for f in files if f.endswith(".rs")]
     for path in paths:
         with open(path, encoding="utf-8") as f:
-            chars |= set(CJK_RE.findall(f.read()))
+            text = f.read()
+        if path.endswith(".rs"):
+            text = strip_rust_comments(text)
+        chars |= set(CJK_RE.findall(text))
     return "".join(sorted(chars))
+
+
+LINE_COMMENT_RE = re.compile(r"^[ \t]*//.*$", re.MULTILINE)
+BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def strip_rust_comments(text: str) -> str:
+    """去掉**整行**注释与块注释，保留代码（含行尾注释）。
+
+    只去整行的，是因为这样绝不会误伤字符串字面量：一行如果以 `//` 开头，
+    它就不可能同时是某个字符串的一部分（跨行字符串的续行不会以 `//` 开头）。
+    想把行尾注释也去掉就得判断 `//` 在不在引号里，那等于写半个 Rust 词法分析器
+    —— 不值得，留着只是多几个字形。
+    """
+    return LINE_COMMENT_RE.sub("", BLOCK_COMMENT_RE.sub("", text))
 
 
 def download(url: str, dest: str) -> str:

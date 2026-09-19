@@ -38,7 +38,8 @@ jobs:
         run: pnpm lint
       - name: 类型检查
         run: pnpm typecheck
-      - name: 字体子集覆盖了所有中文（加了新文案却忘了重新生成子集 = 界面上多一个豆腐块）
+      - name: 字体子集覆盖了所有会上屏的中文（忘了重新生成 = 界面上多一个豆腐块）
+        # 只盯「能显示出来的字」：前端全文 + Rust 的字符串字面量。改注释不会触发。
         run: python3 scripts/check-fonts.py
       - name: 单元测试
         run: pnpm test

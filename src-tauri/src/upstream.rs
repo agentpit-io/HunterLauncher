@@ -98,8 +98,13 @@ pub fn fetch(api_port: u16, timeout: Duration) -> UpstreamFacts {
         }
     }
 
-    // `/api/setup/status`：从本机过来会被判成本机/内网来源而放行（实测 via=local）。
-    // 被 401 挡住也不算错 —— 那说明用户给 api 配了 setup 口令，如实写原因。
+    // `/api/setup/status` 的放行规则（上游 `routers/setup.py::_guard`）是
+    // 「**setup 口令没配置** 且 来源判为本机/内网」。启动器写 `.env` 时把
+    // `HUNTER_SETUP_TOKEN` 留空（M0 §3.3 的结论：不照抄 `.env.example` 里那个公开值），
+    // 所以默认情况下这条走得通 —— 实测 `via: "local"`。
+    //
+    // 但用户**手工给 `.env` 填了 setup 口令**时这里就会 401。那不是错误，
+    // 是他自己把这道门锁上了：如实把原因写进 `reason`，界面显示「—」。
     match crate::http::get(
         &format!("http://127.0.0.1:{api_port}/api/setup/status"),
         &[],
