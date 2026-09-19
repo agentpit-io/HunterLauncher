@@ -21,15 +21,15 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 已停用的国内源地址不许再出现在仓库里
         # 国内源 2026-09-19 从腾讯云广州区改到香港区，广州区的仓库与桶都已删除。
         # 名单与豁免规则都在脚本里（写在这里的话，这份 yml 自己就会被判违规）。
         run: ./scripts/check-retired-mirrors.sh
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -60,7 +60,7 @@ jobs:
           grep -rl "HUNTER_DEMO_DATA_MARKER" dist-demo/ >/dev/null
           echo "OK：演示构建里有标记，说明上一步的检查不是空跑"
           rm -rf dist-demo
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: dist/
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 安装 Linux 系统依赖
         run: |
           sudo apt-get update
@@ -93,10 +93,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -114,7 +114,13 @@ jobs:
       - name: tauri build（打 .deb 与 .AppImage）
         # M3 起 CI 真打 Linux 安装包：本地能装不等于干净机器能装，
         # 让 CI 每次都把这两个包产出来，出问题当天就知道。
-        run: pnpm exec tauri build --bundles deb,appimage
+        #
+        # `createUpdaterArtifacts` 在这里关掉：配置里它是开的（发布时要出 .sig），
+        # 而签名要 TAURI_SIGNING_PRIVATE_KEY —— CI 不该、fork 的 PR 也拿不到那个 secret。
+        # CI 这一步要验的是「能不能打出装得上的包」，签名留给 release.yml。
+        run: >
+          pnpm exec tauri build --bundles deb,appimage
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - name: 产物改成不带空格的文件名
         # Tauri 用 productName（"Hunter Launcher"）当文件名，带一个空格。
         # 装包能装，但下载地址里会变成 %20，命令行里每次都要加引号 —— 统一改掉。
@@ -138,7 +144,7 @@ jobs:
           dpkg-deb --field src-tauri/target/release/bundle/deb/*.deb Depends \
             | grep -q libayatana-appindicator3-1
           echo "OK：deb 依赖里有 libayatana-appindicator3-1"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-installers
           path: |
@@ -162,17 +168,17 @@ jobs:
             # 在 CI 里就把 target 装齐，别等到发版那天才发现少一个
             rust_targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_targets }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm

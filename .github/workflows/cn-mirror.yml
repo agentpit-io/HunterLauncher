@@ -46,7 +46,7 @@ jobs:
       COS_BUCKET: ${{ vars.COS_BUCKET }}
       COS_REGION: ${{ vars.COS_REGION }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: 没配凭据就跳过（fork 上属于正常情况）
         id: gate
