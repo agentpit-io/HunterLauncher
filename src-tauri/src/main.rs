@@ -23,11 +23,41 @@ fn main() {
     let tray_cmd = hunter_launcher_lib::tray_menu_arg(&args);
     let minimized = hunter_launcher_lib::minimized_arg(&args);
 
+    // 没有图形环境就别去 build 一个 GUI：tao 会在 GTK 初始化那一步 panic，
+    // 用户看到的是一段 Rust backtrace 加一个 core dump（I1 在测试机上实测，退出码 134）。
+    // 这条路真实存在 —— `--tray-menu` 在模块注释里就是写给 SSH 用户的遥控口，
+    // 而 SSH 会话默认没有 DISPLAY。
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if !has_display() {
+        eprintln!("这台机器上没有图形环境（DISPLAY 与 WAYLAND_DISPLAY 都是空的），开不了界面。");
+        if tray_cmd.is_some() {
+            eprintln!(
+                "`--tray-menu` 要有一个正在跑的界面实例才有意义。没有界面的机器请直接用命令行："
+            );
+        } else {
+            eprintln!("命令行模式可以完成同样的事：");
+        }
+        eprintln!("  hunter-launcher --headless    安装 / 继续安装");
+        eprintln!("  hunter-launcher --status      看状态");
+        eprintln!("  hunter-launcher --start | --stop | --restart | --down");
+        eprintln!("  hunter-launcher --logs [服务名] | --diagnose | --help");
+        std::process::exit(2);
+    }
+
     if !args.is_empty() && tray_cmd.is_none() && !minimized {
         // 有参数但不是我们认得的：提示一下再照常开界面，别让用户以为程序坏了
         eprintln!("没认出这些参数：{}。用 --help 看用法。", args.join(" "));
     }
     hunter_launcher_lib::run()
+}
+
+/// 这台机器有没有图形环境。X11 看 `DISPLAY`，Wayland 看 `WAYLAND_DISPLAY`，
+/// 两个都空就是没有。macOS 不看（它的窗口系统不靠环境变量），Windows 同理。
+#[cfg(all(unix, not(target_os = "macos")))]
+fn has_display() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
 }
 
 #[cfg(windows)]
