@@ -334,7 +334,15 @@ pub fn refresh_status<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// 后台每 5 秒刷一次状态（方案 §5.8「状态随服务变化」）。
+/// 托盘状态的轮询间隔。
+///
+/// 每次刷新是一个 `docker compose ps` 子进程：测试机上实测 **0.17 秒墙钟、约 60% 单核**
+/// （≈0.1 CPU 秒）。5 秒一次就是持续占掉一个核的 2%，对一个常驻托盘的程序来说太多了；
+/// 运行面板自己还会每 10 秒刷一次。15 秒对「托盘上那行状态字」足够新鲜，
+/// 只开着托盘时的开销降到约 0.7%。
+const POLL_INTERVAL: Duration = Duration::from_secs(15);
+
+/// 后台定期刷新状态（方案 §5.8「状态随服务变化」）。
 fn spawn_status_poller<R: Runtime>(app: AppHandle<R>) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
     if RUNNING.swap(true, Ordering::SeqCst) {
@@ -344,7 +352,7 @@ fn spawn_status_poller<R: Runtime>(app: AppHandle<R>) {
     std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
             refresh_status(&app);
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(POLL_INTERVAL);
         }
     });
 }
