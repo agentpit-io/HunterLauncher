@@ -179,19 +179,22 @@ jobs:
           elif [ "$RUNNER_OS" = "Windows" ]; then
             # NSIS 吃得下 `0.1.0-rc.1`；**MSI 吃不下** —— WiX 只认「纯数字」的预发布段，
             # `-rc.1` 会直接报 `optional pre-release identifier ... must be numeric-only`
-            # （rc.1 第一次跑就是这么挂的）。所以分两次打：
-            #   · NSIS 用真实版本号；
-            #   · MSI 用 `bundle.windows.wix.version` 覆盖成去掉预发布后缀的数字版本。
-            # 代价是两个 rc 的 MSI ProductVersion 会一样，Windows 认不出「更新」——
-            # 对预发布可以接受（Windows 上推荐的是 NSIS），正式版没有后缀不受影响。
-            # 第二次只是重新打包，二进制已经编好了，很快。
-            pnpm exec tauri build --bundles nsis
+            # （rc.1 第一次跑就是这么挂的）。
+            #
+            # `bundle.windows.wix.version` 只覆盖 **MSI** 的 ProductVersion，不碰 NSIS，
+            # 所以一次构建就能同时出两个包 —— 不用像最初那样分两次打（那会让 Windows 这个 job
+            # 多花十几分钟，因为改了 --config 会让 cargo 重新编一遍）。
+            #
+            # 代价：两个 rc 的 MSI ProductVersion 会一样，Windows 认不出「更新」。
+            # 对预发布可以接受（Windows 上推荐的是 NSIS），正式版没有后缀、走的是下面的 else 分支。
             WIX_V="${V%%-*}"
             if [ "$WIX_V" != "$V" ]; then
-              echo "::notice::MSI 的版本号从 $V 降成 $WIX_V（WiX 不接受非数字的预发布后缀）"
+              echo "::notice::MSI 的版本号从 $V 降成 $WIX_V（WiX 不接受非数字的预发布后缀）；NSIS 仍是 $V"
+              pnpm exec tauri build --bundles ${{ matrix.bundles }} \
+                --config "{\"bundle\":{\"windows\":{\"wix\":{\"version\":\"$WIX_V\"}}}}"
+            else
+              pnpm exec tauri build --bundles ${{ matrix.bundles }}
             fi
-            pnpm exec tauri build --bundles msi \
-              --config "{\"bundle\":{\"windows\":{\"wix\":{\"version\":\"$WIX_V\"}}}}"
           else
             pnpm exec tauri build --bundles ${{ matrix.bundles }}
           fi
