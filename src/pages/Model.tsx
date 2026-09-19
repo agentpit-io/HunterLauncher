@@ -81,6 +81,12 @@ export function Model() {
   )
 }
 
+/**
+ * 可选中的大卡片。
+ * 这里**不能**用 <button>：WebKit 会把 button 的内容盒在垂直方向居中，
+ * 卡片被网格拉高之后文字就跑到中间去了（M1 截图对照时发现的）。
+ * 改成带 role/tabIndex 的 div，键盘可达性自己补齐。
+ */
 function Choice({
   selected,
   onSelect,
@@ -91,14 +97,22 @@ function Choice({
   children: React.ReactNode
 }) {
   return (
-    <button
-      type="button"
+    <div
+      role="radio"
+      tabIndex={0}
+      aria-checked={selected}
       onClick={onSelect}
-      className={`block rounded-lg border bg-card p-card text-left transition-colors duration-150 ${
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
+      className={`cursor-pointer rounded-lg border bg-card p-card text-left transition-colors duration-150 ${
         selected ? 'border-amber/60' : 'border-line hover:border-line-strong'
       }`}
     >
       {children}
-    </button>
+    </div>
   )
 }
