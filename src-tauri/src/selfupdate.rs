@@ -525,7 +525,11 @@ pub fn verify(bytes: &[u8], sig: &str) -> AppResult<()> {
     };
     let signature = minisign_verify::Signature::decode(sig_text.trim())
         .map_err(|e| AppError::new(Code::UpdateFailed, format!("签名格式不对：{e}")))?;
-    pk.verify(bytes, &signature, false).map_err(|e| {
+    // 第三个参数是 `allow_legacy`。minisign 有两种签名：预哈希的（`-H`）与传统的。
+    // Tauri 的签名工具用哪一种取决于它的版本，这里两种都收 ——
+    // 「传统」指的只是先不做 BLAKE2b 预哈希，签的仍然是同一份内容、同一套 Ed25519，
+    // 收它不降低安全性；而只收一种的话，换个 Tauri 版本就会莫名其妙「验不过」。
+    pk.verify(bytes, &signature, true).map_err(|e| {
         AppError::new(
             Code::UpdateFailed,
             format!("签名验不过，这个包不装：{e}。要么下载被人动过，要么它不是我们发的。"),
