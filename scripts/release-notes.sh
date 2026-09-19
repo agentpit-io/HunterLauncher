@@ -71,7 +71,7 @@ Windows 代码签名证书（100–500 美元/年）与 Apple 开发者账号（
 * **Windows**：SmartScreen 会拦一下。点「更多信息」→「仍要运行」。
 * **macOS**：会说「无法打开，因为它来自身份不明的开发者」或「已损坏」。
   右键点 .app →「打开」→ 再点一次「打开」；仍然不行就在终端里跑
-  \`xattr -dr com.apple.quarantine /Applications/hunter-launcher.app\`。
+  \`xattr -dr com.apple.quarantine "/Applications/Hunter Launcher.app"\`（路径里有空格，引号别漏）。
 * **Linux**：不受影响，deb / AppImage 本来就不强制签名。
 
 因此这个 Release 标为 **prerelease（预发布）**。要不要买证书、转正式版由用户决定。

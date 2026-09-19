@@ -127,7 +127,8 @@ macOS 15 (Sequoia) 起右键打开那条路被收紧了，只剩第 2 条。
 不是文件真的坏了），在终端里跑一次：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/hunter-launcher.app
+# 注意路径里有空格：.app 的名字来自 productName（"Hunter Launcher"）
+xattr -dr com.apple.quarantine "/Applications/Hunter Launcher.app"
 ```
 
 #### 自更新是验签的
