@@ -398,12 +398,14 @@ mod tests {
     fn 候选源里不许出现已停用的广州区地址() {
         // 注意「广州区是 `ccr.`，香港区是 `hkccr.`」—— 前者是后者的后缀，
         // 用 `contains` 判会把正确的香港地址也误判成停用地址。所以这里按**主机名整体**比。
+        // 下面三行带 `retired-mirror-ok` 标记：scripts/check-retired-mirrors.sh 会跳过它们。
+        // 守卫自己必须把违规字符串原样写出来，否则没法比。
         const RETIRED_HOSTS: [&str; 2] = [
-            "ccr.ccs.tencentyun.com",            // 广州区镜像仓库（已删除）
-            "registry.cn-hangzhou.aliyuncs.com", // 方案里那个实测不存在的阿里云 ACR
+            "ccr.ccs.tencentyun.com", // 广州区镜像仓库（已删除）· retired-mirror-ok
+            "registry.cn-hangzhou.aliyuncs.com", // 方案里那个实测不存在的阿里云 ACR · retired-mirror-ok
         ];
         const RETIRED_SUBSTRINGS: [&str; 1] = [
-            "hunter-dl-1253756459", // 广州区下载桶（已删除，香港桶是 hunter-dl-hk-…）
+            "hunter-dl-1253756459", // 广州区下载桶（已删除，香港桶是 hunter-dl-hk-…）· retired-mirror-ok
         ];
         for c in CANDIDATES {
             for h in RETIRED_HOSTS {

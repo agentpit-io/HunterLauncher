@@ -23,21 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 已停用的国内源地址不许再出现在仓库里
-        # 国内源 2026-09-19 从腾讯云广州区改到香港区，广州区的仓库与桶都已删除
-        # （plan/国内镜像与下载源.md）。地址写错不会报错，只会让国内用户永远拉不到镜像 ——
-        # 所以用一条 grep 把它钉死。允许出现的地方只有成果文档里「已停用」那几句说明。
-        run: |
-          set -e
-          BAD='ccr\.ccs\.tencentyun\.com|hunter-dl-1253756459|registry\.cn-hangzhou\.aliyuncs\.com'
-          # hkccr.ccs.tencentyun.com 是香港区的正确地址，要先排除掉再找裸的 ccr.
-          if grep -rInE "$BAD" --include='*.rs' --include='*.ts' --include='*.tsx' \
-               --include='*.yml' --include='*.yaml' --include='*.json' --include='*.sh' \
-               --exclude-dir=node_modules --exclude-dir=target . \
-             | grep -v 'hkccr\.ccs\.tencentyun\.com' ; then
-            echo "::error::代码里出现了已停用的广州区 / 阿里云地址，见 plan/国内镜像与下载源.md"
-            exit 1
-          fi
-          echo "OK：代码里没有已停用的国内源地址"
+        # 国内源 2026-09-19 从腾讯云广州区改到香港区，广州区的仓库与桶都已删除。
+        # 名单与豁免规则都在脚本里（写在这里的话，这份 yml 自己就会被判违规）。
+        run: ./scripts/check-retired-mirrors.sh
       - uses: pnpm/action-setup@v4
         with:
           version: 10
