@@ -9,6 +9,8 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** 右侧图标，例如「下一步 ›」的箭头 */
   trailing?: ReactNode
   leading?: ReactNode
+  /** 自动化测试用的锚点。Xvfb 下点按钮靠它定位，比按文字找稳 */
+  'data-testid'?: string
 }
 
 const VARIANT: Record<Variant, string> = {

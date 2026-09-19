@@ -16,14 +16,19 @@ import { IpcError } from './types'
 import type {
   AppInfo,
   BootState,
+  DiagSection,
   DockerInfo,
+  ExportResult,
+  FeedbackForm,
   KeyCheckResult,
   LauncherSettings,
+  MissingEndpoint,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
   ServiceStatus,
+  TelemetryView,
 } from './types'
 import * as demo from './demo'
 
@@ -203,11 +208,96 @@ export async function diagnostics(): Promise<string> {
   return call<string>('diagnostics')
 }
 
+/** 开机自启。返回**系统里真实的**状态，不是用户点的那个值。 */
+export async function setAutostart(on: boolean): Promise<boolean> {
+  if (DEMO) return on
+  return call<boolean>('set_autostart', { on })
+}
+
+/**
+ * 切换模型模式。Rust 侧会先做连通性检查，通过之后重写 .env 并重建
+ * api / opencode / llm-shim 三个容器，再等它们健康。**这一步要几十秒。**
+ */
+export async function switchModel(choice: ModelChoice): Promise<string> {
+  if (DEMO) return '演示模式不真的切换模型'
+  return call<string>('switch_model', { choice })
+}
+
+// ── 遥测（本地队列，默认不上报） ─────────────────────────────────────────
+
+export async function telemetryView(): Promise<TelemetryView> {
+  if (DEMO) return demo.demoTelemetry
+  return call<TelemetryView>('telemetry_view')
+}
+
+export async function telemetryClear(): Promise<string> {
+  if (DEMO) return '演示模式不真的清空'
+  return call<string>('telemetry_clear')
+}
+
+// ── 反馈与诊断包 ─────────────────────────────────────────────────────────
+
+export async function diagnosticsSections(): Promise<DiagSection[]> {
+  if (DEMO) return demo.demoDiagSections
+  return call<DiagSection[]>('diagnostics_sections')
+}
+
+/** 导出 zip 到 ~/.hunter/diagnostics/。**不上传任何东西。** */
+export async function exportDiagnostics(
+  include: string[],
+  form: FeedbackForm,
+): Promise<ExportResult> {
+  if (DEMO) return { path: '演示模式不真的导出', bytes: 0 }
+  return call<ExportResult>('export_diagnostics', { include, form })
+}
+
+export async function feedbackIssueUrl(form: FeedbackForm): Promise<string> {
+  if (DEMO) return 'https://github.com/agentpit-io/HunterLauncher/issues/new'
+  return call<string>('feedback_issue_url', { form })
+}
+
+export async function exportLogs(
+  source: 'launcher' | 'compose',
+  service: string | undefined,
+  tail: number,
+): Promise<ExportResult> {
+  if (DEMO) return { path: '演示模式不真的导出', bytes: 0 }
+  return call<ExportResult>('export_logs', { source, service: service ?? null, tail })
+}
+
+/** 在文件管理器里定位导出的文件。只放行 ~/.hunter 里的路径。 */
+export async function revealPath(path: string): Promise<void> {
+  if (DEMO) return
+  await call<void>('reveal_path', { path })
+}
+
+// ── 托盘与退出 ───────────────────────────────────────────────────────────
+
+/** 触发一次托盘菜单动作，走的是和真点菜单完全相同的分支。 */
+export async function trayInvoke(id: string): Promise<void> {
+  if (DEMO) return
+  await call<void>('tray_invoke', { id })
+}
+
+/** 退出。stopContainers=true 时先把容器停掉再退（方案 §5.8 的两条分支）。 */
+export async function quitApp(stopContainers: boolean): Promise<void> {
+  if (DEMO) return
+  await call<void>('quit_app', { stopContainers })
+}
+
+export async function missingEndpoints(): Promise<MissingEndpoint[]> {
+  if (DEMO) return demo.demoMissing
+  return call<MissingEndpoint[]>('missing_endpoints')
+}
+
 // ── 事件 ─────────────────────────────────────────────────────────────────
 
 const EV_PULL = 'hunter://pull'
 const EV_START = 'hunter://start'
 const EV_LOG = 'hunter://log'
+const EV_NAVIGATE = 'hunter://navigate'
+const EV_QUIT_REQUEST = 'hunter://quit-request'
+const EV_TRAY_ACTION = 'hunter://tray-action'
 
 async function on<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   if (DEMO) return () => {}
@@ -225,4 +315,19 @@ export function onStartProgress(cb: (s: ServiceStatus[]) => void): Promise<Unlis
 /** 准备阶段（选源 / 取 compose / 写配置）的逐行文字，拉取页底部的日志框显示它。 */
 export function onLogLine(cb: (line: string) => void): Promise<UnlistenFn> {
   return on<string>(EV_LOG, cb)
+}
+
+/** 托盘让界面跳到某一页（logs / feedback / settings / dashboard）。 */
+export function onNavigate(cb: (page: string) => void): Promise<UnlistenFn> {
+  return on<string>(EV_NAVIGATE, cb)
+}
+
+/** 请求退出：容器还在跑，要问「保持后台运行 / 一起停止」（方案 §5.8）。 */
+export function onQuitRequest(cb: () => void): Promise<UnlistenFn> {
+  return on<boolean>(EV_QUIT_REQUEST, () => cb())
+}
+
+/** 托盘操作的结果，运行面板拿去显示一行提示。 */
+export function onTrayAction(cb: (msg: string) => void): Promise<UnlistenFn> {
+  return on<string>(EV_TRAY_ACTION, cb)
 }

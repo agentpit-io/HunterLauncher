@@ -73,11 +73,23 @@ export function TextArea({
 }
 
 /** 开关。视觉稿里没有，按同一套令牌延展：关=灰蓝轨道，开=琥珀金轨道。 */
-export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
+export function Toggle({
+  on,
+  onChange,
+  label,
+  testId,
+}: {
+  on: boolean
+  onChange: (v: boolean) => void
+  label?: string
+  /** Xvfb 下点开关靠它定位 */
+  testId?: string
+}) {
   return (
     <button
       type="button"
       role="switch"
+      data-testid={testId}
       aria-checked={on}
       aria-label={label}
       onClick={() => onChange(!on)}
@@ -95,10 +107,13 @@ export function SegmentedControl<T extends string>({
   value,
   options,
   onChange,
+  testIdPrefix,
 }: {
   value: T
   options: { id: T; label: ReactNode }[]
   onChange: (v: T) => void
+  /** 给自动化测试用：每个选项拿到 `<prefix>-<id>` 这个锚点 */
+  testIdPrefix?: string
 }) {
   return (
     <div className="inline-flex gap-2">
@@ -106,6 +121,7 @@ export function SegmentedControl<T extends string>({
         <button
           key={o.id}
           type="button"
+          data-testid={testIdPrefix ? `${testIdPrefix}-${o.id}` : undefined}
           onClick={() => onChange(o.id)}
           className={`h-[34px] rounded-md border px-4 text-md transition-colors duration-150 ${
             value === o.id

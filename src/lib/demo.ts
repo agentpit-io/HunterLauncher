@@ -17,14 +17,17 @@
 import type {
   AppInfo,
   BootState,
+  DiagSection,
   DockerInfo,
   ImagePull,
   KeyCheckResult,
   LauncherSettings,
+  MissingEndpoint,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
+  TelemetryView,
 } from './types'
 
 /** 构建产物里能被 grep 到的标记，CI 用它确认发布包里没有演示数据。 */
@@ -208,6 +211,23 @@ export const demoRuntime: RuntimeStatus = {
     { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
     { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
   ],
+  upstream: {
+    reachable: true,
+    apiKeyConfigured: true,
+    llmSource: 'env',
+    llmModel: 'hunter-chat',
+    builtinQuota: true,
+    dataSupplyConfigured: true,
+    reason: null,
+  },
+  dataSource: 'Hunter 网关',
+  dataSourceSub: '平台数据供给已配置 · 自有数据源个数需登录后才能读',
+  missing: [
+    { id: 'conversations', endpoint: 'GET /api/system/metrics/daily（今日对话数、深度分析次数）' },
+    { id: 'morning_brief', endpoint: 'GET /api/system/metrics/daily（晨报开关与推送时间）' },
+    { id: 'user_sources', endpoint: 'GET /api/user_sources 的免登录只读计数' },
+    { id: 'last_tool_call', endpoint: 'GET /api/system/last-tool-call' },
+  ],
   env: [
     { key: 'model', value: '网关 · hunter-chat' },
     { key: 'docker', value: 'Docker Engine 29.8.1 · x86_64' },
@@ -243,7 +263,78 @@ export const demoSettings: LauncherSettings = {
   hunterTag: DEMO_HUNTER_TAG,
   workDir: '~/.hunter',
   telemetry: false,
+  // 空字符串 = 暂未开启上报。演示模式下也**不能**编一个端点出来 ——
+  // 那等于在界面上承诺一个不存在的服务（红线 1）。
+  telemetryEndpoint: '',
+  modelMode: 'gateway',
+  modelBaseUrl: 'https://hunter.agentpit.io/api/saas/llm/v1',
+  modelName: 'hunter-chat',
+  registryPrefix: DEMO_REGISTRY,
 }
+
+/** 遥测队列的演示内容。开关关着时真实队列是空的，这里演示的是「开了之后长什么样」。 */
+export const demoTelemetry: TelemetryView = {
+  enabled: false,
+  endpoint: '',
+  queuePath: '~/.hunter/telemetry/queue.jsonl',
+  lines: [
+    '{"ts":"2026-09-20 09:12:03","install_id":"11111111-2222-4333-8444-555555555555","event":"launcher_start","version":"0.1.0","os":"linux","arch":"x86_64","locale":"zh-CN"}',
+    '{"ts":"2026-09-20 09:12:04","install_id":"11111111-2222-4333-8444-555555555555","event":"docker_detected","runtime":"DockerEngine","version":"29.8.1","ok":true}',
+  ],
+  events: [
+    'launcher_start',
+    'docker_detected',
+    'setup_step',
+    'pull_done',
+    'hunter_started',
+    'error',
+    'update',
+  ],
+}
+
+export const demoMissing: MissingEndpoint[] = demoRuntime.missing
+
+/** 反馈页的诊断分节演示。真实内容来自 Rust 侧的 feedback::collect。 */
+export const demoDiagSections: DiagSection[] = [
+  {
+    id: 'summary',
+    title: '概要',
+    body:
+      '时间: 2026-09-20 09:12:03\n启动器: 0.1.0\n系统: linux x86_64\n' +
+      'Docker: DockerEngine · server 29.8.1 · compose v5.5.1\n' +
+      'Hunter tag: 1.2.0\n镜像源: ghcr (ghcr.io/agentpit-io)\n' +
+      '端口: web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480\n' +
+      '模型: gateway · hunter-chat\n遥测: 关 · 上报端点: （无 · 暂未开启上报）\n',
+    defaultOn: true,
+    note: null,
+  },
+  {
+    id: 'ps',
+    title: 'docker compose ps',
+    body:
+      'web        running    健康     端口 3101\napi        running    健康     端口 8101\n' +
+      'opencode   running    健康     端口 3922\nllm-shim   running    健康     端口 内部\n' +
+      'postgres   running    健康     端口 5443\nredis      running    健康     端口 6480\n',
+    defaultOn: true,
+    note: null,
+  },
+  {
+    id: 'env',
+    title: '.env（只保留白名单四项，其余的值一律移除）',
+    body:
+      'DATA_SOURCE_PROVIDER=hunter\nHUNTER_API_KEY=<已移除>\nJWT_SECRET=<已移除>\n' +
+      'LLM_BASE_URL=hunter.agentpit.io\nLLM_DEFAULT_MODEL=hunter-chat\nPOSTGRES_PASSWORD=<已移除>\n',
+    defaultOn: true,
+    note: null,
+  },
+  {
+    id: 'last-tool-call',
+    title: '最近一次工具调用摘要',
+    body: '',
+    defaultOn: false,
+    note: '上游 api 没有 /api/system/last-tool-call（方案 §13 列了，实测不存在）。',
+  },
+]
 
 export const demoLauncherLog: string[] = [
   '2026-09-19 17:45:12  INFO   launcher  状态 Starting → Done',

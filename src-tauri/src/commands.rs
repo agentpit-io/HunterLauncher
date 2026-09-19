@@ -79,6 +79,11 @@ pub fn window_close(app: tauri::AppHandle) -> Result<()> {
 /// 用系统默认浏览器打开链接。只放行 https 与本机 http，防止被当成任意程序启动器。
 #[tauri::command]
 pub fn open_external(app: tauri::AppHandle, url: String) -> Result<()> {
+    open_url_checked(&app, &url)
+}
+
+/// 同一道校验的非 command 版本，托盘那边也走它。
+pub fn open_url_checked<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) -> Result<()> {
     let allowed = url.starts_with("https://")
         || url.starts_with("http://localhost")
         || url.starts_with("http://127.0.0.1");
@@ -87,6 +92,29 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<()> {
     }
     app.opener()
         .open_url(url, None::<&str>)
+        .map_err(|e| format!("E_UNKNOWN: {e}"))
+}
+
+/// 在系统文件管理器里定位一个文件（导出诊断包 / 日志之后用）。
+/// **只放行 `~/.hunter` 里的路径** —— 这个接口能让网页指使系统打开任意文件，得管住。
+#[tauri::command]
+pub fn reveal_path(app: tauri::AppHandle, path: String) -> Result<()> {
+    let p = std::path::PathBuf::from(&path);
+    let root = crate::paths::root();
+    let inside = p
+        .canonicalize()
+        .ok()
+        .zip(root.canonicalize().ok())
+        .map(|(a, b)| a.starts_with(b))
+        .unwrap_or(false);
+    if !inside {
+        return Err(format!(
+            "E_UNKNOWN: 只允许定位 {} 里的文件：{path}",
+            root.display()
+        ));
+    }
+    app.opener()
+        .reveal_item_in_dir(&p)
         .map_err(|e| format!("E_UNKNOWN: {e}"))
 }
 
@@ -120,8 +148,8 @@ pub async fn boot_state(app: tauri::AppHandle) -> Result<BootState> {
 // ── Docker ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn detect_docker() -> Result<docker::DockerInfo> {
-    blocking(|| {
+pub async fn detect_docker(app: tauri::AppHandle) -> Result<docker::DockerInfo> {
+    blocking(move || {
         let d = docker::detect();
         crate::linfo!(
             "Docker 检测：installed={} daemon={} runtime={:?} server={:?} compose={:?} 最低版本={}",
@@ -131,6 +159,23 @@ pub async fn detect_docker() -> Result<docker::DockerInfo> {
             d.server_version,
             d.compose_version,
             d.meets_minimum
+        );
+        state(&app).tele(
+            "docker_detected",
+            &[
+                (
+                    "runtime",
+                    crate::telemetry::Field::Enum(format!("{:?}", d.runtime)),
+                ),
+                (
+                    "version",
+                    crate::telemetry::Field::Enum(d.server_version.clone().unwrap_or_default()),
+                ),
+                (
+                    "ok",
+                    crate::telemetry::Field::Bool(d.installed && d.daemon_running),
+                ),
+            ],
         );
         Ok(d)
     })
@@ -386,7 +431,7 @@ pub async fn compose_logs(service: Option<String>, tail: Option<usize>) -> Resul
 
 #[tauri::command]
 pub fn launcher_log(tail: usize) -> Result<Vec<String>> {
-    Ok(crate::log::tail(tail))
+    Ok(crate::log::tail_file(tail))
 }
 
 // ── 设置 ──────────────────────────────────────────────────────────────────
@@ -401,6 +446,19 @@ pub struct LauncherSettings {
     pub hunter_tag: String,
     pub work_dir: String,
     pub telemetry: bool,
+    /// 上报端点。**默认空 = 暂未开启上报**，界面上要如实这么写
+    #[serde(default)]
+    pub telemetry_endpoint: String,
+    /// gateway | own
+    #[serde(default)]
+    pub model_mode: String,
+    #[serde(default)]
+    pub model_base_url: String,
+    #[serde(default)]
+    pub model_name: String,
+    /// 当前镜像源的完整前缀（自定义源时界面要显示它）
+    #[serde(default)]
+    pub registry_prefix: String,
 }
 
 #[tauri::command]
@@ -421,9 +479,32 @@ pub async fn write_settings(
         let st = state(&app);
         let mut c = st.config();
         c.launcher.locale = settings.locale;
-        c.launcher.autostart = settings.autostart;
         c.launcher.check_update_hours = if settings.check_update { 24 } else { 0 };
+
+        // 开机自启：**真去动系统**（Linux 的 .desktop / mac 的 LaunchAgent / Windows 注册表），
+        // 然后把系统里的真实状态记回配置，而不是把用户点的那一下直接当成结果（红线 1）。
+        if settings.autostart != crate::autostart::status() {
+            match crate::autostart::set(settings.autostart) {
+                Ok(m) => crate::linfo!("开机自启：{m}"),
+                Err(e) => crate::lwarn!("开机自启设置失败：{}", e.msg),
+            }
+        }
+        c.launcher.autostart = crate::autostart::status();
+
+        // 遥测：**关掉的那一刻就把本地队列删干净**（方案 §11.2）。
+        // 开启时补一个 install_id（随机 UUID，与 key 无关，方案 §12.1）。
+        let was = c.telemetry.enabled;
         c.telemetry.enabled = settings.telemetry;
+        if settings.telemetry && c.telemetry.install_id.is_empty() {
+            c.telemetry.install_id = crate::telemetry::new_install_id();
+        }
+        if was && !settings.telemetry {
+            match crate::telemetry::clear() {
+                Ok(()) => crate::linfo!("遥测已关闭，本地队列已清空"),
+                Err(e) => crate::lwarn!("清空遥测队列失败：{}", e.msg),
+            }
+        }
+
         if let Some(cand) = registry::by_id(&settings.registry) {
             c.apply_registry(cand);
         } else if !settings.registry.is_empty() && settings.registry.contains('/') {
@@ -440,12 +521,18 @@ pub async fn write_settings(
 fn to_settings(c: &LauncherConfig) -> LauncherSettings {
     LauncherSettings {
         locale: c.launcher.locale.clone(),
-        autostart: c.launcher.autostart,
+        // 读的是**系统里真实的自启项**，不是配置文件里记的
+        autostart: crate::autostart::status(),
         check_update: c.launcher.check_update_hours > 0,
         registry: c.hunter.registry_id.clone(),
         hunter_tag: c.hunter.tag.clone(),
         work_dir: crate::paths::root().to_string_lossy().into_owned(),
         telemetry: c.telemetry.enabled,
+        telemetry_endpoint: c.telemetry.endpoint.clone(),
+        model_mode: c.model.mode.clone(),
+        model_base_url: c.model.base_url.clone(),
+        model_name: c.model.model.clone(),
+        registry_prefix: c.hunter.registry_prefix.clone(),
     }
 }
 
@@ -507,7 +594,7 @@ pub async fn diagnostics(app: tauri::AppHandle) -> Result<String> {
             ));
         }
         s.push_str("\n## 启动器日志（最近 80 行）\n");
-        for l in crate::log::tail(80) {
+        for l in crate::log::tail_file(80) {
             s.push_str(&l);
             s.push('\n');
         }
@@ -520,6 +607,255 @@ pub async fn diagnostics(app: tauri::AppHandle) -> Result<String> {
         Ok(crate::redact::redact(&s))
     })
     .await
+}
+
+// ── 遥测（本地队列，默认不上报） ──────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryView {
+    pub enabled: bool,
+    /// 空 = 暂未开启上报。界面按这个如实写文案（红线 1）
+    pub endpoint: String,
+    pub queue_path: String,
+    pub lines: Vec<String>,
+    /// 会收集哪些事件 —— 设置页要能一眼看全（方案 §12.1「透明」）
+    pub events: Vec<String>,
+}
+
+/// 「查看本机将要发送的数据」。返回的就是 `queue.jsonl` 的原文，一个字都不加工。
+#[tauri::command]
+pub async fn telemetry_view(app: tauri::AppHandle) -> Result<TelemetryView> {
+    blocking(move || {
+        let c = state(&app).config();
+        Ok(TelemetryView {
+            enabled: c.telemetry.enabled,
+            endpoint: c.telemetry.endpoint.clone(),
+            queue_path: crate::paths::telemetry_queue()
+                .to_string_lossy()
+                .into_owned(),
+            lines: crate::telemetry::queue_lines(),
+            events: crate::telemetry::EVENTS
+                .iter()
+                .map(|e| e.to_string())
+                .collect(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn telemetry_clear() -> Result<String> {
+    blocking(|| {
+        crate::telemetry::clear()?;
+        Ok("本地队列已清空".to_string())
+    })
+    .await
+}
+
+// ── 开机自启 ──────────────────────────────────────────────────────────────
+
+/// 切开机自启，返回**系统里真实的**状态（不是用户点的那个值）。
+#[tauri::command]
+pub async fn set_autostart(app: tauri::AppHandle, on: bool) -> Result<bool> {
+    blocking(move || {
+        let msg = crate::autostart::set(on)?;
+        crate::linfo!("开机自启：{msg}");
+        let real = crate::autostart::status();
+        let st = state(&app);
+        let mut c = st.config();
+        c.launcher.autostart = real;
+        c.save()?;
+        st.set_config(c);
+        Ok(real)
+    })
+    .await
+}
+
+// ── 模型模式切换（设置页） ────────────────────────────────────────────────
+
+/// 切换网关 ↔ 自带 key。先做连通性检查（`set_model` 那一套），
+/// 通过之后**重写 `.env` 并重建 api / opencode / llm-shim**（里程碑 M3 第 3 项）。
+#[tauri::command]
+pub async fn switch_model(app: tauri::AppHandle, choice: ModelChoice) -> Result<String> {
+    blocking(move || {
+        let st = state(&app);
+        let mut cfg = st.config();
+        if choice.mode == "own" {
+            let r = gateway::check_own_key(
+                &choice.base_url,
+                &choice.model,
+                &choice.api_key,
+                Duration::from_secs(30),
+            );
+            crate::linfo!("切自带 key：连通性 ok={} via={:?}", r.ok, r.via);
+            if !r.ok {
+                return Err(AppError::new(Code::KeyInvalid, r.message));
+            }
+            cfg.model.mode = "own".into();
+            cfg.model.base_url = choice.base_url.trim_end_matches('/').to_string();
+            cfg.model.model = choice.model.clone();
+            cfg.model.schema_sanitize = r.schema_sanitize;
+            st.set_own_key(&choice.api_key);
+        } else {
+            cfg.model.mode = "gateway".into();
+            cfg.model.base_url = gateway::LLM_BASE_URL.into();
+            cfg.model.model = gateway::DEFAULT_MODEL.into();
+            cfg.model.schema_sanitize = false;
+        }
+        cfg.save()?;
+        st.set_config(cfg);
+        let msg = flow::apply_model_change(&st)?;
+        crate::linfo!("模型模式切换完成：{msg}");
+        Ok(msg)
+    })
+    .await
+}
+
+// ── 反馈与诊断包 ──────────────────────────────────────────────────────────
+
+/// 收一份诊断，**逐节**交给界面预览。用户可以逐节勾掉不带（方案 §11.1）。
+#[tauri::command]
+pub async fn diagnostics_sections(app: tauri::AppHandle) -> Result<Vec<crate::feedback::Section>> {
+    blocking(move || {
+        let c = state(&app).config();
+        Ok(crate::feedback::collect(&c, env!("CARGO_PKG_VERSION")))
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    pub path: String,
+    pub bytes: usize,
+}
+
+/// 导出 zip 到 `~/.hunter/diagnostics/`。**不上传任何东西**。
+#[tauri::command]
+pub async fn export_diagnostics(
+    app: tauri::AppHandle,
+    include: Vec<String>,
+    form: crate::feedback::Form,
+) -> Result<ExportResult> {
+    blocking(move || {
+        let c = state(&app).config();
+        let sections = crate::feedback::collect(&c, env!("CARGO_PKG_VERSION"));
+        let (path, bytes) =
+            crate::feedback::export_zip(&sections, &include, &form, env!("CARGO_PKG_VERSION"))?;
+        Ok(ExportResult { path, bytes })
+    })
+    .await
+}
+
+/// 拼一个预填好的 GitHub issue 链接。**诊断包不自动上传**，正文里只放概要那一节。
+#[tauri::command]
+pub async fn feedback_issue_url(
+    app: tauri::AppHandle,
+    form: crate::feedback::Form,
+) -> Result<String> {
+    blocking(move || {
+        let c = state(&app).config();
+        let sections = crate::feedback::collect(&c, env!("CARGO_PKG_VERSION"));
+        let summary = sections
+            .iter()
+            .find(|s| s.id == "summary")
+            .map(|s| s.body.clone())
+            .unwrap_or_default();
+        Ok(crate::feedback::issue_url(&form, &summary))
+    })
+    .await
+}
+
+// ── 日志导出 ──────────────────────────────────────────────────────────────
+
+/// 把当前这一档日志**脱敏后**导出成一个文本文件。返回落地路径。
+#[tauri::command]
+pub async fn export_logs(
+    source: String,
+    service: Option<String>,
+    tail: usize,
+) -> Result<ExportResult> {
+    blocking(move || {
+        let lines = if source == "launcher" {
+            crate::log::tail_file(tail)
+        } else {
+            compose::logs(service.as_deref(), tail)?
+        };
+        let mut body = format!(
+            "# Hunter 启动器日志导出 · {}\n# 来源：{}{}\n# 已按技术方案 §12.3 脱敏\n\n",
+            crate::timefmt::now_shanghai(),
+            source,
+            service
+                .as_deref()
+                .map(|s| format!(" / {s}"))
+                .unwrap_or_default()
+        );
+        body.push_str(&lines.join("\n"));
+        body.push('\n');
+        // 出口再过一道（容器日志里还可能有对话内容）
+        let body = crate::redact::redact(&crate::redact::mask_content_fields(&body));
+        if let Some(bad) = crate::feedback::assert_clean(&body) {
+            return Err(AppError::new(
+                Code::Unknown,
+                format!("日志自查没通过，已取消导出：{bad}"),
+            ));
+        }
+        crate::paths::ensure_dirs()?;
+        let name = format!(
+            "hunter-logs-{}-{}.txt",
+            source,
+            crate::timefmt::now_shanghai()
+                .replace(['-', ':'], "")
+                .replace(' ', "-")
+        );
+        let path = crate::paths::diagnostics_dir().join(&name);
+        std::fs::write(&path, body.as_bytes()).map_err(|e| {
+            AppError::new(
+                Code::ConfigWrite,
+                format!("写 {} 失败：{e}", path.display()),
+            )
+        })?;
+        crate::paths::chmod_600(&path)?;
+        crate::linfo!("日志已导出：{}", path.display());
+        Ok(ExportResult {
+            path: path.to_string_lossy().into_owned(),
+            bytes: body.len(),
+        })
+    })
+    .await
+}
+
+// ── 托盘与退出 ────────────────────────────────────────────────────────────
+
+/// 前端（或自动化测试）触发一次托盘菜单动作。走的是和真点菜单**完全相同**的分支。
+#[tauri::command]
+pub fn tray_invoke(app: tauri::AppHandle, id: String) -> Result<()> {
+    std::thread::spawn(move || crate::tray::run_action(&app, &id));
+    Ok(())
+}
+
+/// 退出。`stop_containers = true` 时先把容器停掉再退（方案 §5.8 的两条分支）。
+#[tauri::command]
+pub fn quit_app(app: tauri::AppHandle, stop_containers: bool) {
+    std::thread::spawn(move || {
+        if stop_containers {
+            crate::linfo!("退出：用户选了「一起停止」");
+            match compose::stop() {
+                Ok(()) => crate::linfo!("容器已停止，准备退出"),
+                Err(e) => crate::lerror!("退出前停容器失败：{}", e.msg),
+            }
+        } else {
+            crate::linfo!("退出：用户选了「保持后台运行」，容器不动");
+        }
+        app.exit(0);
+    });
+}
+
+/// 「上游缺哪些接口」的清单。界面上把它摆出来，和成果文档是同一份。
+#[tauri::command]
+pub fn missing_endpoints() -> Vec<flow::MissingEndpoint> {
+    flow::missing_endpoints()
 }
 
 // ── 工具 ──────────────────────────────────────────────────────────────────

@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { EnvList } from '../components/EnvList'
-import { SegmentedControl, Toggle } from '../components/Field'
+import { Field, SegmentedControl, TextInput, Toggle } from '../components/Field'
+import { Modal } from '../components/Modal'
 import { PlainLayout } from '../components/WizardLayout'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
@@ -29,9 +30,11 @@ export function Settings() {
   const { t, locale, setLocale, setOverlay } = useStore()
   const s = useAsync(() => ipc.readSettings(), [])
   const app = useAsync(() => ipc.appInfo(), [])
-  const probes = useAsync(() => ipc.probeRegistries(), [])
+  const [probeNonce, setProbeNonce] = useState(0)
+  const probes = useAsync(() => ipc.probeRegistries(), [probeNonce])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState<LauncherSettings | null>(null)
+  const [showQueue, setShowQueue] = useState(false)
   const d = saved ?? s.data
   const reason = s.error ? `${s.error.code} · ${s.error.message}` : t.app.noDataReason
 
@@ -60,6 +63,7 @@ export function Settings() {
             <Row label={t.settings.language}>
               <SegmentedControl<Locale>
                 value={locale}
+                testIdPrefix="settings-locale"
                 onChange={(l) => {
                   setLocale(l)
                   void patch({ locale: l })
@@ -67,49 +71,64 @@ export function Settings() {
                 options={LOCALES.map((l) => ({ id: l.id, label: l.label }))}
               />
             </Row>
-            <Row label={t.settings.autostart} hint={t.settings.autostartHint}>
-              <Toggle on={d?.autostart ?? false} onChange={(v) => void patch({ autostart: v })} label={t.settings.autostart} />
+            {/* 开机自启：Toggle 的值来自**系统里真实的自启项**（Rust 侧 autostart::status），
+                不是配置文件里记的那个布尔（红线 1）。 */}
+            <Row
+              label={t.settings.autostart}
+              hint={`${t.settings.autostartHint} ${d ? t.settings.autostartReal(d.autostart) : ''}`}
+            >
+              <Toggle
+                on={d?.autostart ?? false}
+                testId="settings-autostart"
+                onChange={(v) => void patch({ autostart: v })}
+                label={t.settings.autostart}
+              />
             </Row>
             <Row label={t.settings.checkUpdate}>
-              <Toggle on={d?.checkUpdate ?? false} onChange={(v) => void patch({ checkUpdate: v })} label={t.settings.checkUpdate} />
+              <Toggle
+                on={d?.checkUpdate ?? false}
+                testId="settings-checkupdate"
+                onChange={(v) => void patch({ checkUpdate: v })}
+                label={t.settings.checkUpdate}
+              />
             </Row>
           </div>
         </Card>
 
-        <Card>
-          <div className="text-md font-medium text-ink">{t.settings.sectionDeploy}</div>
-          <div className="mt-[16px]">
-            <EnvList
-              items={[
-                { label: t.settings.registry, value: d?.registry ?? null, reason },
-                { label: t.settings.hunterTag, value: d?.hunterTag ?? null, reason },
-                { label: t.settings.workDir, value: d?.workDir ?? null, reason },
-              ]}
-            />
-          </div>
-          <div className="mt-[12px]">
-            <SegmentedControl<string>
-              value={d?.registry ?? 'ghcr'}
-              onChange={(v) => void patch({ registry: v })}
-              options={(probes.data ?? []).map((r) => ({
-                id: r.id,
-                label: `${r.label} · ${r.available ? `${r.elapsedMs} ms` : t.settings.registryDown}`,
-              }))}
-            />
-          </div>
-          <div className="mt-[10px] text-xs leading-[1.5] text-muted">
-            {probes.error ? `${probes.error.code} · ${probes.error.message}` : t.settings.registryHint}
-          </div>
-          {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.saving}</div>}
-        </Card>
+        <RegistryCard
+          settings={d}
+          reason={reason}
+          probes={probes}
+          saving={saving}
+          onRetest={() => setProbeNonce((n) => n + 1)}
+          onPatch={patch}
+        />
+
+        <ModelCard settings={d} onDone={() => s.reload()} />
 
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionPrivacy}</div>
           <div className="mt-[16px] flex flex-col gap-[6px]">
             <Row label={t.settings.telemetry} hint={t.settings.telemetryHint}>
-              <Toggle on={d?.telemetry ?? false} onChange={(v) => void patch({ telemetry: v })} label={t.settings.telemetry} />
+              <Toggle
+                on={d?.telemetry ?? false}
+                testId="settings-telemetry"
+                onChange={(v) => void patch({ telemetry: v })}
+                label={t.settings.telemetry}
+              />
             </Row>
           </div>
+          {/* 上报端点：默认空，界面上**如实写「暂未开启上报」**（里程碑 M3 第 6 项） */}
+          <div className="mt-[10px] flex items-baseline justify-between gap-4">
+            <span className="shrink-0 text-md text-label">{t.settings.telemetryEndpoint}</span>
+            <span className="min-w-0 truncate text-md text-amber-text" data-testid="telemetry-endpoint">
+              {d?.telemetryEndpoint ? d.telemetryEndpoint : t.settings.telemetryNoEndpoint}
+            </span>
+          </div>
+          <div className="mt-[6px] text-xs leading-[1.6] text-muted">
+            {t.settings.telemetryNoEndpointHint}
+          </div>
+
           <div className="mt-[14px] text-sm text-label">{t.settings.outboundHint}</div>
           <ul className="tnum mt-[8px] flex flex-col gap-[6px] text-sm text-dim">
             {OUTBOUND.map((h) => (
@@ -117,7 +136,9 @@ export function Settings() {
             ))}
           </ul>
           <div className="mt-[16px] flex gap-[10px]">
-            <Button size="sm">{t.settings.viewQueue}</Button>
+            <Button size="sm" data-testid="view-queue" onClick={() => setShowQueue(true)}>
+              {t.settings.viewQueue}
+            </Button>
             <Button size="sm" onClick={() => setOverlay('feedback')}>
               {t.settings.exportDiag}
             </Button>
@@ -135,13 +156,255 @@ export function Settings() {
                   value: app.data ? `${app.data.platform} · ${app.data.arch}` : null,
                   reason,
                 },
+                { label: t.settings.hunterTag, value: d?.hunterTag ?? null, reason },
+                { label: t.settings.workDir, value: d?.workDir ?? null, reason },
                 { label: t.settings.licenses, value: 'Noto Sans SC · JetBrains Mono · SIL OFL 1.1' },
               ]}
             />
           </div>
         </Card>
       </div>
+
+      {showQueue && <TelemetryQueue onClose={() => setShowQueue(false)} />}
     </PlainLayout>
+  )
+}
+
+/**
+ * 镜像源：显示两个候选源的**真实探测结果**，并且允许手动固定（里程碑 M3 第 3 项）。
+ * 自定义前缀这一档是给自建仓库的内网用户的 —— 填了就不测速（不知道仓库路径，探不了）。
+ */
+function RegistryCard({
+  settings,
+  reason,
+  probes,
+  saving,
+  onRetest,
+  onPatch,
+}: {
+  settings: LauncherSettings | null
+  reason: string
+  probes: ReturnType<typeof useAsync<Awaited<ReturnType<typeof ipc.probeRegistries>>>>
+  saving: boolean
+  onRetest: () => void
+  onPatch: (p: Partial<LauncherSettings>) => Promise<void>
+}) {
+  const { t } = useStore()
+  const [custom, setCustom] = useState('')
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between">
+        <div className="text-md font-medium text-ink">{t.settings.sectionDeploy}</div>
+        <Button size="sm" data-testid="registry-retest" onClick={onRetest} disabled={probes.loading}>
+          {probes.loading ? t.settings.registryTesting : t.settings.registryRetest}
+        </Button>
+      </div>
+      <div className="mt-[16px]">
+        <EnvList
+          items={[
+            { label: t.settings.registry, value: settings?.registry ?? null, reason },
+            { label: t.settings.registryPin, value: settings?.registryPrefix ?? null, reason },
+          ]}
+        />
+      </div>
+      <div className="mt-[12px]">
+        <SegmentedControl<string>
+          value={settings?.registry ?? 'ghcr'}
+          testIdPrefix="registry"
+          onChange={(v) => void onPatch({ registry: v })}
+          options={(probes.data ?? []).map((r) => ({
+            id: r.id,
+            label: `${r.label} · ${r.available ? `${r.elapsedMs} ms` : t.settings.registryDown}`,
+          }))}
+        />
+      </div>
+      <div className="mt-[10px] text-xs leading-[1.5] text-muted">
+        {probes.error ? `${probes.error.code} · ${probes.error.message}` : t.settings.registryHint}
+      </div>
+
+      <Field className="mt-[14px]" label={t.settings.registryCustom} hint={t.settings.registryCustomHint}>
+        <div className="flex gap-[10px]">
+          <TextInput
+            value={custom}
+            onChange={setCustom}
+            mono
+            placeholder="registry.example.com/agentpit"
+          />
+          <Button
+            size="sm"
+            data-testid="registry-custom-apply"
+            disabled={!custom.includes('/')}
+            onClick={() => void onPatch({ registry: custom.trim() })}
+          >
+            {t.common.apply}
+          </Button>
+        </div>
+      </Field>
+      {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.saving}</div>}
+    </Card>
+  )
+}
+
+/**
+ * 模型模式切换（里程碑 M3 第 3 项）。
+ *
+ * 点「切换」会走 Rust 的 `switch_model`：先真发一次请求验连通性，通过之后重写 `.env`
+ * 并 `up -d --force-recreate api opencode llm-shim`，再等这三个服务健康。
+ * **要几十秒**，所以按钮按下去之后一直显示「正在重写 .env 并重建容器…」直到 Rust 回话。
+ */
+function ModelCard({ settings, onDone }: { settings: LauncherSettings | null; onDone: () => void }) {
+  const { t } = useStore()
+  const [mode, setMode] = useState<'gateway' | 'own'>('gateway')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [model, setModel] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  // 首次拿到设置时把当前模式同步过来（之后由用户自己切）
+  const current = settings?.modelMode ?? 'gateway'
+  const [synced, setSynced] = useState(false)
+  if (settings && !synced) {
+    setSynced(true)
+    setMode(current === 'own' ? 'own' : 'gateway')
+    setBaseUrl(settings.modelBaseUrl)
+    setModel(settings.modelName)
+  }
+
+  async function doSwitch() {
+    setBusy(true)
+    setMsg(null)
+    try {
+      setMsg(
+        await ipc.switchModel(
+          mode === 'own' ? { mode: 'own', baseUrl, model, apiKey } : { mode: 'gateway' },
+        ),
+      )
+      // key 用完就从界面上抹掉，不在 React state 里长期留着（红线 2）
+      setApiKey('')
+      onDone()
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <div className="text-md font-medium text-ink">{t.settings.sectionModel}</div>
+      <div className="mt-[6px] text-xs text-muted">
+        {t.settings.modelCurrent(
+          current === 'own' ? t.settings.modelOwn : t.settings.modelGateway,
+          settings?.modelName || '—',
+        )}
+      </div>
+      <div className="mt-[14px]">
+        <SegmentedControl<'gateway' | 'own'>
+          value={mode}
+          testIdPrefix="model-mode"
+          onChange={setMode}
+          options={[
+            { id: 'gateway', label: t.settings.modelGateway },
+            { id: 'own', label: t.settings.modelOwn },
+          ]}
+        />
+      </div>
+      <div className="mt-[10px] text-xs leading-[1.6] text-muted">
+        {mode === 'own' ? t.settings.modelOwnHint : t.settings.modelGatewayHint}
+      </div>
+
+      {mode === 'own' && (
+        <div className="mt-[14px] flex flex-col gap-[12px]">
+          <Field label={t.settings.modelBaseUrl}>
+            <TextInput value={baseUrl} onChange={setBaseUrl} mono placeholder="https://api.deepseek.com/v1" />
+          </Field>
+          <Field label={t.settings.modelName}>
+            <TextInput value={model} onChange={setModel} mono placeholder="deepseek-chat" />
+          </Field>
+          <Field label={t.settings.modelApiKey}>
+            <TextInput value={apiKey} onChange={setApiKey} password placeholder="sk-…" />
+          </Field>
+        </div>
+      )}
+
+      <div className="mt-[16px]">
+        <Button
+          size="sm"
+          variant="primary"
+          data-testid="model-switch"
+          disabled={busy || (mode === 'own' && (!baseUrl || !model || !apiKey))}
+          onClick={() => void doSwitch()}
+        >
+          {busy ? t.settings.modelSwitching : t.settings.modelSwitch}
+        </Button>
+      </div>
+      {msg && (
+        <div className="mt-[12px] break-all text-sm leading-[1.5] text-amber-text" data-testid="model-switch-msg">
+          {msg}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+/**
+ * 「查看本机将要发送的数据」（方案 §12.1 的「透明」那一条）。
+ * 显示的是 `queue.jsonl` 的**原文**，一个字都不加工。
+ */
+function TelemetryQueue({ onClose }: { onClose: () => void }) {
+  const { t } = useStore()
+  const q = useAsync(() => ipc.telemetryView(), [])
+  const [cleared, setCleared] = useState(false)
+  const lines = cleared ? [] : (q.data?.lines ?? [])
+
+  return (
+    <Modal
+      testId="telemetry-queue"
+      title={t.settings.viewQueue}
+      onClose={onClose}
+      footer={
+        <>
+          <Button
+            size="sm"
+            data-testid="telemetry-clear"
+            onClick={() => {
+              void ipc.telemetryClear().then(() => setCleared(true))
+            }}
+          >
+            {t.settings.telemetryClear}
+          </Button>
+          <Button size="sm" variant="primary" onClick={onClose}>
+            {t.common.close}
+          </Button>
+        </>
+      }
+    >
+      <div className="text-sm text-muted">
+        {t.settings.telemetryEndpoint}：
+        <span className="text-amber-text">
+          {q.data?.endpoint ? q.data.endpoint : t.settings.telemetryNoEndpoint}
+        </span>
+      </div>
+      <div className="mt-[6px] text-xs text-muted">{t.settings.telemetryOffClears}</div>
+      {q.data && (
+        <div className="tnum mt-[10px] break-all text-xs text-muted">
+          {t.settings.telemetryQueuePath(q.data.queuePath)}
+        </div>
+      )}
+      <div className="mt-[14px] text-sm text-label">{t.settings.telemetryEvents}</div>
+      <div className="mt-[6px] flex flex-wrap gap-[6px]">
+        {(q.data?.events ?? []).map((e) => (
+          <span key={e} className="tnum rounded border border-line-strong px-2 py-[2px] text-xs text-dim">
+            {e}
+          </span>
+        ))}
+      </div>
+      <pre className="tnum selectable mt-[14px] max-h-[240px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log px-3 py-2.5 text-xs leading-[1.5] text-dim">
+        {lines.length > 0 ? lines.join('\n') : t.settings.telemetryQueueEmpty}
+      </pre>
+    </Modal>
   )
 }
 

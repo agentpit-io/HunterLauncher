@@ -31,6 +31,7 @@ SRC = os.path.join(ROOT, "src")
 OUT_DIR = os.path.join(SRC, "assets", "fonts")
 CACHE = os.path.join("/tmp", "hunter-font-cache")
 CSS_OUT = os.path.join(SRC, "styles", "fonts.css")
+CHARSET_OUT = os.path.join(OUT_DIR, "charset.txt")
 
 GF = "https://raw.githubusercontent.com/google/fonts/main"
 
@@ -61,13 +62,28 @@ FONTS = [
 
 
 def collect_chars() -> str:
-    """把 src/ 与 index.html 里出现过的字符收进来（含标识符，顺带补齐拉丁字形）。"""
+    """把界面上**可能显示出来**的中文字符全收进来。
+
+    两个来源，缺一不可：
+
+    1. `src/` 与 `index.html` —— 前端自己的文案；
+    2. **`src-tauri/src/*.rs`** —— Rust 侧的字符串。这一条是 M3 补的：
+       错误说明、诊断包的小标题、「平台数据供给已配置」这类由 Rust 拼好再交给界面显示的话，
+       都不在前端源码里。漏了它们的结果是界面上冒出豆腐块 —— M3 的第一张运行面板截图上
+       「平台数据□给已配置」的那个方框就是这么来的。
+
+    Rust 源码里的注释也会被一起扫进来。多几百个字形对 woff2 的体积影响很小
+    （中文子集本来就以千计），而漏一个字就是界面上一个方块，宁可多扫。
+    """
     chars = set(BASE)
     paths = [os.path.join(ROOT, "index.html")]
     for dirpath, _dirs, files in os.walk(SRC):
         if os.path.join("src", "assets") in dirpath:
             continue
         paths += [os.path.join(dirpath, f) for f in files if f.endswith((".ts", ".tsx", ".css", ".html"))]
+    rust_src = os.path.join(ROOT, "src-tauri", "src")
+    for dirpath, _dirs, files in os.walk(rust_src):
+        paths += [os.path.join(dirpath, f) for f in files if f.endswith(".rs")]
     for path in paths:
         with open(path, encoding="utf-8") as f:
             chars |= set(CJK_RE.findall(f.read()))
@@ -94,6 +110,14 @@ def main() -> int:
     text = collect_chars()
     cjk = len(CJK_RE.findall(text))
     print(f"字符集：{len(text)} 个（其中汉字 {cjk} 个）")
+
+    # 把这一次用到的字符集记下来，给 scripts/check-fonts.py 在 CI 里对账用。
+    # 没有它的话，「加了一句中文却忘了重新生成字体」只有等到有人截图时才会发现
+    # —— M3 的第一张运行面板截图上那个豆腐块就是这么来的。
+    with open(CHARSET_OUT, "w", encoding="utf-8") as f:
+        f.write("# 由 scripts/build-fonts.py 生成。记录字体子集覆盖了哪些字符，\n")
+        f.write("# scripts/check-fonts.py 用它检查「有没有新加的中文没被字体覆盖」。\n")
+        f.write(text + "\n")
 
     css = [
         "/* 由 scripts/build-fonts.py 生成，请勿手改。",

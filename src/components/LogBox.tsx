@@ -1,24 +1,23 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 
 /**
  * 日志框。视觉稿里它比卡片更深（#090d16），等宽字体，13px。
  * 允许选中复制，所以带 .selectable。
  */
-export function LogBox({
-  lines,
-  className = '',
-  emptyText = '—',
-  autoScroll = false,
-  highlight,
-}: {
-  lines: string[]
-  className?: string
-  emptyText?: string
-  autoScroll?: boolean
-  /** 需要高亮成金色的片段（视觉稿第 3 张里 "300,000 tokens" 是金色的） */
-  highlight?: RegExp
-}) {
+export const LogBox = forwardRef<
+  HTMLDivElement,
+  {
+    lines: string[]
+    className?: string
+    emptyText?: string
+    autoScroll?: boolean
+    /** 需要高亮成金色的片段（视觉稿第 3 张里 "300,000 tokens" 是金色的） */
+    highlight?: RegExp
+  }
+>(function LogBox({ lines, className = '', emptyText = '—', autoScroll = false, highlight }, outer) {
   const ref = useRef<HTMLDivElement>(null)
+  // 日志页要自己判断「用户是不是已经滚到底了」，所以把内部的 DOM 节点透出去
+  useImperativeHandle(outer, () => ref.current as HTMLDivElement, [])
   useEffect(() => {
     if (autoScroll && ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }, [lines, autoScroll])
@@ -41,7 +40,7 @@ export function LogBox({
       )}
     </div>
   )
-}
+})
 
 function renderHighlighted(line: string, re: RegExp) {
   const parts: React.ReactNode[] = []

@@ -4,35 +4,71 @@ import { Card } from '../components/Card'
 import { Checkbox, Field, SegmentedControl, TextArea, TextInput } from '../components/Field'
 import { PlainLayout } from '../components/WizardLayout'
 import { useStore } from '../state/context'
+import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 
 type FeedbackType = 'deploy' | 'result' | 'feature' | 'other'
-const ISSUE_URL = 'https://github.com/agentpit-io/HunterLauncher/issues/new'
 
 /**
- * 反馈页。
- * M0 结论：telemetry.agentpit.io 不存在，上游 api 也没有 /api/feedback。
- * 所以这一页**不会自动发送任何东西**，只做两件事：导出脱敏诊断包、打开预填好的 GitHub issue。
- * 界面上把这一点写在最显眼的地方，不做「提交成功」的假象（总控规则红线 1）。
+ * 反馈页（技术方案 §11.1 的启动器侧）。
+ *
+ * M0 结论：`telemetry.agentpit.io` 不存在，上游 api 也没有 `/api/feedback`。
+ * 所以这一页**不会自动发送任何东西**，只做三件真的做得到的事：
+ *
+ * 1. 把诊断信息**逐节**摆出来（每一节都已经脱敏），用户可以逐节勾掉不带；
+ * 2. 导出成一个 zip 放在 `~/.hunter/diagnostics/`；
+ * 3. 打开一个预填好标题与正文的 GitHub issue —— **诊断包不自动上传**。
+ *
+ * 界面底部常驻「不会自动上传」，不做「提交成功」的假象（总控规则红线 1）。
  */
 export function Feedback({ errorCode }: { errorCode?: string }) {
   const { t, setOverlay } = useStore()
   const [type, setType] = useState<FeedbackType>(errorCode ? 'deploy' : 'other')
   const [desc, setDesc] = useState('')
   const [contact, setContact] = useState('')
-  const [attach, setAttach] = useState(true)
-  const [diag, setDiag] = useState<string | null>(null)
-  const [loadingDiag, setLoadingDiag] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'zip' | 'issue' | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  /** 哪几节带上。null = 还没拿到诊断，拿到之后按每节的 defaultOn 初始化 */
+  const [include, setInclude] = useState<Record<string, boolean> | null>(null)
 
-  /** 取一份**脱敏后**的诊断文本。红线 2：里面不会有 key。这里只是拿到手，不发给任何人。 */
-  async function loadDiag() {
-    setLoadingDiag(true)
+  const diag = useAsync(() => ipc.diagnosticsSections(), [])
+  const sections = diag.data ?? []
+  if (sections.length > 0 && include === null) {
+    setInclude(Object.fromEntries(sections.map((s) => [s.id, s.defaultOn && s.body.length > 0])))
+  }
+  const on = (id: string) => include?.[id] ?? false
+  const chosen = sections.filter((s) => on(s.id)).map((s) => s.id)
+
+  const form = () => ({ kind: type, description: desc, contact, errorCode: errorCode ?? '' })
+
+  async function doExport() {
+    setBusy('zip')
+    setNote(null)
     try {
-      setDiag(await ipc.diagnostics())
+      const r = await ipc.exportDiagnostics(chosen, form())
+      setNote(t.feedback.exportOk(r.path, `${(r.bytes / 1024).toFixed(1)} KB`))
     } catch (e) {
-      setDiag(e instanceof Error ? e.message : String(e))
+      setNote(t.feedback.exportFail(e instanceof Error ? e.message : String(e)))
     } finally {
-      setLoadingDiag(false)
+      setBusy(null)
+    }
+  }
+
+  async function doIssue() {
+    if (!desc.trim()) {
+      setNote(t.feedback.descRequired)
+      return
+    }
+    setBusy('issue')
+    setNote(null)
+    try {
+      await ipc.openExternal(await ipc.feedbackIssueUrl(form()))
+      setNote(t.feedback.issueHint)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -42,25 +78,26 @@ export function Feedback({ errorCode }: { errorCode?: string }) {
       right={<Button size="sm" onClick={() => setOverlay(null)}>{t.common.close}</Button>}
       footer={
         <>
-          <span className="text-sm text-muted">{t.feedback.noUpload}</span>
+          <span className="min-w-0 truncate text-sm text-muted" data-testid="feedback-note">
+            {note ?? t.feedback.noUpload}
+          </span>
           <div className="flex gap-[10px]">
             <Button
               size="sm"
-              disabled={loadingDiag}
-              onClick={() => {
-                void loadDiag().then(() => {
-                  if (diag) void navigator.clipboard?.writeText(diag)
-                })
-              }}
+              data-testid="feedback-export"
+              disabled={busy !== null}
+              onClick={() => void doExport()}
             >
-              {loadingDiag ? t.common.working : t.feedback.exportBundle}
+              {busy === 'zip' ? t.common.working : t.feedback.exportBundle}
             </Button>
             <Button
               size="sm"
               variant="primary"
-              onClick={() => void ipc.openExternal(`${ISSUE_URL}?title=${encodeURIComponent(errorCode ?? '')}`)}
+              data-testid="feedback-issue"
+              disabled={busy !== null}
+              onClick={() => void doIssue()}
             >
-              {t.feedback.openIssue}
+              {busy === 'issue' ? t.common.working : t.feedback.openIssue}
             </Button>
           </div>
         </>
@@ -73,6 +110,7 @@ export function Feedback({ errorCode }: { errorCode?: string }) {
           <Field label={t.feedback.typeLabel}>
             <SegmentedControl<FeedbackType>
               value={type}
+              testIdPrefix="feedback-type"
               onChange={setType}
               options={[
                 { id: 'deploy', label: t.feedback.types.deploy },
@@ -85,30 +123,61 @@ export function Feedback({ errorCode }: { errorCode?: string }) {
           <Field label={t.feedback.descLabel}>
             <TextArea value={desc} onChange={setDesc} placeholder={t.feedback.descPlaceholder} rows={7} />
           </Field>
-          <Field label={t.feedback.contactLabel}>
+          <Field label={t.feedback.contactLabel} hint={t.feedback.attachHint}>
             <TextInput value={contact} onChange={setContact} placeholder="optional@example.com" />
           </Field>
-        </div>
-
-        <Card className="flex flex-col">
-          <Checkbox on={attach} onChange={setAttach}>
-            {t.feedback.attachLabel}
-          </Checkbox>
-          <div className="mt-[12px] text-xs leading-[1.6] text-muted">{t.feedback.attachHint}</div>
           {errorCode && (
-            <div className="tnum mt-[16px] rounded-md border border-line bg-log px-4 py-3 text-sm text-dim">
+            <div className="tnum rounded-md border border-line bg-log px-4 py-3 text-sm text-dim">
               error_code = {errorCode}
             </div>
           )}
-          {diag && (
-            <pre className="tnum selectable mt-[14px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log px-3 py-2.5 text-xs leading-[1.5] text-dim">
-              {diag}
-            </pre>
+        </div>
+
+        {/* 诊断信息预览与删减（方案 §11.1「用户可预览与删除」） */}
+        <Card className="flex min-h-0 flex-col">
+          <div className="text-md font-medium text-ink">{t.feedback.sectionsTitle}</div>
+          <div className="mt-[6px] text-xs leading-[1.6] text-muted">{t.feedback.redactNote}</div>
+
+          {diag.loading && <div className="mt-[14px] text-sm text-muted">{t.common.loading}</div>}
+          {diag.error && (
+            <div className="mt-[14px] text-sm text-danger">
+              {diag.error.code} · {diag.error.message}
+            </div>
           )}
-          <div className="mt-auto pt-4">
-            <Button size="sm" disabled={loadingDiag} onClick={() => void loadDiag()}>
-              {loadingDiag ? t.common.working : t.feedback.preview}
-            </Button>
+
+          <div className="mt-[14px] flex flex-col gap-[10px]">
+            {sections.map((sec) => (
+              <div key={sec.id} className="rounded-md border border-line bg-log px-3 py-2.5">
+                <div className="flex items-start justify-between gap-3">
+                  <Checkbox
+                    on={on(sec.id)}
+                    onChange={(v) => setInclude({ ...(include ?? {}), [sec.id]: v })}
+                  >
+                    <span data-testid={`diag-${sec.id}`} className="text-sm text-ink-2">
+                      {sec.title}
+                    </span>
+                  </Checkbox>
+                  {sec.body.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid={`diag-toggle-${sec.id}`}
+                      onClick={() => setExpanded(expanded === sec.id ? null : sec.id)}
+                      className="shrink-0 text-xs text-muted transition-colors hover:text-amber-text"
+                    >
+                      {expanded === sec.id ? t.feedback.collapse : t.feedback.expand}
+                    </button>
+                  )}
+                </div>
+                {sec.note && (
+                  <div className="mt-[6px] text-xs leading-[1.5] text-muted">{sec.note}</div>
+                )}
+                {expanded === sec.id && (
+                  <pre className="tnum selectable mt-[8px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all text-xs leading-[1.5] text-dim">
+                    {sec.body || t.feedback.sectionEmpty}
+                  </pre>
+                )}
+              </div>
+            ))}
           </div>
         </Card>
       </div>
