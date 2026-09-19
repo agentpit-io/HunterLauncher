@@ -719,9 +719,7 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
     let uptime = container_uptime();
     let (data_source, data_source_sub) = crate::upstream::data_source_label(&up);
 
-    let quota = state
-        .hunter_key()
-        .and_then(|k| gateway::quota(&k, Duration::from_secs(12)).ok());
+    let quota = state.hunter_key().and_then(|k| cached_quota(&k));
     let latest_tag = latest_hunter_tag();
 
     let docker = cfg_docker_label();
@@ -978,9 +976,46 @@ pub fn apply_model_change(state: &AppState) -> AppResult<String> {
     }
 }
 
-/// Hunter 的最新版本：打 GitHub Release 接口。
+/// 版本检查的缓存时长。方案 §11.3 写的就是 6 小时。
+const LATEST_TAG_TTL: Duration = Duration::from_secs(6 * 3600);
+/// 额度的缓存时长。运行面板每 10 秒刷一次，额度没必要跟着那么勤。
+const QUOTA_TTL: Duration = Duration::from_secs(60);
+
+/// Hunter 的最新版本：打 GitHub Release 接口，**结果缓存 6 小时**（方案 §11.3）。
+///
 /// 方案 §13 想让 api 提供这个，M0 §3.6 实测那些接口都不存在，所以直接问 GitHub。
+///
+/// **缓存不是优化，是必需**：GitHub 对未认证请求的限额是每小时 60 次，
+/// 而运行面板每 10 秒刷新一次状态 —— 不缓存的话一个用户开着面板十分钟就把额度用光，
+/// 之后「有新版本」角标会无声无息地不再出现。
 pub fn latest_hunter_tag() -> Option<String> {
+    static CACHE: CacheSlot<Option<String>> = Mutex::new(None);
+    cached(&CACHE, LATEST_TAG_TTL, fetch_latest_hunter_tag)
+}
+
+/// 一格「值 + 取到它的时刻」。
+type CacheSlot<T> = Mutex<Option<(std::time::Instant, T)>>;
+
+/// 带 TTL 的一格缓存。没过期就用旧值，过期了才调 `f`。
+///
+/// 抽成一个函数是为了**能测** —— 时间相关的逻辑直接写在业务函数里就只能靠真等，
+/// 而这里只要传一个 0 的 TTL 就能验「过期之后确实重新取了」。
+fn cached<T: Clone>(slot: &CacheSlot<T>, ttl: Duration, f: impl FnOnce() -> T) -> T {
+    if let Ok(g) = slot.lock() {
+        if let Some((at, v)) = g.as_ref() {
+            if at.elapsed() < ttl {
+                return v.clone();
+            }
+        }
+    }
+    let fresh = f();
+    if let Ok(mut g) = slot.lock() {
+        *g = Some((std::time::Instant::now(), fresh.clone()));
+    }
+    fresh
+}
+
+fn fetch_latest_hunter_tag() -> Option<String> {
     let r = crate::http::get(
         "https://api.github.com/repos/agentpit-io/hunter-community/releases/latest",
         &[("Accept", "application/vnd.github+json")],
@@ -988,10 +1023,22 @@ pub fn latest_hunter_tag() -> Option<String> {
     )
     .ok()?;
     if !r.ok() {
+        lwarn!("查最新版本失败：GitHub 返回 HTTP {}", r.status);
         return None;
     }
     let t = r.json()?.get("tag_name")?.as_str()?.to_string();
     Some(t.trim_start_matches('v').to_string())
+}
+
+/// 今日额度，**结果缓存 60 秒**。
+///
+/// 同样是因为运行面板每 10 秒刷一次：额度是一次跨公网的往返，而且这把 key 有
+/// 每分钟 20 次的限流 —— 面板自己就能把限流吃掉一小半。
+fn cached_quota(key: &str) -> Option<gateway::QuotaInfo> {
+    static CACHE: CacheSlot<Option<gateway::QuotaInfo>> = Mutex::new(None);
+    cached(&CACHE, QUOTA_TTL, || {
+        gateway::quota(key, Duration::from_secs(12)).ok()
+    })
 }
 
 pub fn human_bytes(n: u64) -> String {
@@ -1012,6 +1059,39 @@ pub fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 运行面板每 10 秒刷一次状态。GitHub 对未认证请求的限额是**每小时 60 次** ——
+    /// 版本检查不缓存的话，一个用户开着面板十分钟就把额度用光，
+    /// 之后「有新版本」角标会无声无息地不再出现。
+    ///
+    /// 这条测试验的是缓存本身：TTL 内只取一次，TTL 过了才重新取。
+    #[test]
+    fn 带_ttl_的缓存在有效期内只取一次() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = AtomicUsize::new(0);
+        let slot: CacheSlot<u32> = Mutex::new(None);
+        let take = || {
+            hits.fetch_add(1, Ordering::SeqCst);
+            7u32
+        };
+
+        assert_eq!(cached(&slot, Duration::from_secs(3600), take), 7);
+        assert_eq!(cached(&slot, Duration::from_secs(3600), take), 7);
+        assert_eq!(cached(&slot, Duration::from_secs(3600), take), 7);
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "TTL 内不该重复去取");
+
+        // TTL 为 0 = 每次都过期，必须重新取
+        assert_eq!(cached(&slot, Duration::ZERO, take), 7);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "过期之后必须重新取");
+    }
+
+    /// 方案 §11.3 写死的是「缓存 6 小时」。
+    #[test]
+    fn 版本检查的缓存时长与方案一致() {
+        assert_eq!(LATEST_TAG_TTL, Duration::from_secs(6 * 3600));
+        // 额度的缓存要比面板的刷新间隔（10 秒）长，否则等于没缓存
+        assert!(QUOTA_TTL >= Duration::from_secs(30), "{QUOTA_TTL:?}");
+    }
 
     #[test]
     fn 字节可读化() {
