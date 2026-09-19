@@ -14,7 +14,9 @@
 
 ## ⚠️ 当前状态：开发中，**还没有可下载的安装包**
 
-本仓库处于 **M0（预研与骨架）** 阶段，尚未编写业务代码，也**没有发布任何 Release**。
+本仓库处于 **M1（界面骨架）** 阶段：界面按视觉稿实现完了，但 Docker 检测、key 校验、
+拉镜像、起容器这些**真实功能还没接上**（在 M2 / M3），也**没有发布任何 Release**。
+界面上凡是拿不到真实数据的地方都显示「—」并写明原因 —— 不用假数据冒充功能。
 在 [`docs/开发文档/总进度表.md`](docs/开发文档/总进度表.md) 可以看到里程碑进度；
 [`docs/开发文档/M0-预研结论.md`](docs/开发文档/M0-预研结论.md) 里是全部实测数据。
 
@@ -110,7 +112,20 @@ Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完�
 pnpm install
 pnpm tauri dev      # 开发（热重载）
 pnpm tauri build    # 出当前平台的安装包
+
+# 只跑前端的检查（不需要 Rust）
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+
+# 演示数据模式：只在开发构建里生效，界面右上角会有「演示数据」角标，
+# 用来在没有 Docker 的机器上预览界面、与视觉稿做截图比对
+VITE_DEMO=1 pnpm dev
 ```
+
+### 界面
+
+设计令牌（颜色 / 字体 / 字号 / 间距 / 圆角）全部量自 `docs/design/` 下的三张视觉稿，
+逐项列在 [`docs/design/设计令牌.md`](docs/design/设计令牌.md)，实现在 `src/styles/tokens.css`。
+字体是 Noto Sans SC + JetBrains Mono 的**子集**，随程序打包（离线可用），均为 SIL OFL 1.1。
 
 Windows / macOS 的安装包只在 GitHub Actions 上构建。代码签名证书需要付费，
 当前 CI **不签名**，产出的包在 Windows 会触发 SmartScreen、在 macOS 需要手动放行，

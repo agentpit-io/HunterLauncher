@@ -1,0 +1,146 @@
+@import './tokens.css';
+@import './fonts.css';
+@import 'tailwindcss';
+
+/*
+ * Tailwind v4 的配置就写在 CSS 里。这里把设计令牌映射成 Tailwind 的主题变量，
+ * 于是 bg-card / text-body / rounded-lg / text-2xl 这些类名直接产出令牌里的值，
+ * 组件里不会再出现任何裸十六进制颜色。
+ */
+@theme inline {
+  --color-app: var(--hl-bg-app);
+  --color-window: var(--hl-bg-window);
+  --color-sidebar: var(--hl-bg-sidebar);
+  --color-card: var(--hl-bg-card);
+  --color-log: var(--hl-bg-log);
+  --color-hover: var(--hl-bg-hover);
+
+  --color-line: var(--hl-border);
+  --color-line-step: var(--hl-border-line);
+  --color-line-strong: var(--hl-border-strong);
+
+  --color-amber: var(--hl-amber);
+  --color-amber-hover: var(--hl-amber-hover);
+  --color-amber-active: var(--hl-amber-active);
+  --color-amber-text: var(--hl-amber-text);
+  --color-amber-soft: var(--hl-amber-soft);
+  --color-amber-candle: var(--hl-amber-candle);
+  --color-on-amber: var(--hl-on-amber);
+
+  --color-slate-done: var(--hl-slate-done);
+  --color-slate-dot: var(--hl-slate-dot);
+  --color-slate-track: var(--hl-slate-track);
+  --color-candle: var(--hl-candle);
+
+  --color-ink: var(--hl-text);
+  --color-ink-2: var(--hl-text-2);
+  --color-body: var(--hl-text-body);
+  --color-dim: var(--hl-text-dim);
+  --color-label: var(--hl-text-label);
+  --color-muted: var(--hl-text-muted);
+  --color-faint: var(--hl-text-faint);
+  --color-step-done: var(--hl-text-step-done);
+
+  --color-success: var(--hl-success);
+  --color-success-soft: var(--hl-success-soft);
+  --color-warning: var(--hl-warning);
+  --color-warning-soft: var(--hl-warning-soft);
+  --color-danger: var(--hl-danger);
+  --color-danger-soft: var(--hl-danger-soft);
+  --color-info: var(--hl-info);
+  --color-info-soft: var(--hl-info-soft);
+
+  --font-sans: var(--hl-font-sans);
+  --font-mono: var(--hl-font-mono);
+
+  --text-xs: var(--hl-fs-xs);
+  --text-sm: var(--hl-fs-sm);
+  --text-base: var(--hl-fs-base);
+  --text-md: var(--hl-fs-md);
+  --text-lg: var(--hl-fs-lg);
+  --text-xl: var(--hl-fs-xl);
+  --text-2xl: var(--hl-fs-2xl);
+  --text-3xl: var(--hl-fs-3xl);
+  --text-4xl: var(--hl-fs-4xl);
+  --text-5xl: var(--hl-fs-5xl);
+
+  --radius-sm: var(--hl-r-sm);
+  --radius-md: var(--hl-r-md);
+  --radius-lg: var(--hl-r-lg);
+
+  --spacing-card: var(--hl-sp-5);
+  --spacing-gap: var(--hl-sp-3);
+  --spacing-wizard: var(--hl-sp-12);
+  --spacing-panel: var(--hl-sp-11);
+
+  --shadow-card: var(--hl-shadow-card);
+  --shadow-pop: var(--hl-shadow-pop);
+}
+
+@layer base {
+  * {
+    border-color: var(--hl-border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background: var(--hl-bg-app);
+    color: var(--hl-text);
+    font-family: var(--hl-font-sans);
+    font-size: var(--hl-fs-base);
+    line-height: var(--hl-lh-normal);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+    /* 启动器不是网页，禁用文本选择与右键菜单式的「网页感」，只在日志区放开 */
+    user-select: none;
+    cursor: default;
+  }
+
+  /* 日志、key、诊断信息这些用户需要复制的地方单独放开选择 */
+  .selectable {
+    user-select: text;
+    cursor: text;
+  }
+
+  input,
+  textarea {
+    user-select: text;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--hl-border-strong);
+    border-radius: var(--hl-r-full);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3b4463;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--hl-amber);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* 数字与日志一律等宽，并开启等宽数字（视觉稿里所有数值都是等宽的） */
+  .tnum {
+    font-family: var(--hl-font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+}

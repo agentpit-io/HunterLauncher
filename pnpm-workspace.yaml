@@ -1,0 +1,4 @@
+# pnpm 12 起，onlyBuiltDependencies 从 package.json 挪到了这里；
+# package.json 里那份留着，给 pnpm 10（CI 用的版本）读。
+onlyBuiltDependencies:
+  - esbuild
