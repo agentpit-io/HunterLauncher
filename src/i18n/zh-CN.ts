@@ -274,6 +274,71 @@ const zhCN = {
     telemetryOffClears: '关掉开关的那一刻队列会被删掉。',
     autostartReal: (on: boolean): string => (on ? '系统里已经有自启项' : '系统里没有自启项'),
   },
+  update: {
+    // ── 启动器自更新（方案 §10） ──
+    launcherTitle: '启动器有新版本',
+    launcherLine: (from: string, to: string) => `v${from} → v${to}`,
+    launcherNow: '立即更新',
+    launcherLater: '以后再说',
+    launcherWorking: '正在下载并安装…',
+    launcherNotes: '更新说明',
+    launcherRelease: '看完整说明',
+    launcherNone: '启动器已经是最新版',
+    launcherFail: (why: string) => `查不到启动器的最新版本：${why}`,
+    launcherRestart: '装好了，启动器这就重启。',
+    // `.deb` 这类装不了自己的格式
+    manualTitle: '新版本已经下载好，最后一步要你自己来',
+    manualWhy:
+      '这台机器上的启动器是用 .deb 装的。.deb 装在 /usr 下，换包要 root 权限 —— 一个桌面程序不该背着你拿 root 改系统目录，所以最后那一下由你来。',
+    manualCmd: '在终端里跑这条命令：',
+    manualThen: '装完重新打开启动器就是新版本了。容器不受影响，一直在后台跑着。',
+    manualReveal: '打开所在目录',
+    // ── Hunter 升级（方案 §5.6、§10） ──
+    hunterTitle: 'Hunter 有新版本',
+    hunterCurrent: (v: string) => `当前 v${v}`,
+    hunterLatest: (v: string) => `最新 v${v}`,
+    hunterNone: (v: string) => `Hunter 已经是最新版 v${v}`,
+    hunterFail: (why: string) => `查不到 Hunter 的最新版本：${why}`,
+    hunterNotes: 'Release Notes 摘要',
+    hunterNotesFull: '看完整的 Release Notes',
+    hunterMajor:
+      '这是一次跨大版本升级。大版本之间可能有不兼容的改动，升级前请先把上面的说明读完。',
+    hunterUpgrade: '升级',
+    hunterUpgrading: '正在升级…',
+    hunterCheck: '检查更新',
+    hunterChecking: '正在检查…',
+    published: (t: string) => `发布于 ${t}`,
+    // 升级过程
+    stepsTitle: '升级进度',
+    backupNote: (dir: string) =>
+      `升级前会先把数据库 pg_dump 一份、把 .env 与两个 compose 文件抄一份，放在 ${dir}。数据库没备份成功就不会往下走。`,
+    rollbackNote:
+      '拉镜像或起容器失败时，启动器会把配置写回升级前那一整套并用旧镜像重新启动（错误码 E_UPDATE_FAILED）。数据库不会被自动覆盖。',
+    succeeded: '升级完成',
+    failed: '升级失败',
+    backupAt: (p: string) => `备份：${p}`,
+    // ── 备份 ──
+    backupsTitle: '备份',
+    backupsHint: '每次升级前自动做一份；也可以随时手动做一份（换机器、动配置前都用得上）。',
+    backupsEmpty: '还没有任何备份。',
+    backupNow: '现在备份一份',
+    backupWorking: '正在 pg_dump…',
+    backupRestore: '从这份恢复数据库',
+    backupRestoreConfirm:
+      '这会把当前数据库里的表删掉再按这份转储重建。只有在确认数据被升级弄坏了的时候才这么做。',
+    backupRow: (at: string, tag: string, size: string) => `${at} · v${tag} · 转储 ${size}`,
+    backupNoDump: '这份没有数据库转储',
+    backupTotal: (s: string) => `合计占用 ${s}`,
+    // ── 离线包（方案 §9） ──
+    offlineTitle: '从文件导入镜像',
+    offlineHint:
+      '内网机器拉不到镜像时：在一台有网的机器上跑 hunter-launcher --export-images hunter-images-<版本>.tar，把那个文件拷过来，从这里导入。导入后这一步不再联网。',
+    offlinePick: '选择 .tar 文件',
+    offlineImporting: '正在 docker load…',
+    offlineOk: (n: number, tag: string) => `${n} 个镜像已导入，版本 v${tag}，接下来会跳过拉取。`,
+    offlineIncomplete: (missing: string) => `这个包不完整，还缺：${missing}。缺的那几个仍然要联网拉。`,
+    offlineReady: '镜像已在本机，跳过拉取',
+  },
   quit: {
     title: '要退出启动器吗？',
     body: 'Hunter 的容器现在还在运行。你可以让它们继续在后台跑，也可以一起停掉。',

@@ -1,0 +1,157 @@
+name: 国内源同步
+
+# `plan/国内镜像与下载源.md` 第二节「流水线要求」第 2 条。
+#
+# 每 6 小时（以及手动）做三件事：
+#   1. 读 hunter-community 的最新 Release tag；
+#   2. 用 crane 把四个 hunter 镜像整体复制到腾讯云香港（多架构 manifest list 一起复制，
+#      digest 保持一致）；postgres / redis 也镜像一份（国内拉 Docker Hub 不稳）；
+#   3. 把那个 tag 的 `docker-compose.yml` 与 `/hunter/latest.json` 传到 COS，
+#      作为启动器取 compose 与查版本的国内备用路径。
+#
+# 已经存在且 digest 一致的镜像 crane 会秒过，所以定时跑的开销很小。
+#
+# 没配 secrets 的仓库（fork）上，这个 workflow 会**跳过**而不是红：
+# 同步是基础设施活儿，不该挡住任何人 fork 之后跑自己的 CI。
+
+on:
+  schedule:
+    # 每 6 小时。UTC；上海时间 = UTC+8
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: '要同步的 hunter 版本，空格分隔。留空 = 自动取最新 Release'
+        required: false
+        default: ''
+
+concurrency:
+  group: cn-mirror
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: 同步镜像与下载资源到腾讯云香港
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      CN_REGISTRY: ${{ vars.CN_REGISTRY }}
+      TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
+      TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
+      COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+      COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+      COS_BUCKET: ${{ vars.COS_BUCKET }}
+      COS_REGION: ${{ vars.COS_REGION }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 没配凭据就跳过（fork 上属于正常情况）
+        id: gate
+        run: |
+          if [ -z "${TCR_USERNAME:-}" ] || [ -z "${TCR_PASSWORD:-}" ] || [ -z "${CN_REGISTRY:-}" ]; then
+            echo "没有 TCR_USERNAME / TCR_PASSWORD / CN_REGISTRY，跳过整个同步。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 取要同步的版本
+        if: steps.gate.outputs.skip == 'false'
+        id: tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          IN="${{ github.event.inputs.tags }}"
+          if [ -n "$IN" ]; then
+            TAGS="$IN"
+          else
+            # 最新正式 Release 的 tag，去掉前导 v。启动器的 .env 里 HUNTER_VERSION 就是这个写法
+            LATEST=$(gh api repos/agentpit-io/hunter-community/releases/latest --jq .tag_name)
+            TAGS="${LATEST#v}"
+          fi
+          echo "要同步：$TAGS"
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: 装 crane
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          set -e
+          VER=v0.20.2
+          curl -sSL "https://github.com/google/go-containerregistry/releases/download/${VER}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin crane
+          crane version
+
+      - name: 复制镜像（多架构整体复制，digest 不变）
+        if: steps.gate.outputs.skip == 'false'
+        run: |
+          set -uo pipefail
+          crane auth login "${CN_REGISTRY%%/*}" -u "$TCR_USERNAME" -p "$TCR_PASSWORD" >/dev/null
+          fail=0
+          cp1() {
+            local s=$1 d=$2 t0=$SECONDS
+            if crane copy "$s" "$d" 2>&1 | tail -1; then
+              echo "✅ $s → $d （$((SECONDS - t0))s）"
+            else
+              echo "::warning::❌ $s → $d"
+              fail=1
+            fi
+          }
+          for t in ${{ steps.tags.outputs.tags }}; do
+            for s in web api opencode llm-shim; do
+              cp1 "ghcr.io/agentpit-io/hunter-community-$s:$t" "$CN_REGISTRY/hunter-community-$s:$t"
+            done
+          done
+          cp1 docker.io/library/postgres:16-alpine "$CN_REGISTRY/postgres:16-alpine"
+          cp1 docker.io/library/redis:7-alpine "$CN_REGISTRY/redis:7-alpine"
+          exit $fail
+
+      - name: tag 配额自查（个人版每仓库 100 个）
+        if: steps.gate.outputs.skip == 'false'
+        continue-on-error: true
+        run: |
+          set -e
+          for s in web api opencode llm-shim; do
+            N=$(crane ls "$CN_REGISTRY/hunter-community-$s" 2>/dev/null | wc -l)
+            echo "$s：$N 个 tag"
+            if [ "$N" -gt 80 ]; then
+              echo "::warning::$CN_REGISTRY/hunter-community-$s 已经有 $N 个 tag，个人版上限是 100，该清理最旧的了"
+            fi
+          done
+
+      - name: compose 与 /hunter/latest.json 传到 COS
+        if: steps.gate.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          pip install --quiet boto3
+          mkdir -p cn
+          for t in ${{ steps.tags.outputs.tags }}; do
+            curl -fsSL -o "cn/docker-compose.yml" \
+              "https://raw.githubusercontent.com/agentpit-io/hunter-community/v$t/docker-compose.yml"
+            python3 scripts/cos-upload.py cn/docker-compose.yml "hunter/$t/docker-compose.yml"
+          done
+          # 版本检查的国内备用路径。启动器主路径是 api.github.com，这份是它连不上时的兜底
+          LATEST=$(gh api repos/agentpit-io/hunter-community/releases/latest \
+            --jq '{tag: (.tag_name | sub("^v";"")), released_at: .published_at, notes_url: .html_url}')
+          echo "$LATEST" > cn/latest.json
+          cat cn/latest.json
+          python3 scripts/cos-upload.py cn/latest.json "hunter/latest.json"
+
+      - name: 小结
+        if: always()
+        run: |
+          {
+            echo "### 国内源同步"
+            if [ "${{ steps.gate.outputs.skip }}" = "true" ]; then
+              echo "- 没有凭据，整个 job 跳过"
+            else
+              echo "- 版本：\`${{ steps.tags.outputs.tags }}\`"
+              echo "- 镜像：\`${{ vars.CN_REGISTRY }}\`"
+              echo "- 下载：\`${{ vars.CN_DOWNLOAD_BASE }}/hunter/\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

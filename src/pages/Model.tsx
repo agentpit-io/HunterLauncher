@@ -3,6 +3,7 @@ import { Button, ChevronRight } from '../components/Button'
 import { Badge } from '../components/Badge'
 import { Checkbox, Field, TextInput } from '../components/Field'
 import { CheckCircle, Spinner } from '../components/Icons'
+import { OfflineImport } from '../components/OfflineImport'
 import { WizardLayout } from '../components/WizardLayout'
 import { useStore } from '../state/context'
 import * as ipc from '../lib/ipc'
@@ -57,7 +58,11 @@ export function Model() {
           <span className={`max-w-[560px] text-sm leading-[1.5] ${result.ok ? 'text-amber-text' : 'text-danger'}`}>
             {result.message}
           </span>
-        ) : undefined
+        ) : (
+          // 离线包入口摆在这里：下一步就开始拉镜像了，连不上镜像源的机器得在**开始之前**
+          // 就有地方导入（方案 §9）。拉失败之后的错误页上也有一个。
+          <OfflineImport />
+        )
       }
       footerRight={
         <>

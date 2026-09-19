@@ -16,18 +16,22 @@
 
 import type {
   AppInfo,
+  BackupMeta,
   BootState,
   DiagSection,
   DockerInfo,
   ImagePull,
   KeyCheckResult,
   LauncherSettings,
+  LauncherUpdate,
   MissingEndpoint,
+  OfflineImport,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
   TelemetryView,
+  UpgradeCheck,
 } from './types'
 
 /** 构建产物里能被 grep 到的标记，CI 用它确认发布包里没有演示数据。 */
@@ -358,3 +362,71 @@ export const demoComposeLog: string[] = [
   'hunter-postgres-1  | database system is ready to accept connections',
   'hunter-redis-1     | Ready to accept connections tcp',
 ]
+
+
+// ── M4 · 更新 / 备份 / 离线包的演示数据 ──────────────────────────────────
+//
+// 同样按红线 1 的原则取值：版本号、错误码、路径都用真实形状，
+// 不编造一个"看起来很厉害"的场景。
+
+export const demoLauncherUpdate: LauncherUpdate = {
+  available: true,
+  current: DEMO_LAUNCHER_VERSION,
+  version: '0.1.1',
+  notes: '修了拉取页在慢网络下 ETA 抖动的问题；升级失败回滚后不再重复提示。',
+  date: '2026-09-21T02:00:00Z',
+  // 演示的是 .deb 这一路 —— 它的界面分支更多（要显示那条命令），预览时更有用
+  canSelfInstall: false,
+  installKind: 'deb',
+  reason: null,
+}
+
+export const demoHunterUpdate: UpgradeCheck = {
+  current: DEMO_HUNTER_TAG,
+  latest: DEMO_LATEST_TAG,
+  hasUpdate: true,
+  notes:
+    '## 1.2.0\n\n- 晨报支持企业微信群机器人\n- opencode 升到 0.5.x，工具调用更稳\n- 修复 postgres 16 下的迁移顺序问题\n\n升级须知：本版本会跑一次数据库迁移，升级前请确认备份已完成。',
+  notesUrl: 'https://github.com/agentpit-io/hunter-community/releases/tag/v1.2.0',
+  publishedAt: '2026-09-19T09:47:29Z',
+  majorJump: false,
+  reason: null,
+}
+
+export const demoBackups: BackupMeta[] = [
+  {
+    id: '2026-09-20_031854-v1.1.0',
+    tag: DEMO_HUNTER_TAG,
+    at: '2026-09-20 03:18:54',
+    sqlBytes: 1_482_301,
+    sqlError: null,
+    files: ['.env', 'docker-compose.yml', 'docker-compose.launcher.yml', 'launcher.toml'],
+  },
+]
+
+export const demoOffline: OfflineImport = {
+  path: '/home/user/hunter-images-1.2.0.tar',
+  bytes: 1_893_400_576,
+  seconds: 74,
+  loaded: [
+    'ghcr.io/agentpit-io/hunter-community-web:1.2.0',
+    'ghcr.io/agentpit-io/hunter-community-api:1.2.0',
+    'ghcr.io/agentpit-io/hunter-community-opencode:1.2.0',
+    'ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0',
+    'postgres:16-alpine',
+    'redis:7-alpine',
+  ],
+  matched: [
+    { service: 'web', reference: 'ghcr.io/agentpit-io/hunter-community-web:1.2.0', bytes: 240_000_000 },
+    { service: 'api', reference: 'ghcr.io/agentpit-io/hunter-community-api:1.2.0', bytes: 960_000_000 },
+    { service: 'opencode', reference: 'ghcr.io/agentpit-io/hunter-community-opencode:1.2.0', bytes: 812_000_000 },
+    { service: 'llm-shim', reference: 'ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0', bytes: 48_000_000 },
+    { service: 'postgres', reference: 'postgres:16-alpine', bytes: 92_000_000 },
+    { service: 'redis', reference: 'redis:7-alpine', bytes: 18_000_000 },
+  ],
+  missing: [],
+  registryPrefix: DEMO_REGISTRY,
+  basePrefix: 'docker.io/library',
+  tag: DEMO_LATEST_TAG,
+  complete: true,
+}

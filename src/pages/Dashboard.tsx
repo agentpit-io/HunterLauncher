@@ -11,6 +11,7 @@ import { StatCard } from '../components/StatCard'
 import { StatusDot } from '../components/StatusDot'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
+import type { LauncherUpdate } from '../lib/types'
 import { duration, percent, thousands } from '../lib/format'
 import { useStore } from '../state/context'
 
@@ -38,6 +39,8 @@ export function Dashboard() {
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [showMissing, setShowMissing] = useState(false)
+  // 后台每 24 小时查一次启动器自己的版本（方案 §10）。查到就在面板顶上挂一条
+  const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdate | null>(null)
   const d = rt.data
 
   // 托盘也能启动 / 停止 / 重启容器，面板要跟着变。
@@ -52,9 +55,14 @@ export function Dashboard() {
       .then((f) => {
         un = f
       })
+    let un2: (() => void) | undefined
+    void ipc.onLauncherUpdate(setLauncherUpdate).then((f) => {
+      un2 = f
+    })
     const timer = window.setInterval(() => rt.reload(), 10_000)
     return () => {
       un?.()
+      un2?.()
       window.clearInterval(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -119,6 +127,27 @@ export function Dashboard() {
           {t.dashboard.openHunter}
         </Button>
       </header>
+
+      {/* 启动器自己有新版本（方案 §10「有更新时托盘提示」，界面上也要有一条）。
+          只在后台真的查到时才出现；点「查看」进更新页，装不装由用户决定 —— 绝不自动装。 */}
+      {launcherUpdate?.available && launcherUpdate.version && (
+        <div
+          className="mt-[14px] flex shrink-0 items-center justify-between gap-4 rounded-md border border-amber/45 bg-amber-soft px-4 py-2.5"
+          data-testid="launcher-update-banner"
+        >
+          <span className="tnum min-w-0 truncate text-sm text-amber-text">
+            {t.update.launcherTitle} · {t.update.launcherLine(launcherUpdate.current, launcherUpdate.version)}
+          </span>
+          <div className="flex shrink-0 gap-[10px]">
+            <Button size="sm" variant="ghost" onClick={() => setLauncherUpdate(null)}>
+              {t.update.launcherLater}
+            </Button>
+            <Button size="sm" onClick={() => setOverlay('update')}>
+              {t.update.launcherNow}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* api 自报 key 有没有落进容器（M0 §3.1 的意外收获）。只有明确是 false 才提示，
           读不到就什么都不说 —— 没读到不等于没配上（红线 1）。 */}
@@ -191,7 +220,20 @@ export function Dashboard() {
         <Card className="flex min-h-0 flex-col">
           <CardHead
             title={t.dashboard.env}
-            right={hasUpdate ? <Badge tone="amber">{t.dashboard.updateBadge(`v${d!.latestTag}`)}</Badge> : undefined}
+            right={
+              hasUpdate ? (
+                // 视觉稿第 3 张右上角那个「有新版本 v1.0.0」的角标。M4 起它是可点的：
+                // 点开就是更新页（Release Notes 摘要 + 升级 + 备份）
+                <button
+                  type="button"
+                  data-testid="hunter-update-badge"
+                  onClick={() => setOverlay('update')}
+                  className="transition-opacity hover:opacity-80"
+                >
+                  <Badge tone="amber">{t.dashboard.updateBadge(`v${d!.latestTag}`)}</Badge>
+                </button>
+              ) : undefined
+            }
           />
           <div className="mt-[16px]">
             <EnvList
@@ -224,6 +266,9 @@ export function Dashboard() {
             </Button>
             <Button size="sm" onClick={() => setOverlay('logs')}>
               {t.common.logs}
+            </Button>
+            <Button size="sm" data-testid="open-update" onClick={() => setOverlay('update')}>
+              {t.update.hunterCheck}
             </Button>
             <Button size="sm" onClick={() => setOverlay('feedback')}>
               {t.common.feedback}

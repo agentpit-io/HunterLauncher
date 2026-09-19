@@ -153,6 +153,16 @@ pub struct InstallSection {
     pub done: bool,
     /// 上海时间字符串
     pub at: String,
+    /// 镜像是**离线包导入**来的（方案 §9）。
+    ///
+    /// **必须落盘**，不能只放在进程内存里：`--import-images` 导完就退出了，
+    /// 真正安装是下一个进程做的事，内存里的标志根本传不过去
+    /// （M4 测试 5 第一次跑就是栽在这里 —— 导入明明成功了，安装还是去测速然后失败）。
+    ///
+    /// 为真时 [`crate::flow::prepare`] 跳过镜像源测速、[`crate::flow::pull`] 跳过拉取。
+    /// 一旦真的从网上拉成功过一次，它会被自动清掉（那说明这台机器本来就能连上源）。
+    #[serde(default)]
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -673,6 +683,57 @@ pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Op
     }
 }
 
+/// 国内备用的 compose 地址（`plan/国内镜像与下载源.md` 的目录约定 `/hunter/<tag>/docker-compose.yml`）。
+pub fn cn_compose_url(tag: &str) -> String {
+    format!("{CN_DOWNLOAD_BASE}/hunter/{tag}/docker-compose.yml")
+}
+
+/// 国内下载源前缀。与 GitHub 仓库变量 `CN_DOWNLOAD_BASE` 保持一致。
+pub const CN_DOWNLOAD_BASE: &str = "https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com";
+
+/// **升级专用**的 compose 获取：拿不到就是拿不到，**绝不退回内置副本**。
+///
+/// 和 [`fetch_compose`] 的区别只有这一条，但它很关键：安装时退回内置的 1.2.0 副本是合理的兜底
+/// （用户要的就是"一套能跑的 Hunter"）；而升级时用户点的是**某个具体版本**，
+/// 这时候悄悄换成内置的 1.2.0 就是拿另一件事冒充他要的事 —— 他会以为自己升到了 9.9.9，
+/// 实际跑的是 1.2.0。宁可报错让他知道那个版本取不到（红线 1）。
+///
+/// 两个源按顺序试：raw.githubusercontent（主）→ COS 香港（国内备用）。
+pub fn fetch_compose_strict(tag: &str, timeout: Duration) -> AppResult<(String, String)> {
+    let urls = [
+        format!(
+            "https://raw.githubusercontent.com/agentpit-io/hunter-community/v{tag}/docker-compose.yml"
+        ),
+        cn_compose_url(tag),
+    ];
+    let mut why: Vec<String> = Vec::new();
+    for url in urls {
+        let host = crate::http::host_of(&url);
+        match crate::http::get(&url, &[], timeout) {
+            Ok(r) if r.ok() => match validate_compose(&r.body) {
+                Ok(()) => {
+                    let body = r.body.replace("\r\n", "\n");
+                    crate::linfo!(
+                        "升级：已从 {host} 取到 v{tag} 的 compose（{} 字节）",
+                        body.len()
+                    );
+                    return Ok((body, host));
+                }
+                Err(e) => why.push(format!("{host} 返回的内容不合格（{}）", e.msg)),
+            },
+            Ok(r) => why.push(format!("{host} HTTP {}", r.status)),
+            Err(e) => why.push(format!("{host} {}", e.msg)),
+        }
+    }
+    Err(AppError::new(
+        Code::ComposeFetch,
+        format!(
+            "取不到 v{tag} 的 docker-compose.yml：{}。这个版本可能不存在。",
+            why.join("；")
+        ),
+    ))
+}
+
 /// 校验下载回来的 compose 是不是真的那个文件。
 /// 不做完整 YAML 解析 —— `docker compose config` 稍后会替我们做，而且做得更彻底。
 /// 这里拦的是「拿回来一个登录页 / 404 页 / 空文件」这类明显不对的东西。
@@ -1082,6 +1143,9 @@ mod tests {
     #[test]
     fn 缺字段的_toml_用默认值补齐() {
         let c: LauncherConfig = toml::from_str("[launcher]\nlocale = \"en\"\nversion = \"0.1.0\"\nautostart = false\ncheck_update_hours = 24\n").unwrap();
+        // `install.offline` 是 M4 新加的字段：老的 launcher.toml 里没有它，
+        // 读回来必须是 false 而不是报错（#[serde(default)] 保证这一点）。
+        assert!(!c.install.offline);
         assert_eq!(c.launcher.locale, "en");
         assert_eq!(c.hunter.ports.web, 3100, "没写的段要落到默认值");
         assert!(!c.install.done);

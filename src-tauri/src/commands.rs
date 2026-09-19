@@ -858,6 +858,263 @@ pub fn missing_endpoints() -> Vec<flow::MissingEndpoint> {
     flow::missing_endpoints()
 }
 
+// ── M4 · 启动器自更新 ─────────────────────────────────────────────────────
+
+/// 查启动器自己有没有新版本（方案 §10）。**不下载任何东西。**
+#[tauri::command]
+pub async fn check_launcher_update(
+    app: tauri::AppHandle,
+) -> Result<crate::selfupdate::LauncherUpdate> {
+    let u = crate::selfupdate::check(&app).await;
+    crate::tray::note_launcher_update(&app, u.version.as_deref());
+    Ok(u)
+}
+
+/// 装启动器的新版本。
+///
+/// * 能就地装（AppImage / Windows / macOS）→ 装完**自动重启进程**，这个调用不会返回。
+/// * 装不了（`.deb`）→ 把包下到 `~/.hunter/updates/` 并返回一条要用户自己敲的命令。
+#[tauri::command]
+pub async fn install_launcher_update(
+    app: tauri::AppHandle,
+) -> Result<Option<crate::selfupdate::ManualInstall>> {
+    match crate::selfupdate::install(&app).await {
+        Ok(Some(m)) => Ok(Some(m)),
+        Ok(None) => {
+            crate::linfo!("自更新完成，重启启动器");
+            // 重启前把容器留着 —— 用户更新的是启动器，不是 Hunter
+            app.restart();
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ── M4 · Hunter 版本检查与升级 ────────────────────────────────────────────
+
+/// Hunter 有没有新版本 + Release Notes 摘要（方案 §10 第 1 条）。
+/// `force` 为真时绕过 6 小时缓存（用户亲手点「检查更新」）。
+#[tauri::command]
+pub async fn check_hunter_update(
+    app: tauri::AppHandle,
+    force: Option<bool>,
+) -> Result<crate::upgrade::UpgradeCheck> {
+    blocking(move || {
+        let cur = state(&app).config().hunter.tag;
+        Ok(crate::upgrade::check(&cur, force.unwrap_or(false)))
+    })
+    .await
+}
+
+/// 升级过程中的实时状态。前端每秒拉一次。
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeStatus {
+    /// 还在进行中
+    pub running: bool,
+    /// 每一步的文字，最新的在最后
+    pub steps: Vec<String>,
+    /// 做完了的结果；还没做完就是 `None`
+    pub result: Option<crate::upgrade::UpgradeResult>,
+    /// 失败时的 `E_UPDATE_FAILED: …`
+    pub error: Option<String>,
+}
+
+fn upgrade_slot() -> &'static std::sync::Mutex<UpgradeStatus> {
+    static ONCE: std::sync::OnceLock<std::sync::Mutex<UpgradeStatus>> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| std::sync::Mutex::new(UpgradeStatus::default()))
+}
+
+/// 升级事件：每一步的文字。前端也可以只靠 [`upgrade_status`] 轮询。
+pub const EV_UPGRADE: &str = "hunter://upgrade";
+
+/// 开始升级。立刻返回，进度走 `hunter://upgrade`（步骤文字）与 `hunter://pull`（拉取进度）。
+#[tauri::command]
+pub fn upgrade_hunter(app: tauri::AppHandle, tag: String) -> Result<()> {
+    {
+        let st = state(&app);
+        if st.busy.swap(true, Ordering::SeqCst) {
+            return Err(AppError::new(Code::Unknown, "已经有一次操作在进行中").to_string());
+        }
+        st.cancel.store(false, Ordering::SeqCst);
+    }
+    if let Ok(mut g) = upgrade_slot().lock() {
+        *g = UpgradeStatus {
+            running: true,
+            ..Default::default()
+        };
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let st = handle.state::<AppState>();
+        let h_step = handle.clone();
+        let note = move |line: &str| {
+            let line = crate::redact::redact(line);
+            crate::linfo!("升级：{line}");
+            if let Ok(mut g) = upgrade_slot().lock() {
+                g.steps.push(line.clone());
+            }
+            let _ = h_step.emit(EV_UPGRADE, line);
+        };
+        let h_pull = handle.clone();
+        let r = crate::upgrade::upgrade(&st, &tag, note, move |p| {
+            let _ = h_pull.emit(EV_PULL, p);
+        });
+        if let Ok(mut g) = upgrade_slot().lock() {
+            g.running = false;
+            match r {
+                Ok(res) => g.result = Some(res),
+                Err(e) => {
+                    crate::lerror!("升级失败：{}", e.msg);
+                    g.error = Some(e.to_string());
+                }
+            }
+        }
+        st.busy.store(false, Ordering::SeqCst);
+        crate::tray::refresh_status(&handle);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn upgrade_status() -> Result<UpgradeStatus> {
+    Ok(upgrade_slot().lock().map(|g| g.clone()).unwrap_or_default())
+}
+
+/// 备份清单（设置页显示）。
+#[tauri::command]
+pub async fn list_backups() -> Result<Vec<crate::backup::BackupMeta>> {
+    blocking(|| Ok(crate::backup::list())).await
+}
+
+/// 手动做一次备份（不升级也能备份 —— 换机器、动配置前都用得上）。
+#[tauri::command]
+pub async fn create_backup(app: tauri::AppHandle) -> Result<crate::backup::BackupMeta> {
+    blocking(move || {
+        let tag = state(&app).config().hunter.tag;
+        let m = crate::backup::create(&tag, |_| {})?;
+        let _ = crate::backup::write_readme(&m.id);
+        Ok(m)
+    })
+    .await
+}
+
+/// 从某次备份把数据库灌回去。**只在用户显式要求时做**（见 [`crate::backup`] 的模块头）。
+#[tauri::command]
+pub async fn restore_backup(id: String) -> Result<String> {
+    blocking(move || crate::backup::restore_db(&id)).await
+}
+
+// ── M4 · 离线包 ───────────────────────────────────────────────────────────
+
+/// 弹系统文件选择框挑一个 `.tar`。挑完只返回路径，**不做任何导入**。
+///
+/// 对话框由 Rust 弹（不是前端），所以不用给前端开 `dialog:` 权限：
+/// 前端能做的事仍然只有「调这个 command」。
+#[tauri::command]
+pub async fn pick_offline_tar(app: tauri::AppHandle) -> Result<Option<String>> {
+    blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("选择离线镜像包（docker save 出来的 .tar）")
+            .add_filter("镜像包", &["tar"])
+            .blocking_pick_file();
+        Ok(picked.map(|p| p.to_string()))
+    })
+    .await
+}
+
+/// 导入离线包（方案 §9）。导入成功且六个镜像齐了，就把镜像源与版本改成包里的那一套，
+/// 安装流程会因此跳过拉取。
+#[tauri::command]
+pub async fn import_offline(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<crate::offline::ImportResult> {
+    blocking(move || {
+        let h = app.clone();
+        let r = crate::offline::import(std::path::Path::new(&path), move |line| {
+            let _ = h.emit(EV_LOG, line.to_string());
+        })?;
+        if r.complete {
+            // 把配置对齐到包里的那一套，否则 compose 还是会去拉网上的镜像
+            let st = state(&app);
+            let mut cfg = st.config();
+            if let Some(p) = &r.registry_prefix {
+                // 包里的前缀正好是我们认得的两个候选源之一就用它（界面上能显示「腾讯云 · 香港」
+                // 这种人话）；不是的话当成自定义源，如实显示前缀本身
+                let owned;
+                let cand: &registry::Candidate =
+                    match registry::CANDIDATES.iter().find(|c| c.prefix == p.as_str()) {
+                        Some(c) => c,
+                        None => {
+                            owned = registry::custom(p);
+                            &owned
+                        }
+                    };
+                cfg.apply_registry(cand);
+                // postgres / redis 的前缀按包里实际的来
+                if let Some(b) = &r.base_prefix {
+                    cfg.hunter.base_prefix = b.clone();
+                }
+            }
+            if let Some(t) = &r.tag {
+                cfg.hunter.tag = t.clone();
+            }
+            // **落盘**，不只放内存：界面上导入之后可能要过一会儿才点「开始安装」，
+            // 中间用户完全可能把启动器关了再开（headless 更是两个进程）
+            cfg.install.offline = true;
+            cfg.save()?;
+            st.set_config(cfg);
+            st.offline.store(true, Ordering::SeqCst);
+            crate::linfo!(
+                "离线包导入完成，已把镜像源改成 {:?}、版本改成 {:?}，安装时会跳过拉取",
+                r.registry_prefix,
+                r.tag
+            );
+        }
+        Ok(r)
+    })
+    .await
+}
+
+/// 六个镜像在本机齐了没有。拉取页靠它决定要不要显示「已导入，跳过拉取」。
+#[tauri::command]
+pub async fn offline_ready(app: tauri::AppHandle) -> Result<crate::offline::ImportResult> {
+    blocking(move || {
+        let cfg = state(&app).config();
+        let specs = config::images(
+            &cfg.hunter.registry_prefix,
+            &cfg.hunter.base_prefix,
+            &cfg.hunter.tag,
+        );
+        let (ok, missing) = crate::offline::all_present(&specs);
+        let matched = specs
+            .iter()
+            .filter(|s| !missing.contains(&s.service))
+            .map(|s| crate::offline::MatchedImage {
+                service: s.service.clone(),
+                reference: s.reference.clone(),
+                bytes: crate::offline::inspect_size(&s.reference),
+            })
+            .collect();
+        Ok(crate::offline::ImportResult {
+            path: String::new(),
+            bytes: 0,
+            seconds: 0,
+            loaded: Vec::new(),
+            matched,
+            missing,
+            registry_prefix: Some(cfg.hunter.registry_prefix.clone()),
+            base_prefix: Some(cfg.hunter.base_prefix.clone()),
+            tag: Some(cfg.hunter.tag.clone()),
+            complete: ok,
+        })
+    })
+    .await
+}
+
 // ── 工具 ──────────────────────────────────────────────────────────────────
 
 /// 把阻塞活儿挪到工作线程，别卡住 UI。

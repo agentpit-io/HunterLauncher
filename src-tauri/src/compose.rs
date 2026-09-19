@@ -70,6 +70,21 @@ pub fn run(extra: &[&str], timeout: Duration) -> AppResult<proc::Ran> {
     proc::run_timeout("docker", &args, timeout)
 }
 
+/// 同一条命令的**完整参数（带所有权）**。
+///
+/// 给需要自己接管子进程 stdin/stdout 的调用方用 —— 目前是 [`crate::backup`]：
+/// `pg_dump` 的输出要直接落盘，不能先在内存里攒成一个 String
+/// （用户的库可能有几百 MB，攒在内存里就是等着 OOM）。
+pub fn argv(extra: &[&str]) -> Vec<String> {
+    let (c, o) = file_paths();
+    let dir = paths::app_dir();
+    let dir_s = dir.to_string_lossy().into_owned();
+    full_args(&c, &o, &dir_s, extra)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 // ── 进度解析 ──────────────────────────────────────────────────────────────
 
 /// `--progress json` 的一行。字段全集见 M0 §5.1，这里只取用得上的。

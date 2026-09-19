@@ -48,6 +48,13 @@ pub struct AppState {
     pub cancel: Arc<AtomicBool>,
     pub busy: AtomicBool,
     pub start_note: Mutex<Option<String>>,
+    /// 这一轮安装的镜像是**离线包导入**来的（方案 §9）。为真时 [`pull`] 直接跳过拉取。
+    ///
+    /// 为什么要一个显式的开关，而不是「本机已经有这六个镜像就跳过」：
+    /// 后者会顺手把**正常安装**也变成跳过（开发机、重装的机器上这些层本来就在），
+    /// 于是「拉取」这一步在很多机器上悄悄没执行，出问题时谁也说不清它到底跑没跑。
+    /// 显式开关只在用户真的导入过离线包时为真，行为可预期。
+    pub offline: AtomicBool,
 }
 
 impl Default for AppState {
@@ -58,8 +65,10 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let cfg = LauncherConfig::load();
+        let cfg_offline = cfg.install.offline;
         Self {
-            cfg: Mutex::new(LauncherConfig::load()),
+            cfg: Mutex::new(cfg),
             key: Mutex::new(None),
             own_key: Mutex::new(None),
             pull: Mutex::new(PullProgress::empty()),
@@ -70,6 +79,8 @@ impl AppState {
             cancel: Arc::new(AtomicBool::new(false)),
             busy: AtomicBool::new(false),
             start_note: Mutex::new(None),
+            // 从落盘的配置里读回来 —— `--import-images` 与真正的安装是两个进程
+            offline: AtomicBool::new(cfg_offline),
         }
     }
 
@@ -150,52 +161,69 @@ pub fn prepare(
     paths::ensure_dirs()?;
     let mut cfg = state.config();
     cfg.hunter.tag = opts.tag.clone();
+    let offline = state.offline.load(Ordering::Relaxed);
 
     // ① 镜像源
-    let (cand, probes) = match opts.registry.as_deref() {
-        Some(id) if registry::by_id(id).is_some() => {
-            let c = registry::by_id(id).unwrap();
-            let p = registry::probe(c, &opts.tag, PROBE_TIMEOUT);
-            if !p.available {
-                return Err(AppError::new(
-                    Code::PullFailed,
-                    format!(
-                        "指定的镜像源 {} 上拉不到 {}：{}",
-                        c.label,
-                        opts.tag,
-                        p.detail.clone().unwrap_or_default()
-                    ),
-                ));
+    //
+    // 离线包导入过就**整个跳过测速**：那台机器多半根本连不上任何源（这正是用离线包的原因），
+    // 去测速只会白等两个超时然后报错 —— 而镜像其实已经躺在本机了。
+    // 用包里带的那个前缀就行，它是从镜像名反推出来的，一定对得上。
+    let (cand, probes) = if offline {
+        let c: &'static registry::Candidate = registry::CANDIDATES
+            .iter()
+            .find(|c| c.prefix == cfg.hunter.registry_prefix)
+            .unwrap_or_else(|| Box::leak(Box::new(registry::custom(&cfg.hunter.registry_prefix))));
+        note(&format!(
+            "离线模式：镜像已由离线包导入，跳过镜像源测速（源 {}）",
+            c.prefix
+        ));
+        (c, Vec::new())
+    } else {
+        match opts.registry.as_deref() {
+            Some(id) if registry::by_id(id).is_some() => {
+                let c = registry::by_id(id).unwrap();
+                let p = registry::probe(c, &opts.tag, PROBE_TIMEOUT);
+                if !p.available {
+                    return Err(AppError::new(
+                        Code::PullFailed,
+                        format!(
+                            "指定的镜像源 {} 上拉不到 {}：{}",
+                            c.label,
+                            opts.tag,
+                            p.detail.clone().unwrap_or_default()
+                        ),
+                    ));
+                }
+                note(&format!("镜像源：{}（{} ms，指定）", p.label, p.elapsed_ms));
+                (c, vec![p])
             }
-            note(&format!("镜像源：{}（{} ms，指定）", p.label, p.elapsed_ms));
-            (c, vec![p])
-        }
-        Some(prefix) => {
-            // 用户手填的自定义源：探不了 manifest（不知道仓库路径），直接信任并写清楚
-            let c: &'static registry::Candidate = Box::leak(Box::new(registry::custom(prefix)));
-            note(&format!(
-                "镜像源：自定义 {}（用户手填，没有做可用性探测）",
-                c.prefix
-            ));
-            (c, Vec::new())
-        }
-        None => {
-            note("正在测速候选镜像源…");
-            let (c, p) = registry::choose(&opts.tag, PROBE_TIMEOUT)?;
-            for r in &p {
+            Some(prefix) => {
+                // 用户手填的自定义源：探不了 manifest（不知道仓库路径），直接信任并写清楚
+                let c: &'static registry::Candidate = Box::leak(Box::new(registry::custom(prefix)));
                 note(&format!(
-                    "  {} {} · {} ms{}",
-                    if r.available { "可用" } else { "不可用" },
-                    r.label,
-                    r.elapsed_ms,
-                    r.detail
-                        .as_ref()
-                        .map(|d| format!(" · {d}"))
-                        .unwrap_or_default()
+                    "镜像源：自定义 {}（用户手填，没有做可用性探测）",
+                    c.prefix
                 ));
+                (c, Vec::new())
             }
-            note(&format!("选定：{}", c.label));
-            (c, p)
+            None => {
+                note("正在测速候选镜像源…");
+                let (c, p) = registry::choose(&opts.tag, PROBE_TIMEOUT)?;
+                for r in &p {
+                    note(&format!(
+                        "  {} {} · {} ms{}",
+                        if r.available { "可用" } else { "不可用" },
+                        r.label,
+                        r.elapsed_ms,
+                        r.detail
+                            .as_ref()
+                            .map(|d| format!(" · {d}"))
+                            .unwrap_or_default()
+                    ));
+                }
+                note(&format!("选定：{}", c.label));
+                (c, p)
+            }
         }
     };
     cfg.apply_registry(cand);
@@ -312,26 +340,41 @@ pub fn prepare(
     );
     let arch = registry::oci_arch();
     let mut sizes: BTreeMap<String, u64> = BTreeMap::new();
-    for s in &specs {
-        match registry::compressed_size(&s.host, &s.repo, &s.tag, arch, NET_TIMEOUT) {
-            Ok(n) => {
+    if offline {
+        // 离线模式下去问 registry 要 manifest 是白等六个超时 —— 镜像就在本机，
+        // 直接读 `docker image inspect` 的 Size。它是**解压后**的大小，比压缩后大不少，
+        // 但离线模式根本不画进度条（一个字节都不用下），这个数只用来在日志里报个量。
+        for s in &specs {
+            if let Some(n) = crate::offline::inspect_size(&s.reference) {
                 sizes.insert(s.service.clone(), n);
             }
-            Err(e) => lwarn!(
-                "读不到 {} 的 manifest（进度条分母会退而用观测值）：{}",
-                s.reference,
-                e.msg
-            ),
         }
-    }
-    let total: u64 = sizes.values().sum();
-    if total > 0 {
         note(&format!(
-            "六个镜像合计约 {}（linux/{arch} 压缩后，来自 manifest）",
-            human_bytes(total)
+            "六个镜像已在本机，合计 {}（docker image inspect 的解压后大小）",
+            human_bytes(sizes.values().sum::<u64>())
         ));
     } else {
-        note("读不到 manifest，进度条的总量会在拉取过程中逐步补齐");
+        for s in &specs {
+            match registry::compressed_size(&s.host, &s.repo, &s.tag, arch, NET_TIMEOUT) {
+                Ok(n) => {
+                    sizes.insert(s.service.clone(), n);
+                }
+                Err(e) => lwarn!(
+                    "读不到 {} 的 manifest（进度条分母会退而用观测值）：{}",
+                    s.reference,
+                    e.msg
+                ),
+            }
+        }
+        let total: u64 = sizes.values().sum();
+        if total > 0 {
+            note(&format!(
+                "六个镜像合计约 {}（linux/{arch} 压缩后，来自 manifest）",
+                human_bytes(total)
+            ));
+        } else {
+            note("读不到 manifest，进度条的总量会在拉取过程中逐步补齐");
+        }
     }
 
     Ok(PrepareResult {
@@ -428,6 +471,33 @@ pub fn pull(
     let mut prefix = prep.registry_prefix.clone();
     let mut last_err: Option<AppError> = None;
 
+    // 离线包模式：镜像已经在本机了，一个字节都不用下（方案 §9）。
+    // 但仍然要**复核一遍六个镜像真在**，不然「跳过拉取」就成了一句空话，
+    // 到 `up -d` 才发现少东西（那时候报出来的错更难懂）。
+    if state.offline.load(Ordering::Relaxed) {
+        let (ok, missing) = crate::offline::all_present(&specs);
+        if ok {
+            let mut agg = PullAggregator::new(&specs, &sizes, &prefix, &label);
+            let mut snap = agg.snapshot(PullPhase::Done, None);
+            snap.percent = 100;
+            for i in snap.images.iter_mut() {
+                i.state = compose::PullState::Done;
+                if i.total_bytes > 0 {
+                    i.downloaded_bytes = i.total_bytes;
+                }
+            }
+            snap.log
+                .push("离线包已导入，六个镜像都在本机，跳过拉取".to_string());
+            if let Ok(mut g) = state.pull.lock() {
+                *g = snap.clone();
+            }
+            on_progress(&snap);
+            linfo!("离线模式：六个镜像都在本机，跳过拉取");
+            return Ok(());
+        }
+        lwarn!("标了离线模式，但本机还缺 {missing:?}，照常联网拉");
+    }
+
     for attempt in 1..=compose::PULL_ATTEMPTS as u32 {
         let mut agg = PullAggregator::new(&specs, &sizes, &prefix, &label);
         agg.set_attempt(attempt);
@@ -460,6 +530,15 @@ pub fn pull(
                 }
                 on_progress(&snap);
                 linfo!("拉取完成，用时 {} 秒", agg.elapsed().as_secs());
+                // 真的从网上拉成功了 = 这台机器连得上源，离线标志该退场了。
+                // 留着它会让以后每次安装都跳过拉取，镜像永远停在导入时的那一版。
+                if state.offline.swap(false, Ordering::SeqCst) {
+                    let mut c = state.config();
+                    c.install.offline = false;
+                    let _ = c.save();
+                    state.set_config(c);
+                    linfo!("已从网上拉取成功，离线标志清除");
+                }
                 state.tele(
                     "pull_done",
                     &[
@@ -532,6 +611,19 @@ pub fn pull(
 
 /// 换源之后重写 `.env` 的 `HUNTER_REGISTRY` 与覆盖文件里 postgres/redis 的镜像地址。
 fn rewrite_registry(state: &AppState, cfg: &LauncherConfig, tag: &str) -> AppResult<()> {
+    rewrite_env_and_override(state, cfg, tag)
+}
+
+/// 用**当前配置 + 内存或 `.env` 里的 key**把 `.env` 与覆盖文件重写一遍，tag 换成给的这个。
+///
+/// 三个地方要做同一件事：换源重试（[`rewrite_registry`]）、Hunter 升级（[`crate::upgrade`]）、
+/// 切模型模式（[`apply_model_change`] 用的是自己那份，因为它还要处理"内存里没有自带 key"）。
+/// `write_env` 自带 sticky：JWT_SECRET / 数据库口令 / opencode 口令都会原样读回来，绝不换新。
+pub fn rewrite_env_and_override(
+    state: &AppState,
+    cfg: &LauncherConfig,
+    tag: &str,
+) -> AppResult<()> {
     let hunter_key = state
         .hunter_key()
         .ok_or_else(|| AppError::new(Code::KeyInvalid, "内存里没有 key 了".to_string()))?;
@@ -542,10 +634,27 @@ fn rewrite_registry(state: &AppState, cfg: &LauncherConfig, tag: &str) -> AppRes
         .and_then(|g| g.clone())
         .unwrap_or_default();
     let (llm_base, llm_model, llm_key, sanitize) = if cfg.model.mode == "own" {
+        // 自带 key 模式下内存里可能没有那把 key（重开了启动器），从现有的 .env 读回来。
+        // 读不回来就宁可报错也不把 hunter key 当成模型 key 写进去。
+        let k = if own_key.is_empty() {
+            config::parse_env_file(&paths::env_file())
+                .get("LLM_API_KEY")
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            own_key
+        };
+        if k.is_empty() || k == hunter_key {
+            return Err(AppError::new(
+                Code::KeyInvalid,
+                "当前是自带模型 key 模式，但读不回那把 key，没法重写 .env".to_string(),
+            ));
+        }
+        crate::redact::register_secret(&k);
         (
             cfg.model.base_url.clone(),
             cfg.model.model.clone(),
-            own_key,
+            k,
             cfg.model.schema_sanitize,
         )
     } else {
@@ -976,47 +1085,28 @@ pub fn apply_model_change(state: &AppState) -> AppResult<String> {
     }
 }
 
-/// 版本检查的缓存时长。方案 §11.3 写的就是 6 小时。
-const LATEST_TAG_TTL: Duration = Duration::from_secs(6 * 3600);
 /// 额度的缓存时长。运行面板每 10 秒刷一次，额度没必要跟着那么勤。
 const QUOTA_TTL: Duration = Duration::from_secs(60);
 
-/// Hunter 的最新版本：打 GitHub Release 接口，**结果缓存 6 小时**（方案 §11.3）。
-///
-/// 方案 §13 想让 api 提供这个，M0 §3.6 实测那些接口都不存在，所以直接问 GitHub。
-///
-/// **缓存不是优化，是必需**：GitHub 对未认证请求的限额是每小时 60 次，
-/// 而运行面板每 10 秒刷新一次状态 —— 不缓存的话一个用户开着面板十分钟就把额度用光，
-/// 之后「有新版本」角标会无声无息地不再出现。
+/// Hunter 的最新版本。**取回来的整条 Release（含 Release Notes）缓存 6 小时**，
+/// 实现在 [`crate::upgrade`] 里，这里只是运行面板与托盘用惯了的那个薄壳。
 pub fn latest_hunter_tag() -> Option<String> {
-    cached(latest_tag_slot(), LATEST_TAG_TTL, fetch_latest_hunter_tag)
+    crate::upgrade::latest_release().map(|r| r.tag)
 }
 
 /// 用户**亲手点了「检查更新」**时用这个：绕过缓存，真去问一次，并把缓存刷新掉。
-///
-/// 自动刷新走缓存是为了不被 GitHub 限流；但用户主动点的那一下如果也回一个
-/// 六小时前的答案，这个按钮就等于没有 —— 他点它正是因为想知道「现在」有没有新版本。
-/// 一次手点一次请求，离每小时 60 次的限额远得很。
 pub fn latest_hunter_tag_now() -> Option<String> {
-    // TTL 传 0 = 必定过期 = 必定重新取，而且取完会写回**同一格**缓存，
-    // 面板下一次自动刷新看到的就是刚问回来的这个值。
-    cached(latest_tag_slot(), Duration::ZERO, fetch_latest_hunter_tag)
-}
-
-/// 自动刷新与手动检查共用的那一格缓存。
-fn latest_tag_slot() -> &'static CacheSlot<Option<String>> {
-    static CACHE: CacheSlot<Option<String>> = Mutex::new(None);
-    &CACHE
+    crate::upgrade::latest_release_now().map(|r| r.tag)
 }
 
 /// 一格「值 + 取到它的时刻」。
-type CacheSlot<T> = Mutex<Option<(std::time::Instant, T)>>;
+pub type CacheSlot<T> = Mutex<Option<(std::time::Instant, T)>>;
 
 /// 带 TTL 的一格缓存。没过期就用旧值，过期了才调 `f`。
 ///
 /// 抽成一个函数是为了**能测** —— 时间相关的逻辑直接写在业务函数里就只能靠真等，
 /// 而这里只要传一个 0 的 TTL 就能验「过期之后确实重新取了」。
-fn cached<T: Clone>(slot: &CacheSlot<T>, ttl: Duration, f: impl FnOnce() -> T) -> T {
+pub fn cached<T: Clone>(slot: &CacheSlot<T>, ttl: Duration, f: impl FnOnce() -> T) -> T {
     if let Ok(g) = slot.lock() {
         if let Some((at, v)) = g.as_ref() {
             if at.elapsed() < ttl {
@@ -1029,21 +1119,6 @@ fn cached<T: Clone>(slot: &CacheSlot<T>, ttl: Duration, f: impl FnOnce() -> T) -
         *g = Some((std::time::Instant::now(), fresh.clone()));
     }
     fresh
-}
-
-fn fetch_latest_hunter_tag() -> Option<String> {
-    let r = crate::http::get(
-        "https://api.github.com/repos/agentpit-io/hunter-community/releases/latest",
-        &[("Accept", "application/vnd.github+json")],
-        Duration::from_secs(12),
-    )
-    .ok()?;
-    if !r.ok() {
-        lwarn!("查最新版本失败：GitHub 返回 HTTP {}", r.status);
-        return None;
-    }
-    let t = r.json()?.get("tag_name")?.as_str()?.to_string();
-    Some(t.trim_start_matches('v').to_string())
 }
 
 /// 今日额度，**结果缓存 60 秒**。
@@ -1123,10 +1198,10 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 2, "自动刷新不该又去取一次");
     }
 
-    /// 方案 §11.3 写死的是「缓存 6 小时」。
+    /// 方案 §11.3 写死的是「缓存 6 小时」。版本检查的那一格搬去 `upgrade` 了，
+    /// 这里只盯额度的缓存。
     #[test]
-    fn 版本检查的缓存时长与方案一致() {
-        assert_eq!(LATEST_TAG_TTL, Duration::from_secs(6 * 3600));
+    fn 额度的缓存要比面板刷新间隔长() {
         // 额度的缓存要比面板的刷新间隔（10 秒）长，否则等于没缓存
         assert!(QUOTA_TTL >= Duration::from_secs(30), "{QUOTA_TTL:?}");
     }

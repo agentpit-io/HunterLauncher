@@ -19,6 +19,7 @@ const DEMO_STATES: Record<string, State> = {
   settings: { name: 'Ready' },
   logs: { name: 'Ready' },
   feedback: { name: 'Ready' },
+  update: { name: 'Ready' },
   error: {
     name: 'Error',
     code: 'E_START_TIMEOUT',
@@ -35,7 +36,9 @@ function initialState(): State {
 
 function initialOverlay(): Overlay {
   const page = demoPage()
-  return page === 'settings' || page === 'logs' || page === 'feedback' ? page : null
+  return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
+    ? page
+    : null
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {

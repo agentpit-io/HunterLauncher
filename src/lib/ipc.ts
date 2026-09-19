@@ -15,6 +15,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { IpcError } from './types'
 import type {
   AppInfo,
+  BackupMeta,
   BootState,
   DiagSection,
   DockerInfo,
@@ -22,13 +23,18 @@ import type {
   FeedbackForm,
   KeyCheckResult,
   LauncherSettings,
+  LauncherUpdate,
+  ManualInstall,
   MissingEndpoint,
+  OfflineImport,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
   ServiceStatus,
   TelemetryView,
+  UpgradeCheck,
+  UpgradeStatus,
 } from './types'
 import * as demo from './demo'
 
@@ -285,6 +291,84 @@ export async function quitApp(stopContainers: boolean): Promise<void> {
   await call<void>('quit_app', { stopContainers })
 }
 
+// ── M4 · 启动器自更新（方案 §10） ────────────────────────────────────────
+
+/** 查启动器自己有没有新版本。**不下载任何东西。** */
+export async function checkLauncherUpdate(): Promise<LauncherUpdate> {
+  if (DEMO) return demo.demoLauncherUpdate
+  return call<LauncherUpdate>('check_launcher_update')
+}
+
+/**
+ * 装启动器的新版本。
+ *
+ * 能就地装（AppImage / Windows / macOS）时这个 Promise **不会 resolve** ——
+ * Rust 那边装完直接重启进程了。返回一个 ManualInstall 说明这台机器装不了自己
+ * （.deb），包已经下好，要用户自己敲那条命令。
+ */
+export async function installLauncherUpdate(): Promise<ManualInstall | null> {
+  if (DEMO) return null
+  return call<ManualInstall | null>('install_launcher_update')
+}
+
+// ── M4 · Hunter 升级（方案 §5.6、§10） ───────────────────────────────────
+
+/** force=true 绕过 6 小时缓存，用户亲手点「检查更新」时用。 */
+export async function checkHunterUpdate(force = false): Promise<UpgradeCheck> {
+  if (DEMO) return demo.demoHunterUpdate
+  return call<UpgradeCheck>('check_hunter_update', { force })
+}
+
+/** 开始升级。立刻返回，进度靠 upgradeStatus() 轮询与 hunter://pull 事件。 */
+export async function upgradeHunter(tag: string): Promise<void> {
+  if (DEMO) return
+  await call<void>('upgrade_hunter', { tag })
+}
+
+export async function upgradeStatus(): Promise<UpgradeStatus> {
+  if (DEMO) return { running: false, steps: [], result: null, error: null }
+  return call<UpgradeStatus>('upgrade_status')
+}
+
+// ── M4 · 备份 ───────────────────────────────────────────────────────────
+
+export async function listBackups(): Promise<BackupMeta[]> {
+  if (DEMO) return demo.demoBackups
+  return call<BackupMeta[]>('list_backups')
+}
+
+/** 手动做一份备份（pg_dump + 配置）。要几秒到几十秒。 */
+export async function createBackup(): Promise<BackupMeta> {
+  if (DEMO) return demo.demoBackups[0]!
+  return call<BackupMeta>('create_backup')
+}
+
+/** 把某次备份的数据库灌回去。**破坏性操作**，界面上要二次确认。 */
+export async function restoreBackup(id: string): Promise<string> {
+  if (DEMO) return '演示模式不真的恢复'
+  return call<string>('restore_backup', { id })
+}
+
+// ── M4 · 离线包（方案 §9） ──────────────────────────────────────────────
+
+/** 弹系统文件选择框。取消就返回 null。 */
+export async function pickOfflineTar(): Promise<string | null> {
+  if (DEMO) return null
+  return call<string | null>('pick_offline_tar')
+}
+
+/** docker load 一个 tar。导入完整就会把镜像源与版本对齐到包里的那一套。 */
+export async function importOffline(path: string): Promise<OfflineImport> {
+  if (DEMO) return demo.demoOffline
+  return call<OfflineImport>('import_offline', { path })
+}
+
+/** 六个镜像在本机齐了没有。拉取页靠它显示「已导入，跳过拉取」。 */
+export async function offlineReady(): Promise<OfflineImport> {
+  if (DEMO) return demo.demoOffline
+  return call<OfflineImport>('offline_ready')
+}
+
 export async function missingEndpoints(): Promise<MissingEndpoint[]> {
   if (DEMO) return demo.demoMissing
   return call<MissingEndpoint[]>('missing_endpoints')
@@ -298,6 +382,8 @@ const EV_LOG = 'hunter://log'
 const EV_NAVIGATE = 'hunter://navigate'
 const EV_QUIT_REQUEST = 'hunter://quit-request'
 const EV_TRAY_ACTION = 'hunter://tray-action'
+const EV_UPGRADE = 'hunter://upgrade'
+const EV_LAUNCHER_UPDATE = 'hunter://launcher-update'
 
 async function on<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   if (DEMO) return () => {}
@@ -330,4 +416,14 @@ export function onQuitRequest(cb: () => void): Promise<UnlistenFn> {
 /** 托盘操作的结果，运行面板拿去显示一行提示。 */
 export function onTrayAction(cb: (msg: string) => void): Promise<UnlistenFn> {
   return on<string>(EV_TRAY_ACTION, cb)
+}
+
+/** Hunter 升级的每一步文字。 */
+export function onUpgradeStep(cb: (line: string) => void): Promise<UnlistenFn> {
+  return on<string>(EV_UPGRADE, cb)
+}
+
+/** 后台每 24 小时查一次，查到启动器有新版本就发这个（方案 §10）。 */
+export function onLauncherUpdate(cb: (u: LauncherUpdate) => void): Promise<UnlistenFn> {
+  return on<LauncherUpdate>(EV_LAUNCHER_UPDATE, cb)
 }

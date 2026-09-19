@@ -1,6 +1,7 @@
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { AlertTriangle } from '../components/Icons'
+import { OfflineImport } from '../components/OfflineImport'
 import { PlainLayout } from '../components/WizardLayout'
 import { useStore } from '../state/context'
 import type { ErrorCode } from '../state/machine'
@@ -49,10 +50,13 @@ export function ErrorPage() {
           {state.detail && <KV label={t.error.detailLabel} value={state.detail} />}
         </div>
 
-        <div className="mt-[20px]">
+        <div className="mt-[20px] flex flex-wrap gap-[10px]">
           <Button size="sm" variant="secondary" onClick={() => setOverlay('feedback')}>
             {t.error.oneClickFeedback}
           </Button>
+          {/* 方案 §18 给 E_PULL_FAILED 规定的动作就是「换源重试 / 离线导入」。
+              换源由「重试」那条路自己做（flow::pull 会自动换源 3 次），这里补上离线导入。 */}
+          {code === 'E_PULL_FAILED' && <OfflineImport variant="button" />}
         </div>
       </Card>
     </PlainLayout>

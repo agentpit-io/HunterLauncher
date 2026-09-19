@@ -49,6 +49,11 @@ pub fn telemetry_queue() -> PathBuf {
 pub fn diagnostics_dir() -> PathBuf {
     root().join("diagnostics")
 }
+/// 自更新下载下来的安装包放这里（`.deb` 这类装不了的格式只能下到本地让用户自己装，
+/// 见 [`crate::selfupdate`]）。
+pub fn updates_dir() -> PathBuf {
+    root().join("updates")
+}
 pub fn launcher_toml() -> PathBuf {
     root().join("launcher.toml")
 }
@@ -78,6 +83,7 @@ pub fn ensure_dirs() -> AppResult<()> {
         backups_dir(),
         telemetry_dir(),
         diagnostics_dir(),
+        updates_dir(),
     ] {
         std::fs::create_dir_all(&d).map_err(|e| {
             AppError::new(
