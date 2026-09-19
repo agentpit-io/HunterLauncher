@@ -1107,9 +1107,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let hits = AtomicUsize::new(0);
         let slot: CacheSlot<u32> = Mutex::new(None);
-        let take = || {
-            hits.fetch_add(1, Ordering::SeqCst) as u32 + 1
-        };
+        let take = || hits.fetch_add(1, Ordering::SeqCst) as u32 + 1;
 
         // 自动刷新：第一次取，之后走缓存
         assert_eq!(cached(&slot, Duration::from_secs(3600), take), 1);
