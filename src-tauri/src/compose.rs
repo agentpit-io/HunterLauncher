@@ -909,6 +909,7 @@ pub fn guard_project_owner() -> AppResult<()> {
         return Ok(());
     };
     let other_home = owner.hunter_home();
+    let here = paths::root().display().to_string();
     crate::lwarn!(
         "compose 项目名 {PROJECT} 正被 {} 占着（容器 {}）",
         owner.working_dir,
@@ -919,11 +920,23 @@ pub fn guard_project_owner() -> AppResult<()> {
         format!(
             "这台机器上已经有一套 Hunter 在用 compose 项目名「{PROJECT}」，它的工作目录是 {other_home}（容器 {}）。\
              现在这个工作目录是 {}。继续下去会把那一套的配置和端口一起顶掉，所以先停在这里。\n\
-             想接着用那一套：把工作目录改回去（环境变量 HUNTER_HOME={other_home}，或者直接不设这个变量）。\n\
-             想换成这一套：先把旧的停掉再来 —— HUNTER_HOME={other_home} hunter-launcher --down。\n\
-             （数据卷不会被 up -d 删掉，顶掉的是配置与端口。）",
+             \n\
+             要紧的一点：**数据卷是跟着项目名 `{PROJECT}` 走的，不是跟着工作目录走的**。\
+             数据库的口令在 {other_home}/app/.env 里，卷当初就是用它初始化的 —— \
+             新建一个空工作目录会现生成一把新口令，api 连不上已有的库（实测报 \
+             `password authentication failed for user \"hunter\"`）。\n\
+             \n\
+             想接着用那一套（推荐）：把工作目录改回去 —— 环境变量 HUNTER_HOME={other_home}，\
+             或者干脆不设这个变量。\n\
+             想把工作目录挪到现在这个位置：**整个目录搬过来**，别新建空的 —— \
+             HUNTER_HOME={other_home} hunter-launcher --down，然后 mv {other_home} {}。\n\
+             想从零开始（**会丢掉已有数据**）：先 HUNTER_HOME={other_home} hunter-launcher --down，\
+             再 docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project={PROJECT})。\n\
+             \n\
+             （`up -d` 与 `down` 都不会删数据卷，被顶掉的是配置与端口。）",
             owner.container,
-            paths::root().display()
+            here,
+            here
         ),
     ))
 }
