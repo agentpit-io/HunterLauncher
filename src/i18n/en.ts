@@ -37,6 +37,7 @@ const en: Dict = {
     yes: 'On',
     no: 'Off',
     internal: 'internal',
+    working: 'Working…',
     seconds: (n: number) => `${n}s`,
     minuteSecond: (m: number, s: number) => `${m}m ${s}s`,
   },
@@ -95,6 +96,8 @@ const en: Dict = {
     licenseNote:
       'Docker Desktop is a paid product for companies with 250+ employees or over $10M annual revenue. Alternatives: OrbStack (mac), Docker Engine (Linux), Podman (experimental).',
     openDownload: 'Open download page',
+    openLink: 'Open',
+    tryStart: 'Try starting Docker',
   },
   key: {
     title: 'Enter your hunter key',
@@ -137,7 +140,9 @@ const en: Dict = {
     ownModel: 'MODEL',
     ownKey: 'API_KEY',
     ownSanitize: 'This provider has incomplete JSON Schema support (check this for DeepSeek)',
-    ownSanitizeHint: 'Checking it sets LLM_SCHEMA_SANITIZE=1',
+    ownSanitizeHint: 'Detected from the BASE_URL; you do not need to tick it',
+    ownSanitizeAuto: 'LLM_SCHEMA_SANITIZE=1 enabled automatically (DeepSeek detected)',
+    checking: 'Connecting…',
   },
   pull: {
     title: 'Pulling images',
@@ -153,6 +158,10 @@ const en: Dict = {
     statePending: 'queued',
     failHint:
       'A failed pull is retried 3 times; if it still fails you can switch registry in Settings or import an offline bundle.',
+    preparingIntro: 'Probing registries, fetching the compose file and writing configuration. First install only.',
+    preparing: 'Preparing…',
+    stateDownloading: 'downloading',
+    retrying: (n: number) => `Attempt ${n} (registry switched after the previous failure)`,
     roles: {
       web: 'UI',
       api: 'Data & analysis',
@@ -168,6 +177,8 @@ const en: Dict = {
     healthy: (ok: number, total: number) => `${ok} / ${total} healthy`,
     timeoutHint: 'After 180 seconds the launcher stops and names the service that is not ready.',
     waiting: 'waiting',
+    elapsed: (n: number) => `${n}s elapsed`,
+    stuck: (names: string) => `These services were not ready within 180s: ${names}`,
     states: { healthy: 'healthy', starting: 'starting', unhealthy: 'unhealthy', none: 'no healthcheck', pending: 'not started' },
   },
   done: {
@@ -206,6 +217,9 @@ const en: Dict = {
     envTelemetry: 'Telemetry',
     updateBadge: (tag: string) => `Update ${tag} available`,
     times: '',
+    ownModel: 'Own model',
+    keyMissing:
+      'The api container reports it has no hunter key (/api/health says hunter_api_key = missing). Tool calls will 403 — check ~/.hunter/app/.env and restart the containers.',
   },
   settings: {
     title: 'Settings',
@@ -219,7 +233,9 @@ const en: Dict = {
     checkUpdate: 'Check for updates automatically',
     registry: 'Registry',
     registryHint:
-      'Only ghcr.io/agentpit-io works today (M0 measured: neither Aliyun ACR nor Docker Hub has the images). You can type a self-hosted registry.',
+      'Both candidates are probed for real: only sources whose manifest actually resolves show a timing. Timings are measured from this machine.',
+    registryDown: 'unavailable',
+    saving: 'Saving…',
     hunterTag: 'Hunter version',
     workDir: 'Working directory',
     telemetry: 'Anonymous telemetry',
@@ -282,6 +298,8 @@ const en: Dict = {
       E_START_TIMEOUT: { title: 'Start timed out', hint: 'Not all services became healthy within 180 seconds. The one that stalled is named below.' },
       E_PROXY_BLOCK: { title: 'Containers have no network', hint: 'TUN-mode proxies usually cause this. Configure NO_PROXY for Docker, or turn the proxy off.' },
       E_UPDATE_FAILED: { title: 'Upgrade failed', hint: 'Already rolled back to the previous version. A diagnostic bundle helps us pin it down.' },
+      E_COMPOSE_FETCH: { title: 'Could not fetch the Hunter compose file', hint: 'Falling back to the copy bundled with the launcher; installation usually continues fine. If even that fails, check write permissions on ~/.hunter/app.' },
+      E_CONFIG_WRITE: { title: 'Failed to write configuration', hint: 'Check write permissions and free disk space under ~/.hunter.' },
       E_NOT_IMPLEMENTED: { title: 'Not implemented yet', hint: 'M1 only builds the UI skeleton; the real calls land in M2 / M3.' },
       E_UNKNOWN: { title: 'Unknown error', hint: 'An unclassified error — please attach the diagnostic bundle.' },
     },

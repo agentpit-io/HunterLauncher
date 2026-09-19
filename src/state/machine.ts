@@ -42,6 +42,10 @@ export type ErrorCode =
   | 'E_START_TIMEOUT'
   | 'E_PROXY_BLOCK'
   | 'E_UPDATE_FAILED'
+  // 下面两个方案 §18 没有，是 M2 实现时按真实失败模式补的：
+  // compose 文件取不到（方案假设从 Release 资产下载，实测 Release 没有资产）、写配置失败
+  | 'E_COMPOSE_FETCH'
+  | 'E_CONFIG_WRITE'
   | 'E_NOT_IMPLEMENTED'
   | 'E_UNKNOWN'
 
@@ -56,6 +60,8 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_START_TIMEOUT',
   'E_PROXY_BLOCK',
   'E_UPDATE_FAILED',
+  'E_COMPOSE_FETCH',
+  'E_CONFIG_WRITE',
   'E_NOT_IMPLEMENTED',
   'E_UNKNOWN',
 ]
@@ -66,6 +72,8 @@ export type State =
 
 export type Event =
   | { type: 'BOOT' }
+  /** 已经装过：直接进运行面板，不重走向导（第二次打开启动器） */
+  | { type: 'RESUME_READY' }
   | { type: 'ACCEPT_TERMS' }
   | { type: 'DOCKER_MISSING' }
   | { type: 'DOCKER_FOUND' }
@@ -117,6 +125,8 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   E_QUOTA_EXHAUSTED: 'ChooseModel',
   E_PULL_FAILED: 'Pulling',
   E_START_TIMEOUT: 'Starting',
+  E_COMPOSE_FETCH: 'Pulling',
+  E_CONFIG_WRITE: 'Pulling',
 }
 
 function s(name: Exclude<StateName, 'Error'>): State {
@@ -150,10 +160,15 @@ export function transition(state: State, event: Event): State {
 
   switch (state.name) {
     case 'Idle':
-      return event.type === 'BOOT' ? s('Welcome') : state
+      if (event.type === 'BOOT') return s('Welcome')
+      if (event.type === 'RESUME_READY') return s('Ready')
+      return state
 
     case 'Welcome':
-      return event.type === 'ACCEPT_TERMS' ? s('CheckDocker') : state
+      if (event.type === 'ACCEPT_TERMS') return s('CheckDocker')
+      // boot_state 是异步回来的，那时候通常已经在 Welcome 了，所以这一步也要能跳
+      if (event.type === 'RESUME_READY') return s('Ready')
+      return state
 
     case 'CheckDocker':
       if (event.type === 'DOCKER_MISSING') return s('InstallDockerGuide')

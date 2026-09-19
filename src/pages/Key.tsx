@@ -33,6 +33,7 @@ export function Key() {
 
   async function validate() {
     if (!shapeOk) {
+      // 本地就判得出来的格式问题不发请求（M0 §1.1：hunt_tools_ 开头、一共 43 位）
       setError(t.key.formatError)
       setResult(null)
       return
@@ -42,7 +43,9 @@ export function Key() {
     try {
       const r = await ipc.validateKey(key)
       setResult(r)
-      if (!r.valid) setError(t.key.rejected)
+      // 文案由 Rust 给：它知道到底是格式不对、网关拒绝、额度用尽还是根本没连上
+      // （M0 §1.3 实测网关分不出「填错了」和「已吊销」，所以那两种共用一句话，不编造区分）
+      if (!r.valid) setError(r.message ?? t.key.rejected)
     } catch (e) {
       setResult(null)
       setError(e instanceof Error ? e.message : String(e))

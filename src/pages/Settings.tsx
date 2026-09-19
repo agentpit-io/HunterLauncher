@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { EnvList } from '../components/EnvList'
@@ -7,6 +8,7 @@ import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import { useStore } from '../state/context'
 import { LOCALES, type Locale } from '../i18n'
+import type { LauncherSettings } from '../lib/types'
 
 /** 出站地址白名单（技术方案第 15 节；telemetry.agentpit.io 与 dl.agentpit.io 实测不存在，不列）。 */
 const OUTBOUND = ['hunter.agentpit.io', 'ghcr.io', 'api.github.com', 'raw.githubusercontent.com']
@@ -15,8 +17,24 @@ export function Settings() {
   const { t, locale, setLocale, setOverlay } = useStore()
   const s = useAsync(() => ipc.readSettings(), [])
   const app = useAsync(() => ipc.appInfo(), [])
-  const d = s.data
+  const probes = useAsync(() => ipc.probeRegistries(), [])
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState<LauncherSettings | null>(null)
+  const d = saved ?? s.data
   const reason = s.error ? `${s.error.code} · ${s.error.message}` : t.app.noDataReason
+
+  /** 改一项就落一次盘。写回 launcher.toml 是真的（M2 起不再是空函数）。 */
+  async function patch(p: Partial<LauncherSettings>) {
+    if (!d) return
+    setSaving(true)
+    try {
+      setSaved(await ipc.writeSettings({ ...d, ...p }))
+    } catch {
+      /* 失败就保持原值，下面的 reason 会说明 */
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <PlainLayout
@@ -30,15 +48,18 @@ export function Settings() {
             <Row label={t.settings.language}>
               <SegmentedControl<Locale>
                 value={locale}
-                onChange={setLocale}
+                onChange={(l) => {
+                  setLocale(l)
+                  void patch({ locale: l })
+                }}
                 options={LOCALES.map((l) => ({ id: l.id, label: l.label }))}
               />
             </Row>
             <Row label={t.settings.autostart} hint={t.settings.autostartHint}>
-              <Toggle on={d?.autostart ?? false} onChange={() => {}} label={t.settings.autostart} />
+              <Toggle on={d?.autostart ?? false} onChange={(v) => void patch({ autostart: v })} label={t.settings.autostart} />
             </Row>
             <Row label={t.settings.checkUpdate}>
-              <Toggle on={d?.checkUpdate ?? false} onChange={() => {}} label={t.settings.checkUpdate} />
+              <Toggle on={d?.checkUpdate ?? false} onChange={(v) => void patch({ checkUpdate: v })} label={t.settings.checkUpdate} />
             </Row>
           </div>
         </Card>
@@ -54,17 +75,27 @@ export function Settings() {
               ]}
             />
           </div>
-          <div className="mt-[10px] text-xs leading-[1.5] text-muted">{t.settings.registryHint}</div>
-          <div className="mt-[16px] flex gap-[10px]">
-            <Button size="sm">{t.settings.resetKey}</Button>
+          <div className="mt-[12px]">
+            <SegmentedControl<string>
+              value={d?.registry ?? 'ghcr'}
+              onChange={(v) => void patch({ registry: v })}
+              options={(probes.data ?? []).map((r) => ({
+                id: r.id,
+                label: `${r.label} · ${r.available ? `${r.elapsedMs} ms` : t.settings.registryDown}`,
+              }))}
+            />
           </div>
+          <div className="mt-[10px] text-xs leading-[1.5] text-muted">
+            {probes.error ? `${probes.error.code} · ${probes.error.message}` : t.settings.registryHint}
+          </div>
+          {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.saving}</div>}
         </Card>
 
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionPrivacy}</div>
           <div className="mt-[16px] flex flex-col gap-[6px]">
             <Row label={t.settings.telemetry} hint={t.settings.telemetryHint}>
-              <Toggle on={d?.telemetry ?? false} onChange={() => {}} label={t.settings.telemetry} />
+              <Toggle on={d?.telemetry ?? false} onChange={(v) => void patch({ telemetry: v })} label={t.settings.telemetry} />
             </Row>
           </div>
           <div className="mt-[14px] text-sm text-label">{t.settings.outboundHint}</div>

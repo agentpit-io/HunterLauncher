@@ -2,6 +2,7 @@ import { useEffect, useMemo, useReducer, useState, type ReactNode } from 'react'
 import { INITIAL_STATE, transition, type State } from './machine'
 import { StoreCtx, type Overlay, type Store } from './context'
 import { dictOf, guessLocale, type Locale } from '../i18n'
+import * as ipc from '../lib/ipc'
 import { DEMO, demoPage, demoSeed } from '../lib/ipc'
 
 /** 演示模式下用 __HUNTER_DEMO_PAGE__ 直接打开某一页，给截图脚本用。 */
@@ -46,6 +47,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  /**
+   * 第二次打开启动器时直接进运行面板，不重走向导。
+   * 判据来自 Rust 的 boot_state：`launcher.toml` 里 install.done 为真、`.env` 还在。
+   * 演示模式不做这一步（截图脚本要能定到任意一页）。
+   */
+  useEffect(() => {
+    if (DEMO || demoPage()) return
+    let alive = true
+    void ipc
+      .bootState()
+      .then((b) => {
+        if (!alive || !b.installed) return
+        setLocale(b.locale === 'en' ? 'en' : 'zh-CN')
+        send({ type: 'RESUME_READY' })
+      })
+      .catch(() => {
+        /* 读不到就老老实实走向导 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   useEffect(() => {
     // 演示数据模式在 <html> 上留一个标记。它有两个用处：
