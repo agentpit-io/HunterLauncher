@@ -42,8 +42,12 @@ pub fn mask_key(key: &str) -> String {
         .last();
     match head {
         Some(i) if i + 1 < key.len() => format!("{}****", &key[..=i]),
-        _ if key.len() > 3 => format!("{}****", &key[..3]),
-        _ => "****".to_string(),
+        // 按**字符**取前三个，不是按字节：用户在「自带模型 key」里粘一串中文
+        // （填错了框是常有的事）也会被登记成密文，按字节切会在半个字符上 panic（I1 自审发现）。
+        _ => match key.char_indices().nth(3) {
+            Some((i, _)) => format!("{}****", &key[..i]),
+            None => "****".to_string(),
+        },
     }
 }
 
@@ -464,5 +468,18 @@ mod tests {
     fn 打码函数保留可辨识的前缀() {
         assert_eq!(mask_key(FAKE), "hunt_tools_****");
         assert_eq!(mask_key("sk-abcdefghijkl"), "sk-****");
+    }
+
+    #[test]
+    fn 打码函数不会在半个字符上切断() {
+        // 用户把中文粘进「自带模型 key」那个框是常有的事，粘进去就会被登记成密文。
+        // 按字节切的写法在这里直接 panic（I1 自审发现），按字符切才安全。
+        assert_eq!(mask_key("a密码钥匙串"), "a密码****");
+        assert_eq!(mask_key("密钥"), "****");
+        assert_eq!(mask_key("我的密钥是这个"), "我的密****");
+        // 登记过之后整条日志也要能安全地过一遍脱敏
+        register_secret("我的密钥是这个而且很长很长");
+        let out = redact("配置里写的是 我的密钥是这个而且很长很长 这一串");
+        assert!(!out.contains("而且很长"), "{out}");
     }
 }

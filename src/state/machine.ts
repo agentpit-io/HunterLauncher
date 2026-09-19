@@ -42,10 +42,12 @@ export type ErrorCode =
   | 'E_START_TIMEOUT'
   | 'E_PROXY_BLOCK'
   | 'E_UPDATE_FAILED'
-  // 下面两个方案 §18 没有，是 M2 实现时按真实失败模式补的：
-  // compose 文件取不到（方案假设从 Release 资产下载，实测 Release 没有资产）、写配置失败
+  // 下面三个方案 §18 没有，是实现时按真实失败模式补的：
+  // compose 文件取不到（方案假设从 Release 资产下载，实测 Release 没有资产）、写配置失败、
+  // 以及 I1 补的「compose 项目名被另一个工作目录占着」（待办池 P0-5）
   | 'E_COMPOSE_FETCH'
   | 'E_CONFIG_WRITE'
+  | 'E_PROJECT_CONFLICT'
   | 'E_NOT_IMPLEMENTED'
   | 'E_UNKNOWN'
 
@@ -62,6 +64,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_UPDATE_FAILED',
   'E_COMPOSE_FETCH',
   'E_CONFIG_WRITE',
+  'E_PROJECT_CONFLICT',
   'E_NOT_IMPLEMENTED',
   'E_UNKNOWN',
 ]

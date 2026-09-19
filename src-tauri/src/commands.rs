@@ -84,15 +84,31 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<()> {
 
 /// 同一道校验的非 command 版本，托盘那边也走它。
 pub fn open_url_checked<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str) -> Result<()> {
-    let allowed = url.starts_with("https://")
-        || url.starts_with("http://localhost")
-        || url.starts_with("http://127.0.0.1");
-    if !allowed {
+    if !url_allowed(url) {
         return Err(format!("E_UNKNOWN: 拒绝打开非 https / 非本机地址：{url}"));
     }
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| format!("E_UNKNOWN: {e}"))
+}
+
+/// 放行规则：任意 https，或者**本机**的 http。
+///
+/// 明文 http 只认 `localhost` / `127.0.0.1` 两个主机，而且主机名后面必须紧跟
+/// `:`（端口）、`/`（路径）或者就此结束 —— 只比前缀的话
+/// `http://localhost.example.com/` 会被当成本机放进来（I1 自审发现）。
+pub fn url_allowed(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    ["localhost", "127.0.0.1"].iter().any(|h| {
+        rest.strip_prefix(h).is_some_and(|after| {
+            after.is_empty() || after.starts_with(':') || after.starts_with('/')
+        })
+    })
 }
 
 /// 在系统文件管理器里定位一个文件（导出诊断包 / 日志之后用）。
@@ -1133,4 +1149,41 @@ where
 fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow> {
     app.get_webview_window("main")
         .ok_or_else(|| "E_UNKNOWN: 找不到主窗口".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::url_allowed;
+
+    #[test]
+    fn https_一律放行() {
+        assert!(url_allowed("https://github.com/agentpit-io/HunterLauncher"));
+        assert!(url_allowed("https://hunter.agentpit.io/dev/api-keys"));
+    }
+
+    #[test]
+    fn 本机_http_放行() {
+        assert!(url_allowed("http://localhost:3101"));
+        assert!(url_allowed("http://127.0.0.1:8101/api/health"));
+        assert!(url_allowed("http://localhost"));
+        assert!(url_allowed("http://127.0.0.1/"));
+    }
+
+    #[test]
+    fn 假冒本机的域名不能放行() {
+        // 只比前缀的话这四个都会被当成本机（I1 自审发现的实际缺口）
+        assert!(!url_allowed("http://localhost.example.com/x"));
+        assert!(!url_allowed("http://localhost-evil.test"));
+        assert!(!url_allowed("http://127.0.0.1.example.com/"));
+        assert!(!url_allowed("http://127.0.0.10:80"));
+    }
+
+    #[test]
+    fn 非_http_协议一律拒绝() {
+        assert!(!url_allowed("file:///etc/passwd"));
+        assert!(!url_allowed("http://example.com"));
+        assert!(!url_allowed("javascript:alert(1)"));
+        assert!(!url_allowed("/usr/bin/xcalc"));
+        assert!(!url_allowed(""));
+    }
 }

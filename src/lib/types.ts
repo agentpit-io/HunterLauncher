@@ -70,6 +70,8 @@ export interface QuotaInfo {
   resetAt: string | null
   rpm: number | null
   concurrency: number | null
+  /** 今天的额度用完了没有。来自网关的 `exhausted` 字段（读不到时按 remaining 兜底） */
+  exhausted: boolean
 }
 
 export interface ModelAlias {
@@ -90,7 +92,8 @@ export interface KeyCheckResult {
   reason: KeyReason
   quota: QuotaInfo | null
   models: ModelAlias[]
-  /** 给用户看的中文说明；valid 时为 null */
+  /** 给用户看的中文说明。valid 为 false 时是失败原因；
+   *  valid 为 true 且 reason 是 exhausted 时，是「key 没问题但今天额度用完了」的提醒 */
   message: string | null
   /** 对应错误码，界面据此决定跳不跳错误页 */
   code: string | null

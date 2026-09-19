@@ -806,9 +806,145 @@ pub fn service_ready(s: &ServiceStatus) -> bool {
     matches!(s.health, Health::Healthy) || (s.health == Health::None && s.state == "running")
 }
 
+// ── 项目名归属（待办池 P0-5） ───────────────────────────────────────────────
+
+/// 现在占着 `hunter` 这个 compose 项目名的那一套，是从哪个工作目录起的。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectOwner {
+    /// 随便取的一个容器名，报错时给用户一个能 `docker inspect` 的抓手
+    pub container: String,
+    /// `com.docker.compose.project.config_files` 标签（逗号分隔的绝对路径）
+    pub config_files: String,
+    /// `com.docker.compose.project.working_dir` 标签
+    pub working_dir: String,
+}
+
+impl ProjectOwner {
+    /// 从工作目录反推那一套的 `HUNTER_HOME`：`<home>/app` → `<home>`。
+    /// 反推不出来（用户手工 compose 起的、目录结构不是我们这套）就退回原值。
+    pub fn hunter_home(&self) -> String {
+        match self.working_dir.strip_suffix("/app") {
+            Some(h) if !h.is_empty() => h.to_string(),
+            _ => match self.working_dir.strip_suffix("\\app") {
+                Some(h) if !h.is_empty() => h.to_string(),
+                _ => self.working_dir.clone(),
+            },
+        }
+    }
+}
+
+/// `docker ps -a` 里 `hunter` 项目的标签行，一行一个容器。
+/// 分隔符用 `|`：路径里不会有它，而制表符在 Windows 的 docker 输出里会被吃掉。
+const OWNER_FORMAT: &str = concat!(
+    "{{.Names}}|{{.Label \"com.docker.compose.project.config_files\"}}",
+    "|{{.Label \"com.docker.compose.project.working_dir\"}}"
+);
+
+/// 比路径之前先归一化：两头的空白、结尾的 `/` 或 `\` 都不算差别。
+/// `HUNTER_HOME=~/.hunter/` 与 `HUNTER_HOME=~/.hunter` 是同一个目录，
+/// 但 docker 标签里存的是当时传进去的原样字符串，直接字符串比会误报成「别人的」。
+fn norm_path(p: &str) -> &str {
+    p.trim().trim_end_matches(['/', '\\'])
+}
+
+/// 解析上面那个格式的输出，挑出**第一个不是我们这套**的容器。
+///
+/// 判定「是我们的」有两条，满足任意一条就算：
+/// 1. `config_files` 里有一项正好是我们要用的 `docker-compose.yml`；
+/// 2. `working_dir` 正好是我们的 `~/.hunter/app`。
+///
+/// 两条都要，是因为用户可能只改过其中一半：比如 `--project-directory` 一样但
+/// compose 文件是手工指的。只要沾上一条，`up -d` 就不会顶掉别人的配置。
+pub fn foreign_owner(stdout: &str, our_compose: &str, our_app_dir: &str) -> Option<ProjectOwner> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.splitn(3, '|');
+        let container = it.next().unwrap_or_default().to_string();
+        let config_files = it.next().unwrap_or_default().to_string();
+        let working_dir = it.next().unwrap_or_default().to_string();
+        // 标签读不到（老版本 docker、或者容器不是 compose 起的）就不判 ——
+        // 宁可漏报也不能误报，误报会把正常安装整个拦死
+        if config_files.is_empty() && working_dir.is_empty() {
+            continue;
+        }
+        let ours = config_files
+            .split(',')
+            .any(|f| norm_path(f) == norm_path(our_compose))
+            || (!working_dir.is_empty() && norm_path(&working_dir) == norm_path(our_app_dir));
+        if !ours {
+            return Some(ProjectOwner {
+                container,
+                config_files,
+                working_dir,
+            });
+        }
+    }
+    None
+}
+
+/// 安装 / 启动前的自查：**`hunter` 这个项目名有没有被另一个工作目录占着**（待办池 P0-5）。
+///
+/// 为什么必须拦：`docker compose -p hunter up -d` 是按项目名认容器的，
+/// 换过 `HUNTER_HOME` 再装一次，compose 会把先装好的那一套**连配置带端口一起顶掉**
+/// （M2 实测撞到过，数据卷没丢但得重装一次才能回来）。
+///
+/// docker 起不来 / 读不到标签一律放行 —— 这是一道保险，不是必经的关卡，
+/// 不能因为它自己出问题就让正常安装走不下去。
+pub fn guard_project_owner() -> AppResult<()> {
+    let compose_path = paths::compose_file().to_string_lossy().into_owned();
+    let app_dir = paths::app_dir().to_string_lossy().into_owned();
+    let filter = format!("label=com.docker.compose.project={PROJECT}");
+    let r = match proc::run_timeout(
+        "docker",
+        &["ps", "-a", "--filter", &filter, "--format", OWNER_FORMAT],
+        Duration::from_secs(20),
+    ) {
+        Ok(r) if r.ok() => r,
+        _ => return Ok(()),
+    };
+    let Some(owner) = foreign_owner(&r.stdout, &compose_path, &app_dir) else {
+        return Ok(());
+    };
+    let other_home = owner.hunter_home();
+    let here = paths::root().display().to_string();
+    crate::lwarn!(
+        "compose 项目名 {PROJECT} 正被 {} 占着（容器 {}）",
+        owner.working_dir,
+        owner.container
+    );
+    Err(AppError::new(
+        Code::ProjectConflict,
+        format!(
+            "这台机器上已经有一套 Hunter 在用 compose 项目名「{PROJECT}」，它的工作目录是 {other_home}（容器 {}）。\
+             现在这个工作目录是 {}。继续下去会把那一套的配置和端口一起顶掉，所以先停在这里。\n\
+             \n\
+             要紧的一点：**数据卷是跟着项目名 `{PROJECT}` 走的，不是跟着工作目录走的**。\
+             数据库的口令在 {other_home}/app/.env 里，卷当初就是用它初始化的 —— \
+             新建一个空工作目录会现生成一把新口令，api 连不上已有的库（实测报 \
+             `password authentication failed for user \"hunter\"`）。\n\
+             \n\
+             想接着用那一套（推荐）：把工作目录改回去 —— 环境变量 HUNTER_HOME={other_home}，\
+             或者干脆不设这个变量。\n\
+             想把工作目录挪到现在这个位置：**整个目录搬过来**，别新建空的 —— \
+             HUNTER_HOME={other_home} hunter-launcher --down，然后 mv {other_home} {}。\n\
+             想从零开始（**会丢掉已有数据**）：先 HUNTER_HOME={other_home} hunter-launcher --down，\
+             再 docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project={PROJECT})。\n\
+             \n\
+             （`up -d` 与 `down` 都不会删数据卷，被顶掉的是配置与端口。）",
+            owner.container,
+            here,
+            here
+        ),
+    ))
+}
+
 // ── up / down / logs ──────────────────────────────────────────────────────
 
 pub fn up() -> AppResult<()> {
+    guard_project_owner()?;
     let r = run(&["up", "-d", "--remove-orphans"], Duration::from_secs(300))?;
     if r.ok() {
         crate::linfo!("docker compose up -d 完成");
@@ -927,6 +1063,8 @@ pub fn down() -> AppResult<()> {
 /// **容器里的环境变量还是老的**；`.env` 改了要生效必须让 compose 重新创建容器。
 /// 这一点是真跑出来的 —— 只 `restart` 的话切完模型对话仍然走旧网关。
 pub fn up_services(services: &[&str]) -> AppResult<()> {
+    // `--force-recreate` 会把容器整个换掉，落到别人的那一套上就是一场事故（待办池 P0-5）
+    guard_project_owner()?;
     let mut args: Vec<&str> = vec!["up", "-d", "--force-recreate"];
     args.extend_from_slice(services);
     let r = run(&args, Duration::from_secs(300))?;
@@ -1414,5 +1552,109 @@ mod tests {
             .filter(|a| a.ends_with(".yml"))
             .collect();
         assert_eq!(f, vec!["a.yml", "b.yml"]);
+    }
+
+    // ── 项目名归属（待办池 P0-5） ─────────────────────────────────────────
+
+    const OURS: &str = "/home/u/.hunter/app/docker-compose.yml";
+    const OUR_DIR: &str = "/home/u/.hunter/app";
+
+    fn line(name: &str, files: &str, dir: &str) -> String {
+        format!("{name}|{files}|{dir}\n")
+    }
+
+    #[test]
+    fn 自己这套不算冲突() {
+        let out = line(
+            "hunter-web-1",
+            "/home/u/.hunter/app/docker-compose.yml,/home/u/.hunter/app/docker-compose.launcher.yml",
+            OUR_DIR,
+        );
+        assert_eq!(foreign_owner(&out, OURS, OUR_DIR), None);
+    }
+
+    #[test]
+    fn 另一个工作目录会被认出来() {
+        let out = line(
+            "hunter-web-1",
+            "/home/u/.hunter-b/app/docker-compose.yml,/home/u/.hunter-b/app/docker-compose.launcher.yml",
+            "/home/u/.hunter-b/app",
+        );
+        let o = foreign_owner(&out, OURS, OUR_DIR).expect("这是别人的，必须认出来");
+        assert_eq!(o.container, "hunter-web-1");
+        assert_eq!(o.working_dir, "/home/u/.hunter-b/app");
+        // 报错文案里要给出对方的 HUNTER_HOME，不是 app 子目录
+        assert_eq!(o.hunter_home(), "/home/u/.hunter-b");
+    }
+
+    #[test]
+    fn 一个容器沾边就算我们的() {
+        // compose 文件对得上、project-directory 被用户手工改过 —— 仍然是我们这套
+        let out = line("hunter-api-1", OURS, "/somewhere/else");
+        assert_eq!(foreign_owner(&out, OURS, OUR_DIR), None);
+    }
+
+    #[test]
+    fn 路径末尾多一个斜杠不算冲突() {
+        let out = line(
+            "hunter-web-1",
+            "/home/u/.hunter/app/docker-compose.yml",
+            OUR_DIR,
+        );
+        assert_eq!(
+            foreign_owner(
+                &out,
+                "/home/u/.hunter/app/docker-compose.yml",
+                "/home/u/.hunter/app/"
+            ),
+            None
+        );
+        let out2 = line("hunter-web-1", "x.yml", "/home/u/.hunter/app/");
+        assert_eq!(foreign_owner(&out2, OURS, OUR_DIR), None);
+    }
+
+    #[test]
+    fn 没有容器时不算冲突() {
+        assert_eq!(foreign_owner("", OURS, OUR_DIR), None);
+        assert_eq!(foreign_owner("\n  \n", OURS, OUR_DIR), None);
+    }
+
+    #[test]
+    fn 读不到标签的容器一律放行() {
+        // 老版本 docker 或者不是 compose 起的容器：两个标签都是空串。
+        // 宁可漏报也不能误报 —— 误报会把正常安装整个拦死
+        assert_eq!(foreign_owner("某个容器||\n", OURS, OUR_DIR), None);
+    }
+
+    #[test]
+    fn 混着的时候也认得出外来的那个() {
+        let mut out = line("hunter-web-1", OURS, OUR_DIR);
+        out.push_str(&line(
+            "hunter-api-1",
+            "/opt/other/docker-compose.yml",
+            "/opt/other",
+        ));
+        let o = foreign_owner(&out, OURS, OUR_DIR).expect("第二行是外来的");
+        assert_eq!(o.container, "hunter-api-1");
+        // 反推不出 <home>/app 结构时退回原值，不编一个不存在的路径
+        assert_eq!(o.hunter_home(), "/opt/other");
+    }
+
+    #[test]
+    fn windows_路径也能反推出工作目录() {
+        let o = ProjectOwner {
+            container: "hunter-web-1".into(),
+            config_files: "C:\\Users\\u\\.hunter\\app\\docker-compose.yml".into(),
+            working_dir: "C:\\Users\\u\\.hunter\\app".into(),
+        };
+        assert_eq!(o.hunter_home(), "C:\\Users\\u\\.hunter");
+    }
+
+    #[test]
+    fn 格式串里要同时有两个归属标签() {
+        assert!(OWNER_FORMAT.contains("com.docker.compose.project.config_files"));
+        assert!(OWNER_FORMAT.contains("com.docker.compose.project.working_dir"));
+        // 分隔符不能换成制表符或空格：路径里有空格是常事
+        assert!(OWNER_FORMAT.contains('|'));
     }
 }

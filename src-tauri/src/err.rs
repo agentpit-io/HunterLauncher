@@ -25,6 +25,10 @@ pub enum Code {
     ComposeFetch,
     /// 写 `~/.hunter` 下的配置失败（权限、磁盘满）
     ConfigWrite,
+    /// compose 项目名 `hunter` 已经被**另一个工作目录**的那一套占着（待办池 P0-5）。
+    /// 方案没有这一条：它假设一台机器上只有一个 `~/.hunter`，而 M2 实测换过
+    /// `HUNTER_HOME` 之后 `up -d` 会把先装好的那一套连配置带端口一起顶掉。
+    ProjectConflict,
     NotImplemented,
     Unknown,
 }
@@ -44,6 +48,7 @@ impl Code {
             Code::UpdateFailed => "E_UPDATE_FAILED",
             Code::ComposeFetch => "E_COMPOSE_FETCH",
             Code::ConfigWrite => "E_CONFIG_WRITE",
+            Code::ProjectConflict => "E_PROJECT_CONFLICT",
             Code::NotImplemented => "E_NOT_IMPLEMENTED",
             Code::Unknown => "E_UNKNOWN",
         }
@@ -64,6 +69,7 @@ impl Code {
             Code::UpdateFailed => "升级失败，已回滚",
             Code::ComposeFetch => "取不到 Hunter 的 compose 文件",
             Code::ConfigWrite => "写配置失败",
+            Code::ProjectConflict => "另一个工作目录正占着 hunter 这个项目名",
             Code::NotImplemented => "这个功能还没实现",
             Code::Unknown => "出了点意外",
         }
@@ -146,6 +152,7 @@ mod tests {
             Code::UpdateFailed,
             Code::ComposeFetch,
             Code::ConfigWrite,
+            Code::ProjectConflict,
             Code::NotImplemented,
             Code::Unknown,
         ];

@@ -36,6 +36,13 @@ pub struct QuotaInfo {
     pub reset_at: Option<String>,
     pub rpm: Option<i64>,
     pub concurrency: Option<i64>,
+    /// 今天的额度是不是已经用完了。
+    ///
+    /// **这一项只能从 `/quota` 的响应里读，不能靠 `check_key` 收到 402 来判** ——
+    /// I1 实测：额度压到 1 token 之后 `GET /quota` 仍然回 **HTTP 200**
+    /// （体里 `exhausted: true`、`remaining: 0`），402 只会出现在
+    /// `POST /v1/chat/completions` 上。也就是说 [`check_key`] 永远见不到 402。
+    pub exhausted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -164,6 +171,31 @@ pub fn check_key(key: &str, timeout: Duration) -> KeyCheckResult {
     let quota = resp.json().and_then(|v| parse_quota(&v));
     let models = fetch_models(&auth, timeout).unwrap_or_default();
 
+    // 额度用完了的 key **仍然是一把好 key**：明天 0 点（上海）就会重置，
+    // 而且下一步就能改用自带模型 key。所以 `valid` 还是 true，装照装 ——
+    // 但必须把话说在前面，不能让用户装完之后在 Hunter 里撞一鼻子灰
+    // （I1 之前就是这样：`/quota` 回 200，校验直接过，一个字都不提）。
+    if quota.as_ref().is_some_and(|q| q.exhausted) {
+        let q = quota.as_ref().expect("上面刚判过");
+        return KeyCheckResult {
+            valid: true,
+            reason: KeyReason::Exhausted,
+            message: Some(format!(
+                "这把 key 是好的，但今天的额度已经用完了（已用 {} / 上限 {}）。{}装可以照装，\
+                 装完之后对话会被网关挡住，直到额度重置。现在就想用的话，下一步改用你自己的模型 key。",
+                q.used_today,
+                q.limit_daily,
+                match q.reset_at.as_deref().map(pretty_reset) {
+                    Some(t) => format!("额度在 {t} 重置。"),
+                    None => String::new(),
+                }
+            )),
+            code: Some(Code::QuotaExhausted.as_str().to_string()),
+            quota,
+            models,
+        };
+    }
+
     KeyCheckResult {
         valid: true,
         reason: KeyReason::Ok,
@@ -199,6 +231,22 @@ pub fn quota(key: &str, timeout: Duration) -> AppResult<QuotaInfo> {
         .ok_or_else(|| AppError::new(Code::Unknown, "额度响应里没有认得的字段".to_string()))
 }
 
+/// 网关给的是 ISO 8601（`2026-09-21T00:00:00+08:00`），直接上屏太长也不像话。
+/// 网关自己就说了是上海时间（`reset_tz: Asia/Shanghai`），所以只要把 `T` 换成空格、
+/// 砍掉秒与时区，再补一句「（上海）」。**不做时区换算** —— 那需要一个时区库，
+/// 而这里唯一要传达的信息是「明天 0 点」。认不出来的格式原样返回，不猜。
+fn pretty_reset(iso: &str) -> String {
+    let (date, rest) = match iso.split_once('T') {
+        Some(x) => x,
+        None => return iso.to_string(),
+    };
+    let hm: String = rest.chars().take(5).collect();
+    if date.len() != 10 || hm.len() != 5 || !hm.contains(':') {
+        return iso.to_string();
+    }
+    format!("{date} {hm}（上海）")
+}
+
 pub fn parse_quota(v: &serde_json::Value) -> Option<QuotaInfo> {
     let used = v.get("used_today")?.as_i64().unwrap_or(0);
     let limit = v.get("limit_daily").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -216,6 +264,11 @@ pub fn parse_quota(v: &serde_json::Value) -> Option<QuotaInfo> {
             .map(|s| s.to_string()),
         rpm: v.get("rate_per_min").and_then(|x| x.as_i64()),
         concurrency: v.get("max_concurrency").and_then(|x| x.as_i64()),
+        // 网关自己给的结论优先；没有这个字段时按 remaining 兜底
+        exhausted: v
+            .get("exhausted")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(limit > 0 && remaining <= 0),
     })
 }
 
@@ -488,6 +541,54 @@ mod tests {
         assert_eq!(q.reset_at.as_deref(), Some("2026-09-20T00:00:00+08:00"));
         assert_eq!(q.rpm, Some(20));
         assert_eq!(q.concurrency, Some(4));
+        assert!(!q.exhausted);
+    }
+
+    #[test]
+    fn 额度用尽时_quota_接口回的仍然是_200() {
+        // I1 实测：把测试 key 的日额度压到 1 token 之后，`GET /quota` **不是 402**，
+        // 而是 200 + `exhausted: true`。402 只出现在 `POST /v1/chat/completions` 上。
+        // 下面这一段是当时真实抓到的响应体，一个字没改。
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"ok":true,"used_today":170206,"limit_daily":1,"remaining":0,"exhausted":true,
+                "reset_at":"2026-09-21T00:00:00+08:00","reset_tz":"Asia/Shanghai",
+                "rate_per_min":20,"max_concurrency":4,
+                "unit":"token（输入 + 含 thinking 的输出）","enabled":true,"global_exhausted":false}"#,
+        )
+        .unwrap();
+        let q = parse_quota(&v).unwrap();
+        assert!(q.exhausted, "额度用尽必须认出来，否则装完才发现对话被拒");
+        assert_eq!(q.remaining, 0);
+        assert_eq!(q.limit_daily, 1);
+    }
+
+    #[test]
+    fn 重置时间上屏前会被整理成人话() {
+        assert_eq!(
+            pretty_reset("2026-09-21T00:00:00+08:00"),
+            "2026-09-21 00:00（上海）"
+        );
+        // 认不出来的格式原样返回，不猜
+        assert_eq!(pretty_reset("明天"), "明天");
+        assert_eq!(pretty_reset("2026-09-21"), "2026-09-21");
+        assert_eq!(pretty_reset("2026-09-21T0"), "2026-09-21T0");
+    }
+
+    #[test]
+    fn 网关没给_exhausted_字段时按剩余量兜底() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"used_today":300000,"limit_daily":300000,"remaining":0}"#)
+                .unwrap();
+        assert!(parse_quota(&v).unwrap().exhausted);
+
+        let v2: serde_json::Value =
+            serde_json::from_str(r#"{"used_today":1,"limit_daily":300000,"remaining":299999}"#)
+                .unwrap();
+        assert!(!parse_quota(&v2).unwrap().exhausted);
+
+        // 上限读不到（0）时不能一口咬定「用完了」—— 那是「不知道」，不是「用完」
+        let v3: serde_json::Value = serde_json::from_str(r#"{"used_today":5}"#).unwrap();
+        assert!(!parse_quota(&v3).unwrap().exhausted);
     }
 
     #[test]

@@ -211,6 +211,9 @@ impl LauncherConfig {
         std::fs::write(&p, format!("{header}{s}")).map_err(|e| {
             AppError::new(Code::ConfigWrite, format!("写 {} 失败：{e}", p.display()))
         })?;
+        // 这里没有 secret（key 只在 600 的 .env 里），收成 600 纯粹是统一口径：
+        // `~/.hunter` 下的东西一律只有属主能读（待办池 P2-11）
+        paths::chmod_600(&p)?;
         Ok(())
     }
 
@@ -616,6 +619,7 @@ pub fn write_override(ports: &Ports, base_prefix: &str) -> AppResult<()> {
     let p = paths::override_file();
     std::fs::write(&p, render_override(ports, base_prefix))
         .map_err(|e| AppError::new(Code::ConfigWrite, format!("写 {} 失败：{e}", p.display())))?;
+    paths::chmod_600(&p)?;
     Ok(())
 }
 
@@ -783,6 +787,7 @@ pub fn write_compose(content: &str) -> AppResult<()> {
     let p = paths::compose_file();
     std::fs::write(&p, content)
         .map_err(|e| AppError::new(Code::ConfigWrite, format!("写 {} 失败：{e}", p.display())))?;
+    paths::chmod_600(&p)?;
     Ok(())
 }
 
@@ -1153,5 +1158,45 @@ mod tests {
         assert_eq!(c.launcher.locale, "en");
         assert_eq!(c.hunter.ports.web, 3100, "没写的段要落到默认值");
         assert!(!c.install.done);
+    }
+
+    /// 待办池 P2-11：`~/.hunter` 下由启动器写出来的文件一律 600，不只是 `.env`。
+    #[test]
+    #[cfg(unix)]
+    fn 启动器写出来的四个文件都是_600() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Mutex, OnceLock};
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        let _g = L
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let old = std::env::var("HUNTER_HOME").ok();
+        let dir = std::env::temp_dir().join(format!("hunter-perm600-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("HUNTER_HOME", &dir);
+
+        let ports = Ports::default();
+        LauncherConfig::default().save().expect("写 launcher.toml");
+        write_env(&input(&ports, "gateway")).expect("写 .env");
+        write_override(&ports, "docker.io/library").expect("写覆盖文件");
+        write_compose("services: {}\n").expect("写 compose");
+
+        for p in [
+            paths::launcher_toml(),
+            paths::env_file(),
+            paths::override_file(),
+            paths::compose_file(),
+        ] {
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{} 应当是 600，实际 {mode:o}", p.display());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        match old {
+            Some(v) => std::env::set_var("HUNTER_HOME", v),
+            None => std::env::remove_var("HUNTER_HOME"),
+        }
     }
 }

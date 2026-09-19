@@ -20,6 +20,8 @@ const en: Dict = {
     retry: 'Retry',
     recheck: 'Check again',
     close: 'Close',
+    minimize: 'Minimize',
+    maximize: 'Maximize',
     done: 'Done',
     open: 'Open',
     copy: 'Copy',
@@ -198,6 +200,7 @@ const en: Dict = {
       'Containers run in the background — closing the launcher does not stop them',
       'Upgrade, stop and logs all live in the run panel',
       'Configuration is in ~/.hunter/ and can be edited by hand',
+      'This address is bound to every network interface: anyone on the same network can open it and use it — on your quota. Add a firewall rule if you want it to yourself',
     ],
   },
   dashboard: {
@@ -431,6 +434,10 @@ const en: Dict = {
       E_UPDATE_FAILED: { title: 'Upgrade failed', hint: 'Already rolled back to the previous version. A diagnostic bundle helps us pin it down.' },
       E_COMPOSE_FETCH: { title: 'Could not fetch the Hunter compose file', hint: 'Falling back to the copy bundled with the launcher; installation usually continues fine. If even that fails, check write permissions on ~/.hunter/app.' },
       E_CONFIG_WRITE: { title: 'Failed to write configuration', hint: 'Check write permissions and free disk space under ~/.hunter.' },
+      E_PROJECT_CONFLICT: {
+        title: 'Another working directory owns the "hunter" project name',
+        hint: 'Another Hunter stack is already running on this machine. Continuing would overwrite its configuration and ports, so we stopped here. The details below say which directory owns it and how to switch back or shut it down.',
+      },
       E_NOT_IMPLEMENTED: { title: 'Not implemented yet', hint: 'M1 only builds the UI skeleton; the real calls land in M2 / M3.' },
       E_UNKNOWN: { title: 'Unknown error', hint: 'An unclassified error — please attach the diagnostic bundle.' },
     },

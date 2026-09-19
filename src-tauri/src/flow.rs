@@ -159,6 +159,10 @@ pub fn prepare(
     mut note: impl FnMut(&str),
 ) -> AppResult<PrepareResult> {
     paths::ensure_dirs()?;
+    // 待办池 P0-5：`hunter` 这个项目名被另一个工作目录占着的话，现在就停 ——
+    // 拦在这里（而不是只拦在 `compose::up`）是为了别让用户白等 850 MB 的拉取。
+    // `compose::up` 那边还有一道，两处都要，因为升级 / 重启走的不是 prepare。
+    compose::guard_project_owner()?;
     let mut cfg = state.config();
     cfg.hunter.tag = opts.tag.clone();
     let offline = state.offline.load(Ordering::Relaxed);
