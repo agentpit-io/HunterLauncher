@@ -9,6 +9,9 @@
 set -euo pipefail
 
 OUT="${1:-docs/screenshots/M1}"
+# 文件名前缀跟着输出目录走（docs/screenshots/M4 → m4-*.png）。
+# M1~M3 都硬编码成 m1-，到 M4 就对不上了 —— 一个里程碑一套图，名字得看得出是哪一套
+PREFIX="${PREFIX:-$(basename "$OUT" | tr 'A-Z' 'a-z')}"
 BIN="${BIN:-src-tauri/target/release/hunter-launcher}"
 W="${W:-1180}"
 H="${H:-760}"
@@ -51,20 +54,20 @@ for page in "${PAGES[@]}"; do
   # 找到窗口并按它的几何裁剪，避免把 Xvfb 的黑边也截进去
   WID=$(xdotool search --name "Hunter Launcher" 2>/dev/null | tail -1 || true)
   if [ -n "$WID" ]; then
-    import -window "$WID" "$OUT/m1-$page.png"
+    import -window "$WID" "$OUT/$PREFIX-$page.png"
   else
-    import -window root -crop "${W}x${H}+0+0" +repage "$OUT/m1-$page.png"
+    import -window root -crop "${W}x${H}+0+0" +repage "$OUT/$PREFIX-$page.png"
   fi
 
   kill "$APP_PID" 2>/dev/null || true
   wait "$APP_PID" 2>/dev/null || true
   sleep 1
 
-  SIZE=$(stat -c%s "$OUT/m1-$page.png")
-  COLORS=$(identify -format %k "$OUT/m1-$page.png")
-  MEAN=$(convert "$OUT/m1-$page.png" -colorspace sRGB -format "%[fx:int(mean*1000)]" info:)
-  SAT=$(convert "$OUT/m1-$page.png" -colorspace HSL -channel g -separate +channel -format "%[fx:int(mean*1000)]" info:)
-  echo "   $OUT/m1-$page.png  ${SIZE}B  颜色数 ${COLORS}  平均亮度 ${MEAN}‰  平均饱和度 ${SAT}‰"
+  SIZE=$(stat -c%s "$OUT/$PREFIX-$page.png")
+  COLORS=$(identify -format %k "$OUT/$PREFIX-$page.png")
+  MEAN=$(convert "$OUT/$PREFIX-$page.png" -colorspace sRGB -format "%[fx:int(mean*1000)]" info:)
+  SAT=$(convert "$OUT/$PREFIX-$page.png" -colorspace HSL -channel g -separate +channel -format "%[fx:int(mean*1000)]" info:)
+  echo "   $OUT/$PREFIX-$page.png  ${SIZE}B  颜色数 ${COLORS}  平均亮度 ${MEAN}‰  平均饱和度 ${SAT}‰"
   # 三道校验，专门用来抓「看起来像一张正常图片的白屏」：
   #   1) 颜色数太少 = 纯色块
   #   2) 平均亮度太高 = 白屏（本项目的界面是深海军蓝，亮度一定很低）
