@@ -1062,6 +1062,9 @@ pub async fn import_offline(
             if let Some(t) = &r.tag {
                 cfg.hunter.tag = t.clone();
             }
+            // **落盘**，不只放内存：界面上导入之后可能要过一会儿才点「开始安装」，
+            // 中间用户完全可能把启动器关了再开（headless 更是两个进程）
+            cfg.install.offline = true;
             cfg.save()?;
             st.set_config(cfg);
             st.offline.store(true, Ordering::SeqCst);

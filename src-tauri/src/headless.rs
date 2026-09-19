@@ -755,6 +755,8 @@ fn cmd_import_images(st: &AppState, args: &Args) -> AppResult<()> {
     if let Some(t) = &r.tag {
         cfg.hunter.tag = t.clone();
     }
+    // **落盘**：`--import-images` 导完就退出了，真正安装是下一个进程做的事
+    cfg.install.offline = true;
     cfg.save()?;
     st.set_config(cfg.clone());
     st.offline.store(true, std::sync::atomic::Ordering::SeqCst);

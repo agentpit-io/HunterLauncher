@@ -65,8 +65,10 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let cfg = LauncherConfig::load();
+        let cfg_offline = cfg.install.offline;
         Self {
-            cfg: Mutex::new(LauncherConfig::load()),
+            cfg: Mutex::new(cfg),
             key: Mutex::new(None),
             own_key: Mutex::new(None),
             pull: Mutex::new(PullProgress::empty()),
@@ -77,7 +79,8 @@ impl AppState {
             cancel: Arc::new(AtomicBool::new(false)),
             busy: AtomicBool::new(false),
             start_note: Mutex::new(None),
-            offline: AtomicBool::new(false),
+            // 从落盘的配置里读回来 —— `--import-images` 与真正的安装是两个进程
+            offline: AtomicBool::new(cfg_offline),
         }
     }
 
@@ -158,52 +161,69 @@ pub fn prepare(
     paths::ensure_dirs()?;
     let mut cfg = state.config();
     cfg.hunter.tag = opts.tag.clone();
+    let offline = state.offline.load(Ordering::Relaxed);
 
     // ① 镜像源
-    let (cand, probes) = match opts.registry.as_deref() {
-        Some(id) if registry::by_id(id).is_some() => {
-            let c = registry::by_id(id).unwrap();
-            let p = registry::probe(c, &opts.tag, PROBE_TIMEOUT);
-            if !p.available {
-                return Err(AppError::new(
-                    Code::PullFailed,
-                    format!(
-                        "指定的镜像源 {} 上拉不到 {}：{}",
-                        c.label,
-                        opts.tag,
-                        p.detail.clone().unwrap_or_default()
-                    ),
-                ));
+    //
+    // 离线包导入过就**整个跳过测速**：那台机器多半根本连不上任何源（这正是用离线包的原因），
+    // 去测速只会白等两个超时然后报错 —— 而镜像其实已经躺在本机了。
+    // 用包里带的那个前缀就行，它是从镜像名反推出来的，一定对得上。
+    let (cand, probes) = if offline {
+        let c: &'static registry::Candidate = registry::CANDIDATES
+            .iter()
+            .find(|c| c.prefix == cfg.hunter.registry_prefix)
+            .unwrap_or_else(|| Box::leak(Box::new(registry::custom(&cfg.hunter.registry_prefix))));
+        note(&format!(
+            "离线模式：镜像已由离线包导入，跳过镜像源测速（源 {}）",
+            c.prefix
+        ));
+        (c, Vec::new())
+    } else {
+        match opts.registry.as_deref() {
+            Some(id) if registry::by_id(id).is_some() => {
+                let c = registry::by_id(id).unwrap();
+                let p = registry::probe(c, &opts.tag, PROBE_TIMEOUT);
+                if !p.available {
+                    return Err(AppError::new(
+                        Code::PullFailed,
+                        format!(
+                            "指定的镜像源 {} 上拉不到 {}：{}",
+                            c.label,
+                            opts.tag,
+                            p.detail.clone().unwrap_or_default()
+                        ),
+                    ));
+                }
+                note(&format!("镜像源：{}（{} ms，指定）", p.label, p.elapsed_ms));
+                (c, vec![p])
             }
-            note(&format!("镜像源：{}（{} ms，指定）", p.label, p.elapsed_ms));
-            (c, vec![p])
-        }
-        Some(prefix) => {
-            // 用户手填的自定义源：探不了 manifest（不知道仓库路径），直接信任并写清楚
-            let c: &'static registry::Candidate = Box::leak(Box::new(registry::custom(prefix)));
-            note(&format!(
-                "镜像源：自定义 {}（用户手填，没有做可用性探测）",
-                c.prefix
-            ));
-            (c, Vec::new())
-        }
-        None => {
-            note("正在测速候选镜像源…");
-            let (c, p) = registry::choose(&opts.tag, PROBE_TIMEOUT)?;
-            for r in &p {
+            Some(prefix) => {
+                // 用户手填的自定义源：探不了 manifest（不知道仓库路径），直接信任并写清楚
+                let c: &'static registry::Candidate = Box::leak(Box::new(registry::custom(prefix)));
                 note(&format!(
-                    "  {} {} · {} ms{}",
-                    if r.available { "可用" } else { "不可用" },
-                    r.label,
-                    r.elapsed_ms,
-                    r.detail
-                        .as_ref()
-                        .map(|d| format!(" · {d}"))
-                        .unwrap_or_default()
+                    "镜像源：自定义 {}（用户手填，没有做可用性探测）",
+                    c.prefix
                 ));
+                (c, Vec::new())
             }
-            note(&format!("选定：{}", c.label));
-            (c, p)
+            None => {
+                note("正在测速候选镜像源…");
+                let (c, p) = registry::choose(&opts.tag, PROBE_TIMEOUT)?;
+                for r in &p {
+                    note(&format!(
+                        "  {} {} · {} ms{}",
+                        if r.available { "可用" } else { "不可用" },
+                        r.label,
+                        r.elapsed_ms,
+                        r.detail
+                            .as_ref()
+                            .map(|d| format!(" · {d}"))
+                            .unwrap_or_default()
+                    ));
+                }
+                note(&format!("选定：{}", c.label));
+                (c, p)
+            }
         }
     };
     cfg.apply_registry(cand);
@@ -320,26 +340,41 @@ pub fn prepare(
     );
     let arch = registry::oci_arch();
     let mut sizes: BTreeMap<String, u64> = BTreeMap::new();
-    for s in &specs {
-        match registry::compressed_size(&s.host, &s.repo, &s.tag, arch, NET_TIMEOUT) {
-            Ok(n) => {
+    if offline {
+        // 离线模式下去问 registry 要 manifest 是白等六个超时 —— 镜像就在本机，
+        // 直接读 `docker image inspect` 的 Size。它是**解压后**的大小，比压缩后大不少，
+        // 但离线模式根本不画进度条（一个字节都不用下），这个数只用来在日志里报个量。
+        for s in &specs {
+            if let Some(n) = crate::offline::inspect_size(&s.reference) {
                 sizes.insert(s.service.clone(), n);
             }
-            Err(e) => lwarn!(
-                "读不到 {} 的 manifest（进度条分母会退而用观测值）：{}",
-                s.reference,
-                e.msg
-            ),
         }
-    }
-    let total: u64 = sizes.values().sum();
-    if total > 0 {
         note(&format!(
-            "六个镜像合计约 {}（linux/{arch} 压缩后，来自 manifest）",
-            human_bytes(total)
+            "六个镜像已在本机，合计 {}（docker image inspect 的解压后大小）",
+            human_bytes(sizes.values().sum::<u64>())
         ));
     } else {
-        note("读不到 manifest，进度条的总量会在拉取过程中逐步补齐");
+        for s in &specs {
+            match registry::compressed_size(&s.host, &s.repo, &s.tag, arch, NET_TIMEOUT) {
+                Ok(n) => {
+                    sizes.insert(s.service.clone(), n);
+                }
+                Err(e) => lwarn!(
+                    "读不到 {} 的 manifest（进度条分母会退而用观测值）：{}",
+                    s.reference,
+                    e.msg
+                ),
+            }
+        }
+        let total: u64 = sizes.values().sum();
+        if total > 0 {
+            note(&format!(
+                "六个镜像合计约 {}（linux/{arch} 压缩后，来自 manifest）",
+                human_bytes(total)
+            ));
+        } else {
+            note("读不到 manifest，进度条的总量会在拉取过程中逐步补齐");
+        }
     }
 
     Ok(PrepareResult {
@@ -495,6 +530,15 @@ pub fn pull(
                 }
                 on_progress(&snap);
                 linfo!("拉取完成，用时 {} 秒", agg.elapsed().as_secs());
+                // 真的从网上拉成功了 = 这台机器连得上源，离线标志该退场了。
+                // 留着它会让以后每次安装都跳过拉取，镜像永远停在导入时的那一版。
+                if state.offline.swap(false, Ordering::SeqCst) {
+                    let mut c = state.config();
+                    c.install.offline = false;
+                    let _ = c.save();
+                    state.set_config(c);
+                    linfo!("已从网上拉取成功，离线标志清除");
+                }
                 state.tele(
                     "pull_done",
                     &[

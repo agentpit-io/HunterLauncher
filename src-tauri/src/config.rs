@@ -153,6 +153,16 @@ pub struct InstallSection {
     pub done: bool,
     /// 上海时间字符串
     pub at: String,
+    /// 镜像是**离线包导入**来的（方案 §9）。
+    ///
+    /// **必须落盘**，不能只放在进程内存里：`--import-images` 导完就退出了，
+    /// 真正安装是下一个进程做的事，内存里的标志根本传不过去
+    /// （M4 测试 5 第一次跑就是栽在这里 —— 导入明明成功了，安装还是去测速然后失败）。
+    ///
+    /// 为真时 [`crate::flow::prepare`] 跳过镜像源测速、[`crate::flow::pull`] 跳过拉取。
+    /// 一旦真的从网上拉成功过一次，它会被自动清掉（那说明这台机器本来就能连上源）。
+    #[serde(default)]
+    pub offline: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1133,6 +1143,9 @@ mod tests {
     #[test]
     fn 缺字段的_toml_用默认值补齐() {
         let c: LauncherConfig = toml::from_str("[launcher]\nlocale = \"en\"\nversion = \"0.1.0\"\nautostart = false\ncheck_update_hours = 24\n").unwrap();
+        // `install.offline` 是 M4 新加的字段：老的 launcher.toml 里没有它，
+        // 读回来必须是 false 而不是报错（#[serde(default)] 保证这一点）。
+        assert!(!c.install.offline);
         assert_eq!(c.launcher.locale, "en");
         assert_eq!(c.hunter.ports.web, 3100, "没写的段要落到默认值");
         assert!(!c.install.done);

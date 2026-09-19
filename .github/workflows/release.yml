@@ -158,11 +158,40 @@ jobs:
             echo "::error::没有它产出的 latest.json 验不过签，自更新会整个失效。先 gh secret set 再重跑。"
             exit 1
           fi
-          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && [ "$RUNNER_OS" = "macOS" ]; then
+
+          # ⚠ 空字符串**不等于**没设置。Tauri 判的是「这个环境变量在不在」，
+          # 而 job 级 env 会把没配的 secret 变成一个**存在但为空**的变量 ——
+          # 于是 macOS 上它会拿一个空的签名身份去 codesign，然后报
+          # 「failed to import keychain certificate」（rc.1 第一次跑就是这么挂的）。
+          # 这里把空的那些显式 unset 掉，Tauri 才会走「不签名」那条路（红线 7）。
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                   APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+                   WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+            if [ -z "${!v:-}" ]; then unset "$v"; fi
+          done
+          if [ "$RUNNER_OS" = "macOS" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
             echo "::notice::没有 Apple 证书，产出未签名、未公证的 .app / .dmg（红线 7：不申请付费证书）"
           fi
+
+          V=$(node -p "require('./src-tauri/tauri.conf.json').version")
           if [ "$RUNNER_OS" = "macOS" ]; then
             pnpm exec tauri build --target universal-apple-darwin --bundles ${{ matrix.bundles }}
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            # NSIS 吃得下 `0.1.0-rc.1`；**MSI 吃不下** —— WiX 只认「纯数字」的预发布段，
+            # `-rc.1` 会直接报 `optional pre-release identifier ... must be numeric-only`
+            # （rc.1 第一次跑就是这么挂的）。所以分两次打：
+            #   · NSIS 用真实版本号；
+            #   · MSI 用 `bundle.windows.wix.version` 覆盖成去掉预发布后缀的数字版本。
+            # 代价是两个 rc 的 MSI ProductVersion 会一样，Windows 认不出「更新」——
+            # 对预发布可以接受（Windows 上推荐的是 NSIS），正式版没有后缀不受影响。
+            # 第二次只是重新打包，二进制已经编好了，很快。
+            pnpm exec tauri build --bundles nsis
+            WIX_V="${V%%-*}"
+            if [ "$WIX_V" != "$V" ]; then
+              echo "::notice::MSI 的版本号从 $V 降成 $WIX_V（WiX 不接受非数字的预发布后缀）"
+            fi
+            pnpm exec tauri build --bundles msi \
+              --config "{\"bundle\":{\"windows\":{\"wix\":{\"version\":\"$WIX_V\"}}}}"
           else
             pnpm exec tauri build --bundles ${{ matrix.bundles }}
           fi
