@@ -1639,6 +1639,7 @@ version = "0.1.0-rc.1"
 dependencies = [
  "getrandom 0.4.3",
  "http",
+ "minisign-verify",
  "rpassword",
  "serde",
  "serde_json",

@@ -398,3 +398,363 @@ mod tests {
         assert!(u.reason.is_some(), "拿不到要给原因（红线 1）");
     }
 }
+
+// ── headless 下的自更新 ───────────────────────────────────────────────────
+//
+// ## 为什么这里有第二套实现
+//
+// 上面那套走 Tauri 的 updater 插件，它要一个 `AppHandle` —— 也就是**必须有 GUI**。
+// 而 `--headless` 跑在没有桌面的服务器上，压根没有 app。结果是 SSH 用户连
+// 「启动器有没有新版本」都查不到，这是个真实的缺口。
+//
+// 所以这里自己走一遍：读清单 → 比版本 → 下载 → **用同一把公钥验签** → 装。
+// 只在 Linux 上做（headless 的用户就在 Linux 上），Windows / macOS 的就地安装
+// 仍然由 Tauri 插件负责 —— 那两个平台要调 NSIS 安装器、要替换 `.app` 包，
+// 重写一遍只会多一个出错的地方。
+//
+// **验签这一步不能省。** 安装包没有代码签名，更新通道要是也不验，
+// 等于给任何能劫持 HTTP 的人一个装任意程序的口子。
+
+use serde::Deserialize;
+
+/// `latest.json` 里我们要用的部分。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Manifest {
+    pub version: String,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub pub_date: Option<String>,
+    #[serde(default)]
+    pub platforms: std::collections::BTreeMap<String, ManifestPlatform>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestPlatform {
+    pub signature: String,
+    pub url: String,
+}
+
+/// updater 的两个端点，与 `tauri.conf.json` 里那份**必须一致**。
+/// 有一条测试盯着它们不会各改各的。
+pub fn endpoints() -> [String; 2] {
+    [
+        format!("{}/launcher/latest.json", crate::config::CN_DOWNLOAD_BASE),
+        format!("https://github.com/{REPO}/releases/latest/download/latest.json"),
+    ]
+}
+
+/// 这台机器对应 `latest.json` 里的哪个 target 键。
+pub fn target_key() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "linux-x86_64",
+        ("linux", "aarch64") => "linux-aarch64",
+        ("windows", _) => "windows-x86_64",
+        ("macos", "aarch64") => "darwin-aarch64",
+        ("macos", _) => "darwin-x86_64",
+        _ => "linux-x86_64",
+    }
+}
+
+/// 按顺序试两个端点，第一个能读出合法清单的就用它。返回 (清单, 来自哪个主机)。
+pub fn fetch_manifest(timeout: Duration) -> AppResult<(Manifest, String)> {
+    let mut why: Vec<String> = Vec::new();
+    for url in endpoints() {
+        let host = crate::http::host_of(&url);
+        match crate::http::get(&url, &[], timeout) {
+            Ok(r) if r.ok() => match serde_json::from_str::<Manifest>(&r.body) {
+                Ok(m) if !m.version.is_empty() => return Ok((m, host)),
+                Ok(_) => why.push(format!("{host} 的清单里没有 version")),
+                Err(e) => why.push(format!("{host} 的清单解析不了：{e}")),
+            },
+            Ok(r) => why.push(format!("{host} HTTP {}", r.status)),
+            Err(e) => why.push(format!("{host} {}", e.msg)),
+        }
+    }
+    Err(AppError::new(
+        Code::UpdateFailed,
+        format!("两个端点都读不到 latest.json：{}", why.join("；")),
+    ))
+}
+
+/// 极简 base64 解码。只为了拆 minisign 的公钥与签名 —— 为这一件事拖一个 crate 不划算。
+/// 不认识的字符（含换行）一律跳过，这正好吃得下 PEM 风格的折行。
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        if c == b'=' {
+            break;
+        }
+        let Some(v) = T.iter().position(|&t| t == c) else {
+            continue; // 换行、空格之类
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// 编译进程序的那把 minisign 公钥（与 `tauri.conf.json` 的 `plugins.updater.pubkey` 同一个）。
+///
+/// 为什么在这里再写一份：`tauri.conf.json` 是构建期的配置，运行时读不到它。
+/// 有一条测试把两边对了一遍，改一个忘了另一个会红。
+pub const PUBKEY_B64: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY2NUU4MUVDNEI5MDJFQkMKUldTOExwQkw3SUZlWmxpYk9sbFAxNWhqYWVKK0l2NTZQQkxZd2NrbUoyQU5DZnVYM1g3LzRvREkK";
+
+/// 用编译进来的公钥验一段字节的签名。`sig` 可以是 base64 包了一层的，也可以是 minisig 原文。
+pub fn verify(bytes: &[u8], sig: &str) -> AppResult<()> {
+    let pk_text = b64_decode(PUBKEY_B64)
+        .and_then(|v| String::from_utf8(v).ok())
+        .ok_or_else(|| AppError::new(Code::UpdateFailed, "内置公钥解不出来"))?;
+    let pk = minisign_verify::PublicKey::decode(pk_text.trim())
+        .map_err(|e| AppError::new(Code::UpdateFailed, format!("内置公钥不合法：{e}")))?;
+
+    // Tauri 往 `.sig` 与清单里写的都是「minisig 全文再 base64 一层」；
+    // 手工用 minisign 生成的则是原文。两种都收。
+    let sig_text = if sig.contains("untrusted comment:") {
+        sig.to_string()
+    } else {
+        b64_decode(sig)
+            .and_then(|v| String::from_utf8(v).ok())
+            .ok_or_else(|| AppError::new(Code::UpdateFailed, "签名解不出来"))?
+    };
+    let signature = minisign_verify::Signature::decode(sig_text.trim())
+        .map_err(|e| AppError::new(Code::UpdateFailed, format!("签名格式不对：{e}")))?;
+    pk.verify(bytes, &signature, false).map_err(|e| {
+        AppError::new(
+            Code::UpdateFailed,
+            format!("签名验不过，这个包不装：{e}。要么下载被人动过，要么它不是我们发的。"),
+        )
+    })
+}
+
+/// headless 的 `--self-update`。
+///
+/// * AppImage → 验签后**就地替换**那个文件（先写临时文件再 rename，中途断电不会留下半个）
+/// * `.deb` / 认不出来的 → 下到 `~/.hunter/updates/` 并返回一条要用户自己敲的命令
+///
+/// 两条路都**先验签再落地**。
+pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let (m, host) = fetch_manifest(Duration::from_secs(20))?;
+    note(&format!(
+        "清单来自 {host}：最新 {}（当前 {current}）",
+        m.version
+    ));
+    if !crate::upgrade::is_newer(&m.version, current) {
+        return Ok(format!(
+            "已经是最新版 v{current}（清单里是 v{}）。",
+            m.version
+        ));
+    }
+    if !m.notes.trim().is_empty() {
+        note(&format!(
+            "更新说明：{}",
+            crate::upgrade::summarize_notes(&m.notes, 300)
+        ));
+    }
+
+    let kind = install_kind();
+    paths::ensure_dirs()?;
+
+    match kind {
+        InstallKind::AppImage => {
+            let p = m.platforms.get(target_key()).ok_or_else(|| {
+                AppError::new(
+                    Code::UpdateFailed,
+                    format!("清单里没有 {} 这个平台的包", target_key()),
+                )
+            })?;
+            note(&format!("正在下载 {}", p.url));
+            let bytes = crate::http::get_bytes(&p.url, Duration::from_secs(900))?;
+            note(&format!(
+                "下好了 {}，正在验签…",
+                crate::flow::human_bytes(bytes.len() as u64)
+            ));
+            verify(&bytes, &p.signature)?;
+            note("签名通过");
+
+            let target = std::env::var_os("APPIMAGE")
+                .map(PathBuf::from)
+                .ok_or_else(|| AppError::new(Code::UpdateFailed, "读不到 APPIMAGE 环境变量"))?;
+            // 先写同目录的临时文件再 rename：rename 在同一个文件系统上是原子的，
+            // 中途断电不会留下一个半截的 AppImage
+            let tmp = target.with_extension("new");
+            std::fs::write(&tmp, &bytes).map_err(|e| {
+                AppError::new(
+                    Code::UpdateFailed,
+                    format!("写 {} 失败：{e}", tmp.display()),
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(
+                    |e| AppError::new(Code::UpdateFailed, format!("给新文件加可执行位失败：{e}")),
+                )?;
+            }
+            std::fs::rename(&tmp, &target).map_err(|e| {
+                AppError::new(
+                    Code::UpdateFailed,
+                    format!(
+                        "替换 {} 失败：{e}（新文件还在 {}）",
+                        target.display(),
+                        tmp.display()
+                    ),
+                )
+            })?;
+            linfo!("AppImage 已就地替换为 {}", m.version);
+            Ok(format!(
+                "已就地更新到 v{}（{}）。重新运行它就是新版本。",
+                m.version,
+                target.display()
+            ))
+        }
+        _ => {
+            note(&format!(
+                "这台机器上的启动器是 {} 形式装的，换包要 root —— 只下载，不替你装。",
+                kind.as_str()
+            ));
+            let deb = download_and_verify_deb(&m.version, &mut note)?;
+            Ok(format!(
+                "新版本 {} 的安装包已下到 {}（签名已验过）。装它：\n  {}",
+                m.version,
+                deb,
+                deb_install_command(&deb)
+            ))
+        }
+    }
+}
+
+/// 下 `.deb` 与它的 `.sig`，验完再返回落地路径。
+fn download_and_verify_deb(version: &str, note: &mut impl FnMut(&str)) -> AppResult<String> {
+    let name = format!("hunter-launcher_{version}_amd64.deb");
+    let dst = paths::updates_dir().join(&name);
+    let mut why: Vec<String> = Vec::new();
+    for url in [deb_url_cn(version), deb_url_github(version)] {
+        let host = crate::http::host_of(&url);
+        note(&format!("正在从 {host} 下载 {name}…"));
+        let bytes = match crate::http::get_bytes(&url, Duration::from_secs(900)) {
+            Ok(b) if !b.is_empty() => b,
+            Ok(_) => {
+                why.push(format!("{host} 返回了一个空文件"));
+                continue;
+            }
+            Err(e) => {
+                why.push(format!("{host} {}", e.msg));
+                continue;
+            }
+        };
+        let sig = match crate::http::get(&format!("{url}.sig"), &[], Duration::from_secs(60)) {
+            Ok(r) if r.ok() => r.body,
+            Ok(r) => {
+                why.push(format!("{host} 的 .sig 返回 HTTP {}", r.status));
+                continue;
+            }
+            Err(e) => {
+                why.push(format!("{host} 的 .sig {}", e.msg));
+                continue;
+            }
+        };
+        verify(&bytes, &sig)?;
+        note(&format!(
+            "签名通过（{}）",
+            crate::flow::human_bytes(bytes.len() as u64)
+        ));
+        std::fs::write(&dst, &bytes).map_err(|e| {
+            AppError::new(
+                Code::UpdateFailed,
+                format!("写 {} 失败：{e}", dst.display()),
+            )
+        })?;
+        linfo!("已下载并验签 {name}（来自 {host}）");
+        return Ok(dst.to_string_lossy().into_owned());
+    }
+    Err(AppError::new(
+        Code::UpdateFailed,
+        format!("下载 {name} 失败：{}", why.join("；")),
+    ))
+}
+
+#[cfg(test)]
+mod headless_tests {
+    use super::*;
+
+    #[test]
+    fn base64_解码对得上() {
+        assert_eq!(b64_decode("aGVsbG8=").unwrap(), b"hello");
+        // 带换行的（PEM 风格）也要能吃
+        assert_eq!(b64_decode("aGVs\nbG8=").unwrap(), b"hello");
+        assert_eq!(b64_decode("").unwrap(), b"");
+    }
+
+    #[test]
+    fn 内置公钥能解出一个合法的_minisign_公钥() {
+        let text = String::from_utf8(b64_decode(PUBKEY_B64).unwrap()).unwrap();
+        assert!(text.contains("untrusted comment:"), "{text}");
+        assert!(minisign_verify::PublicKey::decode(text.trim()).is_ok());
+    }
+
+    /// 公钥写在两个地方（`tauri.conf.json` 与这里），改一个忘了另一个会让自更新悄悄失效。
+    #[test]
+    fn 内置公钥与_tauri_conf_里的一致() {
+        let conf = include_str!("../tauri.conf.json");
+        assert!(
+            conf.contains(PUBKEY_B64),
+            "selfupdate.rs 的 PUBKEY_B64 与 tauri.conf.json 的 plugins.updater.pubkey 不一致"
+        );
+    }
+
+    /// 端点也写在两个地方，同理。
+    #[test]
+    fn 端点与_tauri_conf_里的一致() {
+        let conf = include_str!("../tauri.conf.json");
+        for e in endpoints() {
+            assert!(conf.contains(&e), "tauri.conf.json 里没有这个端点：{e}");
+        }
+    }
+
+    #[test]
+    fn 平台键覆盖了清单里会出现的那几个() {
+        // make-latest-json.py 产出的键就是这几个
+        let k = target_key();
+        assert!(
+            [
+                "linux-x86_64",
+                "linux-aarch64",
+                "windows-x86_64",
+                "darwin-x86_64",
+                "darwin-aarch64"
+            ]
+            .contains(&k),
+            "{k}"
+        );
+    }
+
+    #[test]
+    fn 签名验不过就不装() {
+        // 拿一段随便什么字节配一个随便什么签名，必须失败而不是放过去
+        let r = verify(b"hello", "bm90LWEtc2lnbmF0dXJl");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn 清单解析只认必要字段() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"version":"0.1.1","notes":"x","pub_date":"2026-09-20T00:00:00Z",
+                "platforms":{"linux-x86_64":{"signature":"s","url":"u"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(m.version, "0.1.1");
+        assert_eq!(m.platforms["linux-x86_64"].url, "u");
+        // 少了可选字段也要能解
+        let m2: Manifest = serde_json::from_str(r#"{"version":"0.1.1","platforms":{}}"#).unwrap();
+        assert!(m2.notes.is_empty());
+        assert!(m2.pub_date.is_none());
+    }
+}

@@ -36,6 +36,9 @@ getrandom = "0.4"
 rpassword = "7"
 # 离线包导入要选文件（方案 §9）。系统原生的文件选择框，比让用户手抄路径靠谱
 tauri-plugin-dialog = "2"
+# headless 下自己验 updater 清单与安装包的签名（见 selfupdate.rs 的「两条路」一节）。
+# 这个 crate 本来就在依赖树里（tauri-plugin-updater 用它），直接依赖不增加体积
+minisign-verify = "0.2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"

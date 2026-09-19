@@ -106,6 +106,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.action = Some("check-update".into());
                 a.headless = true;
             }
+            "--self-update" => {
+                a.action = Some("self-update".into());
+                a.headless = true;
+            }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
@@ -140,6 +144,7 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --logs [服务名]       看容器日志（已脱敏）
   hunter-launcher --diagnose            打印脱敏诊断信息
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
+  hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 只下载）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
   hunter-launcher --backups             列出 ~/.hunter/backups/ 里的备份
   hunter-launcher --import-images <tar> 从离线包导入镜像，之后安装不再联网拉
@@ -188,6 +193,7 @@ pub fn run(args: &Args) -> i32 {
         Some("logs") => cmd_logs(args.tag.as_deref()),
         Some("diagnose") => cmd_diagnose(&st),
         Some("check-update") => cmd_check_update(&st),
+        Some("self-update") => cmd_self_update(),
         Some("upgrade") => cmd_upgrade(&st, args),
         Some("backups") => cmd_backups(),
         Some("import-images") => cmd_import_images(&st, args),
@@ -623,21 +629,54 @@ fn cmd_check_update(st: &AppState) -> AppResult<()> {
         (None, None) => println!("  查不到最新版本"),
     }
 
-    println!("\n启动器当前 v{}", env!("CARGO_PKG_VERSION"));
+    let cur = env!("CARGO_PKG_VERSION");
+    println!("\n启动器当前 v{cur}");
     let kind = crate::selfupdate::install_kind();
     println!("  安装形式 {}", kind.as_str());
+    // 真去读一次 updater 清单。GUI 走 Tauri 的插件（要 AppHandle），
+    // headless 走 selfupdate.rs 里那套自己读 + 自己验签的实现
+    match crate::selfupdate::fetch_manifest(Duration::from_secs(20)) {
+        Ok((m, host)) if crate::upgrade::is_newer(&m.version, cur) => {
+            println!("  有新版本 v{}（清单来自 {host}）", m.version);
+            if let Some(d) = &m.pub_date {
+                println!("  发布时间 {d}");
+            }
+            if !m.notes.trim().is_empty() {
+                println!("\n  更新说明：");
+                for line in crate::upgrade::summarize_notes(&m.notes, 500).lines() {
+                    println!("    {line}");
+                }
+            }
+            println!("\n  更新：hunter-launcher --self-update");
+        }
+        Ok((m, host)) => println!("  已经是最新版（清单来自 {host}，里面是 v{}）", m.version),
+        // 拿不到就如实说原因，**不谎称「已是最新」**（红线 1）
+        Err(e) => println!("  查不到：{}", e.msg),
+    }
     println!(
         "  {}",
         if kind.can_self_install() {
-            "这种形式支持就地自更新（在界面里点「更新」）"
+            "这种形式支持就地自更新"
         } else {
-            "这种形式（.deb 等）换包要 root，启动器只会把新包下到 ~/.hunter/updates/ 再给你一条命令"
+            "这种形式（.deb 等）换包要 root，启动器只会把新包下好再给你一条命令"
         }
     );
     println!(
         "  Release 页 https://github.com/{}/releases",
         crate::selfupdate::REPO
     );
+    Ok(())
+}
+
+/// `--self-update`：更新启动器自己。
+///
+/// 和界面上点「立即更新」是同一件事，只是**由用户显式敲出来** ——
+/// 所以它可以真的动手装（AppImage 就地替换），而不是像后台检查那样只提示不装。
+fn cmd_self_update() -> AppResult<()> {
+    title("更新启动器");
+    println!("当前 v{}", env!("CARGO_PKG_VERSION"));
+    let msg = crate::selfupdate::self_update_headless(|line| println!("  {line}"))?;
+    println!("\n  ✓ {msg}\n");
     Ok(())
 }
 
@@ -920,6 +959,7 @@ mod tests {
             "--import-images",
             "--export-images",
             "--check-update",
+            "--self-update",
             "HUNTER_HOME",
             "600",
         ] {
@@ -949,6 +989,10 @@ mod tests {
         let w = a(&["--check-update"]);
         assert_eq!(w.action.as_deref(), Some("check-update"));
         assert!(w.headless);
+
+        let u = a(&["--self-update"]);
+        assert_eq!(u.action.as_deref(), Some("self-update"));
+        assert!(u.headless);
 
         let b = a(&["--backups"]);
         assert_eq!(b.action.as_deref(), Some("backups"));

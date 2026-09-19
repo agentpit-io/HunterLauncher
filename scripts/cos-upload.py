@@ -63,6 +63,7 @@ def main() -> int:
 
     import boto3
     from botocore.config import Config
+    from boto3.s3.transfer import TransferConfig
 
     bucket, region = os.environ["COS_BUCKET"], os.environ["COS_REGION"]
     s3 = boto3.client(
@@ -75,12 +76,23 @@ def main() -> int:
         config=Config(s3={"addressing_style": "virtual"}, signature_version="s3v4"),
     )
 
+    # **必须关掉分片上传**。boto3 默认超过 8 MB 就切成 multipart，而 COS 的 UploadPart
+    # 要求带 Content-Length，boto3 不带 —— 于是大文件必然失败：
+    #   (MissingContentLength) when calling the UploadPart operation
+    # 78 MB 的 AppImage 第一次发 rc.1 就是栽在这里。
+    # 单次 PutObject 在 COS 上支持到 5 GB，我们最大的包才 80 MB，够用。
+    no_multipart = TransferConfig(multipart_threshold=5 * 1024**3, multipart_chunksize=5 * 1024**3)
+
     files = sorted(p for p in src.rglob("*") if p.is_file()) if src.is_dir() else [src]
     base = f"https://{bucket}.cos.{region}.myqcloud.com"
     total = 0
     for f in files:
         key = f"{prefix.rstrip('/')}/{f.relative_to(src).as_posix()}" if src.is_dir() else prefix
-        s3.upload_file(str(f), bucket, key, ExtraArgs={"ContentType": content_type(f)})
+        s3.upload_file(
+            str(f), bucket, key,
+            ExtraArgs={"ContentType": content_type(f)},
+            Config=no_multipart,
+        )
         n = f.stat().st_size
         total += n
         print(f"  ↑ {key}  ({n:,} B)  {base}/{key}")

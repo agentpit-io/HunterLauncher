@@ -240,6 +240,16 @@ jobs:
             n=${n//hunter Launcher/hunter-launcher}
             cp "$f" "out/$n"
           done
+          # macOS 的 `.app.tar.gz` 是**唯一一个文件名里不带版本**的产物
+          # （Tauri 只用 productName 命名它）。补上版本与 universal，
+          # 否则 make-latest-json.py 认不出来，latest.json 里就会**没有 darwin 那两项**
+          # —— rc.1 第一次发就是这样，Release 建出来了但 mac 用户永远收不到更新。
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            for f in out/hunter-launcher.app.tar.gz out/hunter-launcher.app.tar.gz.sig; do
+              [ -e "$f" ] || continue
+              mv "$f" "${f/hunter-launcher.app.tar.gz/hunter-launcher_${V}_universal.app.tar.gz}"
+            done
+          fi
           echo "── out/ ──"
           ls -la out/
           # 有包必须有签名：少一个 .sig 就等于那个平台的自更新是坏的
@@ -297,13 +307,27 @@ jobs:
       - name: 生成两份 latest.json（GitHub 与 COS）
         run: |
           set -e
+          # updater 弹窗里显示的那句话。不放整份 Release 说明 ——
+          # 那玩意儿几百行，塞进一个更新提示框只会让人划不到底
+          printf '%s\n' "Hunter 启动器 ${{ steps.v.outputs.version }} · 完整说明见 https://github.com/${{ github.repository }}/releases/tag/${{ steps.v.outputs.tag }}" > NOTE.txt
           python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
             "https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}" \
-            staged/latest.json --pub-date "${{ steps.v.outputs.date }}"
+            staged/latest.json --pub-date "${{ steps.v.outputs.date }}" --notes NOTE.txt
           python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
             "${{ vars.CN_DOWNLOAD_BASE }}/launcher/${{ steps.v.outputs.version }}" \
-            latest.cn.json --pub-date "${{ steps.v.outputs.date }}"
+            latest.cn.json --pub-date "${{ steps.v.outputs.date }}" --notes NOTE.txt
           cat staged/latest.json
+          # 三个平台一个都不能少 —— 少了哪个，那个平台的用户就永远收不到更新
+          python3 - <<'PY'
+          import json, sys
+          m = json.load(open("staged/latest.json"))
+          want = {"linux-x86_64", "windows-x86_64", "darwin-x86_64", "darwin-aarch64"}
+          missing = want - set(m["platforms"])
+          if missing:
+              print(f"::error::latest.json 里缺这些平台：{sorted(missing)}")
+              sys.exit(1)
+          print("OK：四个 target 键都在")
+          PY
 
       - name: 生成 Release 说明
         run: bash scripts/release-notes.sh "${{ steps.v.outputs.version }}" > NOTES.md
