@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { AssistPanel } from '../components/AssistPanel'
 import { Button, ChevronRight } from '../components/Button'
 import { Card } from '../components/Card'
 import { EnvList } from '../components/EnvList'
@@ -113,7 +114,14 @@ export function Docker() {
             { label: t.docker.runtime, value: d?.runtimeLabel ?? null, reason: reason(docker.error) },
             { label: t.docker.clientVersion, value: d?.clientVersion ?? null, reason: reason(docker.error) },
             { label: t.docker.serverVersion, value: d?.serverVersion ?? null, reason: reason(docker.error) },
-            { label: t.docker.composeVersion, value: d?.composeVersion ?? null, reason: reason(docker.error) },
+            { label: t.docker.composeVersion, value: d?.composeMode ?? d?.composeVersion ?? null, reason: reason(docker.error) },
+            // I4：把「启动器实际用的是哪一个 docker」摆到明面上。
+            // mac 上同时装过 Docker Desktop 与 OrbStack 是常事，不写出来谁也说不清。
+            {
+              label: t.docker.dockerPath,
+              value: d?.dockerPath ? <PathValue path={d.dockerPath} source={d.dockerPathSource} link={d.dockerLinkTarget} /> : null,
+              reason: d ? t.docker.dockerPathNone(d.dockerProbe?.length ?? 0) : reason(docker.error),
+            },
             ...(d?.wsl === null || d?.wsl === undefined
               ? []
               : [{ label: 'WSL2', value: d.wsl ? t.common.yes : t.common.no }]),
@@ -121,6 +129,10 @@ export function Docker() {
           ]}
         />
       </Card>
+
+      {/* 诊断助手（I4）。Docker 这一步是最容易卡住的一步，也是那个 macOS P0 的现场。
+          规则层零 token，认不出来才会给出「让 AI 帮我看看」。 */}
+      {!ok && !docker.loading && <AssistPanel className="mt-gap" errorCode={code ?? undefined} errorMessage={d?.problem ?? undefined} stage="docker" />}
 
       {/* 安装引导：内容来自 Rust 的 install_guide（按平台生成），不是前端写死的 */}
       {!ok && !docker.loading && d?.installGuide && (
@@ -156,4 +168,15 @@ export function Docker() {
 
 function reason(err: { code: string; message: string } | null): string | undefined {
   return err ? `${err.code} · ${err.message}` : undefined
+}
+
+/** 「/usr/local/bin/docker（已知位置 → …/OrbStack.app/…/xbin/docker）」 */
+function PathValue({ path, source, link }: { path: string; source: string | null; link: string | null }) {
+  const title = link ? `${path}（${source ?? '?'} · 软链指向 ${link}）` : `${path}（${source ?? '?'}）`
+  return (
+    <span className="tnum" title={title}>
+      {path}
+      {source && <span className="ml-1.5 text-muted">{source}</span>}
+    </span>
+  )
 }

@@ -960,7 +960,7 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
 fn container_uptime() -> Option<u64> {
     let name = format!("{}-web-1", config::PROJECT);
     let r = crate::proc::run_timeout(
-        "docker",
+        &crate::runtime::which::docker_bin(),
         &["inspect", "-f", "{{.State.StartedAt}}", &name],
         Duration::from_secs(10),
     )

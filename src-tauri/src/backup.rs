@@ -179,7 +179,7 @@ fn dump_db(out: &Path, note: &mut impl FnMut(&str)) -> AppResult<u64> {
 
     // `--clean --if-exists`：恢复时先把同名对象删掉，能灌进一个非空的库。
     // `--no-owner`：容器里的属主名不一定和恢复目标一致，带上会平白报一堆 role 不存在。
-    let args = compose::argv(&[
+    let (program, args) = compose::argv(&[
         "exec",
         "-T",
         "postgres",
@@ -200,7 +200,7 @@ fn dump_db(out: &Path, note: &mut impl FnMut(&str)) -> AppResult<u64> {
             format!("建备份文件 {} 失败：{e}", out.display()),
         )
     })?;
-    let mut child = std::process::Command::new("docker")
+    let mut child = crate::proc::base_command(&program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(file))
@@ -350,7 +350,7 @@ pub fn restore_db(id: &str) -> AppResult<String> {
         .get("POSTGRES_DB")
         .cloned()
         .unwrap_or_else(|| "hunter".into());
-    let args = compose::argv(&[
+    let (program, args) = compose::argv(&[
         "exec",
         "-T",
         "postgres",
@@ -364,7 +364,7 @@ pub fn restore_db(id: &str) -> AppResult<String> {
     ]);
     let file = std::fs::File::open(&sql)
         .map_err(|e| AppError::new(Code::UpdateFailed, format!("读不了转储文件：{e}")))?;
-    let mut child = std::process::Command::new("docker")
+    let mut child = crate::proc::base_command(&program)
         .args(&args)
         .stdin(Stdio::from(file))
         .stdout(Stdio::piped())
@@ -552,7 +552,15 @@ mod tests {
     #[test]
     fn 备份命令走的是参数数组且带_exec_t() {
         // 红线 3：不拼 shell 字符串。这里顺带盯住 `-T`（没有它在非 TTY 下会直接失败）
-        let args = compose::argv(&["exec", "-T", "postgres", "pg_dump"]);
+        let (program, args) = compose::argv(&["exec", "-T", "postgres", "pg_dump"]);
+        // I4 起 program 是**解析出来的 docker 绝对路径**（定位不到时退回裸名字），
+        // 参数第一个才是 compose 子命令
+        assert!(
+            program.ends_with("docker")
+                || program.ends_with("docker.exe")
+                || program.ends_with("docker-compose"),
+            "{program}"
+        );
         assert_eq!(args[0], "compose");
         assert!(args.iter().any(|a| a == "-T"), "{args:?}");
         assert!(args.iter().any(|a| a == "pg_dump"), "{args:?}");

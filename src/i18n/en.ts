@@ -54,8 +54,8 @@ const en: Dict = {
   },
   steps: {
     welcome: { title: 'Welcome', sub: 'Language & terms' },
-    docker: { title: 'Docker', sub: 'Detect container runtime' , detected: (label: string) => `Detected ${label}`, missing: 'not installed' },
     key: { title: 'Enter key', sub: 'One key for data and models' },
+    docker: { title: 'Docker', sub: 'Detect container runtime' , detected: (label: string) => `Detected ${label}`, missing: 'not installed' },
     model: { title: 'Choose model', sub: 'Hunter gateway by default' },
     pull: { title: 'Pull images', sub: (size: string, registry: string) => `~${size} · ${registry}` },
     start: { title: 'Start', sub: 'Health check for 6 services' },
@@ -83,7 +83,31 @@ const en: Dict = {
     ],
     start: 'Start',
   },
+  /** AI troubleshooting assistant (I4 §3). Two layers: deterministic rules first, AI as fallback. */
+  assist: {
+    collecting: 'Collecting diagnostics…',
+    collectFailed: (e: string) => `Failed to collect diagnostics: ${e}`,
+    ruleBadge: 'Rule',
+    aiBadge: 'AI suggestion',
+    roundLabel: (n: number, max: number) => `Round ${n} / ${max}`,
+    tokensThisRound: (n: number) => `~${n} tokens this round`,
+    tokensTotal: (n: number, rounds: number, max: number) => `~${n} tokens · ${rounds}/${max} rounds used`,
+    autoRan: 'Read-only actions the launcher ran automatically:',
+    rejected: (name: string, reason: string) => `The model asked to call "${name}" — rejected: ${reason}`,
+    ask: 'Let the AI take a look',
+    askAgain: 'Ask again with the new results',
+    stillBroken: 'Did that, still broken',
+    run: 'Run',
+    confirmRun: 'Confirm and run',
+    copyReport: 'Copy diagnostics',
+    showReport: 'Show full diagnostics',
+    hideReport: 'Hide full diagnostics',
+    offHint: 'The AI assistant is turned off in settings',
+    noKeyHint: 'No key yet — the AI layer is unavailable',
+  },
   docker: {
+    dockerPath: 'docker binary in use',
+    dockerPathNone: (n: number) => `probed ${n} locations, none found`,
     title: 'Detecting Docker',
     intro: 'The launcher deploys Hunter with the docker and docker compose CLIs. Here is what it found.',
     detecting: 'Detecting…',
@@ -245,6 +269,15 @@ const en: Dict = {
       'The api container reports it has no hunter key (/api/health says hunter_api_key = missing). Tool calls will 403 — check ~/.hunter/app/.env and restart the containers.',
   },
   settings: {
+    sectionAssist: 'AI troubleshooting',
+    assist: 'AI troubleshooting assistant',
+    assistHint: 'When setup fails, send the redacted diagnostics to the Hunter gateway. On by default.',
+    assistNote:
+      'Turn it off to use only the built-in deterministic rules (multi-path probing, installed-but-not-running, port conflicts, pull failures) — zero tokens. ' +
+      'Even when on, a request is only sent if the rules cannot explain the failure or you click "Let the AI take a look". ' +
+      'The payload never contains your key, and usernames in paths are replaced with <用户目录>.',
+    dockerPath: 'docker binary in use',
+    dockerPathNone: 'not found in any known location',
     title: 'Settings',
     sectionGeneral: 'General',
     sectionDeploy: 'Deployment',

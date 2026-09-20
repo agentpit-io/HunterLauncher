@@ -45,6 +45,16 @@ export interface InstallGuide {
   licenseNote: string
 }
 
+/** 一个候选位置的探测结果（I4 的多路径探测）。 */
+export type ProbeOutcome = 'found' | 'missing' | 'not-executable'
+
+export interface ProbeStep {
+  /** 配置 / PATH / 已知位置 */
+  source: string
+  candidate: string
+  outcome: ProbeOutcome
+}
+
 export interface DockerInfo {
   installed: boolean
   daemonRunning: boolean
@@ -54,6 +64,19 @@ export interface DockerInfo {
   serverVersion: string | null
   composeVersion: string | null
   arch: string | null
+  /**
+   * 实际用的 docker 可执行文件的绝对路径（I4）。
+   * macOS 上同时装过 Docker Desktop 与 OrbStack 是常事，不写出来谁也说不清用的是哪个。
+   */
+  dockerPath: string | null
+  /** 这条路径是从哪找到的：配置 / PATH / 已知位置 */
+  dockerPathSource: string | null
+  /** 软链指向哪里（/usr/local/bin/docker → OrbStack 的 xbin） */
+  dockerLinkTarget: string | null
+  /** 按顺序探过的每一个位置。没找到 docker 时界面会整份列出来 */
+  dockerProbe: ProbeStep[]
+  /** compose 是插件还是独立可执行文件 */
+  composeMode: string | null
   /** Windows 专用；其它平台为 null */
   wsl: boolean | null
   meetsMinimum: boolean
@@ -141,6 +164,9 @@ export interface ImagePull {
   seconds: number | null
 }
 
+/** 与 `src/state/machine.ts` 的 ErrorCode 对齐；这里用宽松的 string 避免循环依赖。 */
+export type ErrorCodeLike = string
+
 export interface PullProgress {
   phase: PullPhase
   registry: string
@@ -156,6 +182,12 @@ export interface PullProgress {
   /** 最近若干行原始进度日志，视觉稿第 2 张底部那个框 */
   log: string[]
   error: string | null
+  /**
+   * 出错时的**真实错误码**。I4 之前没有这个字段，前端把安装阶段的任何失败
+   * 都当成 `E_PULL_FAILED`，于是「项目名被另一个工作目录占着」会显示成
+   * 「镜像拉取失败」（标题与正文互相打架，诊断助手也据此给错建议）。
+   */
+  errorCode: ErrorCodeLike | null
 }
 
 export type Health = 'healthy' | 'starting' | 'unhealthy' | 'none' | 'pending'
@@ -239,6 +271,92 @@ export interface LauncherSettings {
    * I2 只是把开关做出来，默认值没动 —— 默认该是哪一个由用户决定（待办池 P1-20）。
    */
   webLocalOnly: boolean
+  /** AI 诊断助手。默认开；关掉之后只用确定性规则，一个 token 也不花（I4） */
+  assist: boolean
+  /** 现在实际用的 docker 路径。只读，拿不到就是 null（界面显示「—」） */
+  dockerPath: string | null
+}
+
+// ── AI 诊断助手（I4 §三） ────────────────────────────────────────────────
+
+export type ActionKind = 'readOnly' | 'mutating'
+
+/** 一个**将要执行**的动作。command 就是原样展示给用户看的那一条。 */
+export interface ActionPlan {
+  id: string
+  kind: ActionKind
+  /** 要做什么 */
+  title: string
+  /** 为什么要做 */
+  why: string
+  /** 完整命令的参数数组。不跑子进程的动作是空数组，看 summary */
+  argv: string[]
+  summary: string | null
+}
+
+/** 第一层（确定性规则）给的结论。 */
+export interface RuleSuggestion {
+  rule: string
+  code: string | null
+  title: string
+  detail: string
+  actions: ActionPlan[]
+  /** 为真时不显示「让 AI 帮我看看」主按钮 —— 规则层已经有把握了 */
+  confident: boolean
+}
+
+export interface RanAction {
+  id: string
+  title: string
+  command: string
+  ok: boolean
+  output: string
+}
+
+/** 被拒掉的动作（白名单之外或参数不合法）。**要显示出来**。 */
+export interface RejectedAction {
+  name: string
+  reason: string
+}
+
+export interface AssistTurn {
+  round: number
+  text: string | null
+  ran: RanAction[]
+  pending: ActionPlan[]
+  rejected: RejectedAction[]
+  /** 网关返回的 usage.total_tokens；没给就是 null */
+  tokens: number | null
+}
+
+export type DegradeReason =
+  | 'disabled'
+  | 'no-key'
+  | 'offline'
+  | 'gateway-error'
+  | 'quota-exhausted'
+  | 'rate-limited'
+  | 'timeout'
+  | 'rounds-exhausted'
+
+export interface Degraded {
+  reason: DegradeReason
+  message: string
+}
+
+export interface AssistState {
+  enabled: boolean
+  hasKey: boolean
+  rule: RuleSuggestion
+  turns: AssistTurn[]
+  pending: ActionPlan[]
+  totalTokens: number
+  rounds: number
+  maxRounds: number
+  degraded: Degraded | null
+  done: boolean
+  /** 整份诊断报文（已脱敏）。「复制诊断信息」用的就是它 */
+  reportText: string
 }
 
 /** 「查看本机将要发送的数据」。lines 就是 queue.jsonl 的原文。 */

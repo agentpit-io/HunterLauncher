@@ -11,7 +11,8 @@
 //! hunter-launcher --status                    看一眼现在什么情况
 //! hunter-launcher --stop / --start / --restart / --down
 //! hunter-launcher --logs [服务名]
-//! hunter-launcher --diagnose                  打印脱敏诊断
+//! hunter-launcher --diagnose                  打印脱敏诊断 + 确定性规则的结论
+//! hunter-launcher --diagnose --ai             再问一轮 AI（会花额度，所以要显式开关）
 //! ```
 
 use std::io::{IsTerminal, Write};
@@ -43,6 +44,20 @@ pub struct Args {
     pub export_images: Option<String>,
     pub help: bool,
     pub version: bool,
+    /// `--diagnose --ai`：诊断完再**问一轮 AI**（I4 §三的第二层）。
+    ///
+    /// 为什么要一个显式开关：`--diagnose` 是给脚本用的路径，问 AI 要花用户的额度，
+    /// 不能在他没要求的时候悄悄花掉。默认只跑第一层（确定性规则，零 token）。
+    pub ai: bool,
+    /// `--assist-replay <文件>`：把一份存下来的网关响应喂给动作白名单那道闸。
+    /// **不发任何网络请求**，纯离线验证安全边界（见 [`cmd_assist_replay`]）。
+    pub assist_replay: Option<String>,
+    /// `--code <E_XXX>`：告诉诊断助手「我刚才撞上的是这个错误码」。
+    ///
+    /// 界面版是从状态机里拿这个码的（错误页知道自己是怎么来的），命令行下
+    /// `--diagnose` 是一条独立的路径，不给的话规则层只能看当下的现场 ——
+    /// 而「拉取失败」这种事跑完就没痕迹了。
+    pub code: Option<String>,
 }
 
 /// 手写参数解析。为这几个开关拖一个 clap 进来不划算，而且 Tauri 的可执行文件
@@ -61,6 +76,9 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         export_images: None,
         help: false,
         version: false,
+        ai: false,
+        assist_replay: None,
+        code: None,
     };
     let v: Vec<String> = argv.into_iter().collect();
     let mut i = 0;
@@ -110,6 +128,23 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.action = Some("self-update".into());
                 a.headless = true;
             }
+            "--assist-replay" => {
+                a.assist_replay = v.get(i + 1).cloned();
+                a.action = Some("assist-replay".into());
+                a.headless = true;
+                i += 1;
+            }
+            "--code" => {
+                a.code = v.get(i + 1).cloned();
+                a.action = Some("diagnose".into());
+                a.headless = true;
+                i += 1;
+            }
+            "--ai" => {
+                a.ai = true;
+                a.action = Some("diagnose".into());
+                a.headless = true;
+            }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
@@ -142,7 +177,10 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --status              看当前状态
   hunter-launcher --start | --stop | --restart | --down
   hunter-launcher --logs [服务名]       看容器日志（已脱敏）
-  hunter-launcher --diagnose            打印脱敏诊断信息
+  hunter-launcher --diagnose            打印脱敏诊断信息 + 确定性规则的结论（零 token）
+  hunter-launcher --diagnose --ai       再问一轮 AI 诊断助手（会花你的 hunter 额度）
+  hunter-launcher --diagnose --code E_PULL_FAILED  按指定错误码跑一遍规则层
+  hunter-launcher --assist-replay <文件>  把一份存下来的网关响应喂给动作白名单（离线，不联网）
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
   hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 只下载）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
@@ -191,7 +229,15 @@ pub fn run(args: &Args) -> i32 {
         Some("restart") => cmd_simple("restart"),
         Some("down") => cmd_simple("down"),
         Some("logs") => cmd_logs(args.tag.as_deref()),
-        Some("diagnose") => cmd_diagnose(&st),
+        Some("assist-replay") => match args.assist_replay.as_deref() {
+            Some(p) => cmd_assist_replay(p),
+            None => Err(AppError::new(
+                Code::Unknown,
+                "--assist-replay 要跟一个 JSON 文件路径".to_string(),
+            )),
+        },
+        Some("diagnose") if args.ai => cmd_assist(&st, args),
+        Some("diagnose") => cmd_diagnose(&st, args.code.as_deref()),
         Some("check-update") => cmd_check_update(&st),
         Some("self-update") => cmd_self_update(),
         Some("upgrade") => cmd_upgrade(&st, args),
@@ -223,39 +269,9 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     });
     println!("工作目录 {}", paths::root().display());
 
-    // 1) Docker
-    step(1, steps, "检查 Docker");
-    let d = crate::runtime::docker::detect();
-    if !d.ready() {
-        println!(
-            "  ✗ {}",
-            d.problem.clone().unwrap_or_else(|| "Docker 不可用".into())
-        );
-        if let Some(g) = &d.install_guide {
-            println!("\n  {}", g.title);
-            for s in &g.steps {
-                println!("   · {}", s.text);
-                if let Some(u) = &s.url {
-                    println!("     {u}");
-                }
-            }
-            println!("\n  {}", g.license_note);
-        }
-        let code = d.error_code().unwrap_or(Code::DockerMissing);
-        return Err(AppError::new(
-            code,
-            "Docker 还没准备好，按上面的步骤装完再来一次。".to_string(),
-        ));
-    }
-    println!(
-        "  ✓ {} · compose {} · {}",
-        d.runtime_label.clone().unwrap_or_default(),
-        d.compose_version.clone().unwrap_or_default(),
-        d.arch.clone().unwrap_or_default()
-    );
-
-    // 2) key
-    step(2, steps, "hunter key");
+    // 1) key（I4 把它挪到了最前面：界面版的 AI 诊断助手要用这把 key 调网关，
+    //    两条路径的顺序必须一致，否则 --headless 与界面版走出来的步骤号对不上）
+    step(1, steps, "hunter key");
     let key = read_key(args)?;
     let check = gateway::check_key(&key, Duration::from_secs(25));
     if !check.valid {
@@ -297,6 +313,37 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
                 .join(" · ")
         );
     }
+
+    // 2) Docker（I4 起排在 key 后面，与界面版的向导顺序一致）
+    step(2, steps, "检查 Docker");
+    let d = crate::runtime::docker::detect();
+    if !d.ready() {
+        println!(
+            "  ✗ {}",
+            d.problem.clone().unwrap_or_else(|| "Docker 不可用".into())
+        );
+        if let Some(g) = &d.install_guide {
+            println!("\n  {}", g.title);
+            for s in &g.steps {
+                println!("   · {}", s.text);
+                if let Some(u) = &s.url {
+                    println!("     {u}");
+                }
+            }
+            println!("\n  {}", g.license_note);
+        }
+        let code = d.error_code().unwrap_or(Code::DockerMissing);
+        return Err(AppError::new(
+            code,
+            "Docker 还没准备好，按上面的步骤装完再来一次。".to_string(),
+        ));
+    }
+    println!(
+        "  ✓ {} · compose {} · {}",
+        d.runtime_label.clone().unwrap_or_default(),
+        d.compose_version.clone().unwrap_or_default(),
+        d.arch.clone().unwrap_or_default()
+    );
 
     // 3) 准备（选源 / compose / 端口 / .env）
     step(3, steps, "准备配置");
@@ -593,7 +640,7 @@ fn cmd_logs(service: Option<&str>) -> AppResult<()> {
     Ok(())
 }
 
-fn cmd_diagnose(st: &AppState) -> AppResult<()> {
+fn cmd_diagnose(st: &AppState, code: Option<&str>) -> AppResult<()> {
     let cfg = st.config();
     let d = crate::runtime::docker::detect();
     let ps = compose::ps().unwrap_or_default();
@@ -612,6 +659,19 @@ fn cmd_diagnose(st: &AppState) -> AppResult<()> {
         "Docker {:?} · server {:?} · compose {:?}\n",
         d.runtime, d.server_version, d.compose_version
     ));
+    // I4：可执行文件定位的全过程。macOS 那个 P0 之后，「用的是哪一个 docker、
+    // 探过哪些位置」是排查时第一个要看的东西
+    let probe = crate::runtime::which::docker_probe();
+    s.push_str(&format!("docker 定位：{}\n", probe.one_line()));
+    if !probe.found() {
+        for l in probe.detail_lines() {
+            s.push_str(&format!("  {l}\n"));
+        }
+        s.push_str(&format!(
+            "  本进程的 PATH：{}\n",
+            std::env::var("PATH").unwrap_or_else(|_| "（没有）".into())
+        ));
+    }
     s.push_str(&format!(
         "tag {} · 源 {}\n",
         cfg.hunter.tag, cfg.hunter.registry_prefix
@@ -636,8 +696,200 @@ fn cmd_diagnose(st: &AppState) -> AppResult<()> {
         s.push_str(&l);
         s.push('\n');
     }
-    // 整体再脱敏一遍（红线 2：诊断输出里不能有 key）
-    println!("{}", crate::redact::redact(&s));
+    // I4：把第一层（确定性规则）的结论也打出来 —— 命令行用户同样需要它。
+    //
+    // 走的是 `assist::diagnose`（**不是**直接 `rules::diagnose`）：它顺带把这一次的
+    // 现场存进进程内的会话槽，紧接着的 `--ai` 才有东西可问。
+    // 第一版在这里直接调了 `rules::diagnose`，于是 `--diagnose --ai` 一跑就是
+    // 「还没有采过现场」—— 场景 1 的第一次真跑当场撞出来的。
+    //
+    // **只跑规则层，不调 AI**：`--diagnose` 是一条给脚本用的路径，
+    // 不该在用户没要求的时候悄悄去网关花他的额度。
+    let rule = crate::assist::diagnose(code, None, None, st.hunter_key())?.rule;
+    s.push_str(&format!("\n## 诊断结论（确定性规则 · {}）\n", rule.rule));
+    s.push_str(&format!("{}\n{}\n", rule.title, rule.detail));
+    for a in &rule.actions {
+        s.push_str(&format!(
+            "\n建议动作：{}（{}）\n  为什么：{}\n  会执行：{}\n",
+            a.title,
+            if a.kind == crate::assist::actions::Kind::ReadOnly {
+                "只读"
+            } else {
+                "会改动这台机器"
+            },
+            a.why,
+            a.command_line()
+        ));
+    }
+    if !rule.confident {
+        s.push_str(
+            "\n（规则层没有十足把握。界面版里可以点「让 AI 帮我看看」把这份信息送去网关问一轮；\n\
+             命令行下不自动调 AI —— 那会花掉你的额度。）\n",
+        );
+    }
+
+    // 整体再脱敏一遍（红线 2：诊断输出里不能有 key），并把路径里的用户名换掉 ——
+    // 这段输出的去处通常是 GitHub issue，和界面上「复制诊断信息」拿到的是同一份东西，
+    // 两边的口径必须一致（I4 场景 1 第一次跑时这里还漏着用户名）
+    println!(
+        "{}",
+        crate::redact::mask_home(&crate::redact::redact(&s))
+    );
+    Ok(())
+}
+
+/// `--diagnose --ai`：第一层跑完，接着**真去问 AI**（I4 §三的第二层）。
+///
+/// 与界面版共用同一套 [`crate::assist`]，所以这里验出来的行为就是界面上的行为。
+/// 两处故意不一样：
+///
+/// * 命令行下**不替用户执行会改动机器的动作** —— 只把将要执行的完整命令打出来。
+///   没有界面就没有「点确认」这个动作，不能因此就放宽那道闸
+///   （`actions::execute(_, false)` 本来也会直接拒绝）。
+/// * 每一轮的 token 消耗都打出来，跑完给一个合计。
+fn cmd_assist(st: &AppState, args: &Args) -> AppResult<()> {
+    cmd_diagnose(st, args.code.as_deref())?;
+    title("AI 诊断助手");
+
+    if !crate::config::LauncherConfig::load().assist.enabled {
+        println!("  设置里关掉了（launcher.toml 的 [assist] enabled = false）。");
+        println!("  {}", crate::assist::ai::Degrade::Disabled.message());
+        return Ok(());
+    }
+
+    // key 的来源和界面版一致：先看进程内存（`--key-file` 读进来的），
+    // 再退回已经装好的 `.env`。一把都没有时下面会走「没填 key」那条降级。
+    let key = match &args.key_file {
+        Some(p) => match std::fs::read_to_string(p) {
+            Ok(k) => {
+                let k = k.trim().to_string();
+                crate::redact::register_secret(&k);
+                st.set_hunter_key(&k);
+                Some(k)
+            }
+            Err(e) => {
+                println!("  读不到 key 文件 {p}：{e}");
+                None
+            }
+        },
+        None => st.hunter_key(),
+    };
+
+    let mut total;
+    let mut rounds = 0usize;
+    loop {
+        let snap = crate::assist::ask(key.clone())?;
+        total = snap.total_tokens;
+        if let Some(d) = &snap.degraded {
+            println!("  ⚠ 退回确定性规则（{:?}）", d.reason);
+            println!("    {}", d.message);
+            break;
+        }
+        if snap.rounds == rounds {
+            println!("  这一轮没有进展，停在这里。");
+            break;
+        }
+        rounds = snap.rounds;
+        let Some(turn) = snap.turns.last() else { break };
+        println!(
+            "\n  ── 第 {} / {} 轮 · 本轮约 {} tokens ──",
+            turn.round,
+            snap.max_rounds,
+            turn.tokens
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "未知".into())
+        );
+        if let Some(t) = &turn.text {
+            for line in t.lines() {
+                println!("  {line}");
+            }
+        }
+        for r in &turn.ran {
+            println!("  · 自动执行了「{}」：{}", r.title, r.command);
+            for line in r.output.lines().take(8) {
+                println!("      {line}");
+            }
+        }
+        for r in &turn.rejected {
+            println!("  ✗ 模型要调用「{}」，被拒绝了：{}", r.name, r.reason);
+        }
+        for p in &turn.pending {
+            println!("\n  需要你确认才能执行的动作：");
+            println!("    要做什么：{}", p.title);
+            println!("    为什么：  {}", p.why);
+            println!("    会执行：  {}", p.command_line());
+            println!("    （命令行下不替你执行；界面版里点一下「确认执行」就行。）");
+        }
+        // 到头了就停：给了结论 / 有待确认的动作（命令行下没法继续）/ 轮数用完
+        if snap.done || !turn.pending.is_empty() {
+            break;
+        }
+        if snap.rounds >= snap.max_rounds {
+            println!("\n  已经问满 {} 轮，不再继续。", snap.max_rounds);
+            println!(
+                "  {}",
+                crate::assist::ai::Degrade::RoundsExhausted.message()
+            );
+            break;
+        }
+    }
+    println!("\n  这次诊断一共约 {total} tokens（{rounds} 轮）。");
+    Ok(())
+}
+
+/// `--assist-replay <文件>`：把一份**存下来的网关响应**喂给动作白名单那道闸。
+///
+/// 这是一条**离线的安全验证路径**，不发任何网络请求：
+///
+/// * 读一个 JSON 文件（就是 `POST /v1/chat/completions` 的响应原文），
+/// * 走 [`crate::assist::ai::apply_response`] —— 和真联网时**完全同一段代码**，
+/// * 打印每一个动作是被执行了、挂起等确认了，还是被拒绝了。
+///
+/// 为什么不做成「把网关地址改成本地假服务」：那意味着代码里要留一个能把
+/// `Authorization: Bearer <用户的 key>` 指到任意地址的开关，等于给自己开一道
+/// 泄漏 key 的门。读一个本地文件不碰凭据，也不碰网络。
+fn cmd_assist_replay(path: &str) -> AppResult<()> {
+    title("动作白名单 · 离线回放");
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| AppError::new(Code::Unknown, format!("读不到 {path}：{e}")))?;
+    let resp: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| AppError::new(Code::Unknown, format!("{path} 不是合法 JSON：{e}")))?;
+
+    let report = crate::assist::probe::collect(None, None, None);
+    let mut session = crate::assist::ai::start(&report);
+    let turn = crate::assist::ai::apply_response(&mut session, &resp);
+
+    println!("  响应文件：{path}");
+    if let Some(t) = &turn.text {
+        println!("  模型说：{}", t.lines().next().unwrap_or(""));
+    }
+    println!(
+        "  自动执行 {} 个 · 待确认 {} 个 · **拒绝 {} 个**",
+        turn.ran.len(),
+        turn.pending.len(),
+        turn.rejected.len()
+    );
+    for r in &turn.ran {
+        println!("  ✓ 执行了「{}」：{}", r.title, r.command);
+    }
+    for p in &turn.pending {
+        println!("  ⏸ 挂起等用户确认：{} —— {}", p.title, p.command_line());
+    }
+    for r in &turn.rejected {
+        println!("  ✗ 拒绝「{}」：{}", r.name, r.reason);
+    }
+    println!(
+        "\n  （同一时刻写进 {} 的 warn 日志：）",
+        paths::launcher_log().display()
+    );
+    for l in crate::log::tail_file(20) {
+        if l.contains("白名单") {
+            println!("  {l}");
+        }
+    }
+    if turn.rejected.is_empty() {
+        println!("\n  这份响应里没有白名单之外的动作。");
+    }
     Ok(())
 }
 
@@ -950,6 +1202,37 @@ mod tests {
         assert_eq!(x.tag.as_deref(), Some("1.1.0"));
         assert!(x.yes);
         assert!(x.action.is_none());
+    }
+
+
+    /// `--code` 让命令行也能按指定错误码跑一遍规则层
+    /// （界面版是从状态机拿这个码的；`--diagnose` 没有状态机）。
+    #[test]
+    fn diagnose_能带错误码() {
+        let x = a(&["--diagnose", "--code", "E_PULL_FAILED"]);
+        assert_eq!(x.action.as_deref(), Some("diagnose"));
+        assert_eq!(x.code.as_deref(), Some("E_PULL_FAILED"));
+        assert!(x.headless);
+        assert!(!x.ai, "光给错误码不该顺带把 AI 打开 —— 那会花掉用户的额度");
+
+        let y = a(&["--diagnose", "--ai", "--code", "E_PULL_FAILED"]);
+        assert!(y.ai);
+        assert_eq!(y.code.as_deref(), Some("E_PULL_FAILED"));
+    }
+
+    /// `--ai` 必须是**显式**开关：`--diagnose` 常被写进脚本。
+    #[test]
+    fn 光_diagnose_不会去问_ai() {
+        assert!(!a(&["--diagnose"]).ai);
+        assert!(a(&["--diagnose", "--ai"]).ai);
+    }
+
+    #[test]
+    fn assist_replay_要跟一个文件路径() {
+        let x = a(&["--assist-replay", "/tmp/r.json"]);
+        assert_eq!(x.action.as_deref(), Some("assist-replay"));
+        assert_eq!(x.assist_replay.as_deref(), Some("/tmp/r.json"));
+        assert!(x.headless);
     }
 
     #[test]

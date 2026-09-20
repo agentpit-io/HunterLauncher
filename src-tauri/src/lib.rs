@@ -29,6 +29,7 @@
 use serde::Serialize;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+pub mod assist;
 pub mod autostart;
 pub mod backup;
 pub mod commands;
@@ -172,6 +173,11 @@ pub fn run() {
             commands::pick_offline_tar,
             commands::import_offline,
             commands::offline_ready,
+            commands::assist_diagnose,
+            commands::assist_ask,
+            commands::assist_confirm,
+            commands::assist_rule_action,
+            commands::assist_reset,
         ])
         .setup(|app| {
             let handle = app.handle();

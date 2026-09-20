@@ -30,7 +30,7 @@
 **GitHub 下载**：<https://github.com/agentpit-io/HunterLauncher/releases>
 **国内下载**（腾讯云香港，不用翻墙）：`https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/<版本>/`
 
-装完打开，按向导走：欢迎 → Docker 检测 → 填 key → 选模型 → 拉镜像 → 启动 → 打开浏览器。
+装完打开，按向导走：欢迎 → 填 key → Docker 检测 → 选模型 → 拉镜像 → 启动 → 打开浏览器。
 没有桌面环境的服务器用 `hunter-launcher --headless`，跑的是同一套逻辑。
 
 完整的使用说明在 [`docs/使用说明.md`](docs/使用说明.md)，出问题先看 [`docs/常见问题.md`](docs/常见问题.md)。
@@ -178,7 +178,7 @@ Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完�
 ```
 ┌──────────────────── Hunter 启动器（Tauri 2） ─────────────────────┐
 │  前端 React 18 + TypeScript + Vite + Tailwind                     │
-│   ├─ 向导  欢迎 → Docker → 输入 key → 选择模型 → 拉镜像 → 启动     │
+│   ├─ 向导  欢迎 → 输入 key → Docker → 选择模型 → 拉镜像 → 启动     │
 │   ├─ 运行面板  额度 / 服务健康 / 日志 / 环境                        │
 │   └─ 托盘菜单                                                      │
 │                                                                    │

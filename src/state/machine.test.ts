@@ -18,16 +18,25 @@ import {
 const HAPPY_PATH: Event[] = [
   { type: 'BOOT' },
   { type: 'ACCEPT_TERMS' },
-  { type: 'DOCKER_FOUND' },
-  { type: 'DAEMON_UP' },
+  // I4：key 在 Docker 前面（欢迎 → 输入 key → Docker → 选模型 → 拉取 → 启动）
   { type: 'KEY_SUBMIT' },
   { type: 'KEY_VALID' },
+  { type: 'DOCKER_FOUND' },
+  { type: 'DAEMON_UP' },
   { type: 'MODEL_CHOSEN' },
   { type: 'REGISTRY_CHOSEN' },
   { type: 'PULL_DONE' },
   { type: 'CONFIG_WRITTEN' },
   { type: 'START_OK' },
   { type: 'ENTER_PANEL' },
+]
+
+/** 一路走到「检测 Docker」那一页（I4 之后要先过 key 那两步）。 */
+const TO_DOCKER: Event[] = [
+  { type: 'BOOT' },
+  { type: 'ACCEPT_TERMS' },
+  { type: 'KEY_SUBMIT' },
+  { type: 'KEY_VALID' },
 ]
 
 function at(n: number): State {
@@ -91,10 +100,10 @@ describe('主路径', () => {
     const names = HAPPY_PATH.map((_, i) => at(i + 1).name)
     expect(names).toEqual([
       'Welcome',
-      'CheckDocker',
-      'CheckDaemon',
       'NeedKey',
       'ValidateKey',
+      'CheckDocker',
+      'CheckDaemon',
       'ChooseModel',
       'SelectRegistry',
       'Pulling',
@@ -112,18 +121,13 @@ describe('主路径', () => {
 
 describe('Docker 分支', () => {
   it('缺 Docker 时进安装引导，重新检测回到 CheckDocker', () => {
-    const guide = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }, { type: 'DOCKER_MISSING' }])
+    const guide = run(INITIAL_STATE, [...TO_DOCKER, { type: 'DOCKER_MISSING' }])
     expect(guide.name).toBe('InstallDockerGuide')
     expect(transition(guide, { type: 'RECHECK_DOCKER' }).name).toBe('CheckDocker')
   })
 
   it('daemon 没起时进 StartDaemon，再检测回到 CheckDaemon', () => {
-    const down = run(INITIAL_STATE, [
-      { type: 'BOOT' },
-      { type: 'ACCEPT_TERMS' },
-      { type: 'DOCKER_FOUND' },
-      { type: 'DAEMON_DOWN' },
-    ])
+    const down = run(INITIAL_STATE, [...TO_DOCKER, { type: 'DOCKER_FOUND' }, { type: 'DAEMON_DOWN' }])
     expect(down.name).toBe('StartDaemon')
     expect(transition(down, { type: 'TRY_START_DAEMON' }).name).toBe('CheckDaemon')
   })
@@ -131,7 +135,7 @@ describe('Docker 分支', () => {
 
 describe('key 校验分支', () => {
   it('校验不过退回 NeedKey', () => {
-    const validating = at(5)
+    const validating = at(3)
     expect(validating.name).toBe('ValidateKey')
     expect(transition(validating, { type: 'KEY_INVALID' }).name).toBe('NeedKey')
   })
@@ -202,9 +206,42 @@ describe('运行期', () => {
   })
 })
 
-describe('上一步', () => {
-  it('输入 key 页能退回 Docker 检测', () => {
-    expect(transition({ name: 'NeedKey' }, { type: 'BACK' }).name).toBe('CheckDaemon')
+describe('上一步（I4 调整顺序之后）', () => {
+  it('输入 key 页退回欢迎页 —— 它现在是第二步', () => {
+    expect(transition({ name: 'NeedKey' }, { type: 'BACK' }).name).toBe('Welcome')
+  })
+
+  it('Docker 检测页退回输入 key —— 它现在排在 key 后面', () => {
+    expect(transition({ name: 'CheckDocker' }, { type: 'BACK' }).name).toBe('NeedKey')
+    expect(transition({ name: 'CheckDaemon' }, { type: 'BACK' }).name).toBe('NeedKey')
+    expect(transition({ name: 'InstallDockerGuide' }, { type: 'BACK' }).name).toBe('NeedKey')
+  })
+
+  it('选模型页退回 Docker 检测', () => {
+    expect(transition({ name: 'ChooseModel' }, { type: 'BACK' }).name).toBe('CheckDaemon')
+  })
+
+  it('每一个向导状态的「上一步」都必须落在它前面（不许往回跳到后面的步骤）', () => {
+    const order = ['welcome', 'key', 'docker', 'model', 'pull', 'start']
+    const wizard: StateName[] = [
+      'NeedKey',
+      'ValidateKey',
+      'CheckDocker',
+      'InstallDockerGuide',
+      'CheckDaemon',
+      'StartDaemon',
+      'ChooseModel',
+      'SelectRegistry',
+      'Pulling',
+    ]
+    for (const name of wizard) {
+      const from = { name } as State
+      const back = transition(from, { type: 'BACK' })
+      if (back.name === name) continue // 没有上一步的跳过
+      const a = order.indexOf(stepOf(from)!)
+      const b = order.indexOf(stepOf(back)!)
+      expect(b, `${name} 的上一步是 ${back.name}`).toBeLessThanOrEqual(a)
+    }
   })
 
   it('欢迎页没有上一步', () => {
@@ -244,11 +281,16 @@ describe('健壮性', () => {
 
 describe('步骤条', () => {
   it('六步，顺序与视觉稿一致', () => {
-    expect(STEP_IDS).toEqual(['welcome', 'docker', 'key', 'model', 'pull', 'start'])
+    expect(STEP_IDS).toEqual(['welcome', 'key', 'docker', 'model', 'pull', 'start'])
   })
 
-  it('停在输入 key 时：前两步 done、当前步 current、其余 todo', () => {
+  it('停在输入 key 时：欢迎 done、key current、其余 todo（I4 之后 key 是第二步）', () => {
     const steps = stepperOf({ name: 'NeedKey' })
+    expect(steps.map((s) => s.status)).toEqual(['done', 'current', 'todo', 'todo', 'todo', 'todo'])
+  })
+
+  it('停在 Docker 检测时前两步都是 done', () => {
+    const steps = stepperOf({ name: 'CheckDocker' })
     expect(steps.map((s) => s.status)).toEqual(['done', 'done', 'current', 'todo', 'todo', 'todo'])
   })
 
@@ -321,7 +363,7 @@ describe('第二次打开启动器（M2 新增）', () => {
 
   it('已经走进向导之后不再理会这个事件（免得把用户从半路拽走）', () => {
     const inWizard = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }])
-    expect(inWizard.name).toBe('CheckDocker')
+    expect(inWizard.name).toBe('NeedKey')
     expect(transition(inWizard, { type: 'RESUME_READY' })).toEqual(inWizard)
   })
 })
@@ -338,13 +380,13 @@ describe('M2 新增的两个错误码', () => {
   })
 })
 
-describe('Docker 页一次点击就该走到输入 key（M2 修的 UX 问题）', () => {
-  it('CheckDocker 连发两个事件后落在 NeedKey', () => {
-    const start = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }])
+describe('Docker 页一次点击就该走到下一页（M2 修的 UX 问题）', () => {
+  it('CheckDocker 连发两个事件后落在 ChooseModel（I4 之后 Docker 的下一步是选模型）', () => {
+    const start = run(INITIAL_STATE, TO_DOCKER)
     expect(start.name).toBe('CheckDocker')
     // 页面在「装了 + daemon 在跑 + 版本够」时一次把两个事件都发出去
     const after = run(start, [{ type: 'DOCKER_FOUND' }, { type: 'DAEMON_UP' }])
-    expect(after.name).toBe('NeedKey')
+    expect(after.name).toBe('ChooseModel')
   })
 
   it('CheckDocker 与 CheckDaemon 渲染的确实是同一页（所以只发一个事件会看起来没反应）', () => {

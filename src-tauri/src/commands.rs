@@ -354,6 +354,8 @@ pub fn start_install(app: tauri::AppHandle, registry_id: Option<String>) -> Resu
             if let Ok(mut g) = st.pull.lock() {
                 g.phase = compose::PullPhase::Failed;
                 g.error = Some(crate::redact::redact(&e.msg));
+                // 带上真实错误码：安装阶段失败的原因不止「拉不下来」一种
+                g.error_code = Some(e.code.as_str().to_string());
             }
             let snap = st
                 .pull
@@ -497,6 +499,13 @@ pub struct LauncherSettings {
     /// 改这一项要重新生成覆盖文件并重启容器才生效，界面上写清楚了。
     #[serde(default)]
     pub web_local_only: bool,
+    /// AI 诊断助手（I4）。**默认开**；关掉之后只用确定性规则，一个 token 也不花
+    #[serde(default)]
+    pub assist: bool,
+    /// 现在实际用的 docker 可执行文件路径。只读，给界面显示用
+    /// （红线 1：读不到就是 `None`，界面显示「—」）
+    #[serde(default)]
+    pub docker_path: Option<String>,
 }
 
 #[tauri::command]
@@ -523,6 +532,7 @@ pub async fn write_settings(
         } else {
             config::WEB_BIND_ALL.into()
         };
+        c.assist.enabled = settings.assist;
 
         // 开机自启：**真去动系统**（Linux 的 .desktop / mac 的 LaunchAgent / Windows 注册表），
         // 然后把系统里的真实状态记回配置，而不是把用户点的那一下直接当成结果（红线 1）。
@@ -589,6 +599,9 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         model_name: c.model.model.clone(),
         registry_prefix: c.hunter.registry_prefix.clone(),
         web_local_only: c.hunter.web_local_only(),
+        assist: c.assist.enabled,
+        // 用**当前真实的定位结果**，不是配置里记的那一行（红线 1）
+        docker_path: crate::runtime::which::docker_probe().resolved,
     }
 }
 
@@ -1244,4 +1257,75 @@ mod tests {
         assert!(!url_allowed("/usr/bin/xcalc"));
         assert!(!url_allowed(""));
     }
+}
+
+// ── AI 诊断助手（I4 §三） ─────────────────────────────────────────────────
+//
+// 两层的调用顺序全在 `crate::assist`，这里只是把它摆到 IPC 上。
+// 所有耗时（跑 docker、读日志、问网关）都在 blocking 线程里，界面不会被卡住。
+
+/// 第一层 · 确定性规则。零 token，任何时候都能调。
+#[tauri::command]
+pub async fn assist_diagnose(
+    app: tauri::AppHandle,
+    error_code: Option<String>,
+    error_message: Option<String>,
+    stage: Option<String>,
+) -> Result<crate::assist::AssistState> {
+    blocking(move || {
+        // key 也要带上：界面右下角要据此显示「还没填 key」还是不显示，
+        // 而向导途中 key 只在内存里（见 assist::ask 的注释）
+        let k = state(&app).hunter_key();
+        crate::assist::diagnose(
+            error_code.as_deref(),
+            error_message.as_deref(),
+            stage.as_deref(),
+            k,
+        )
+    })
+    .await
+}
+
+/// 第二层 · 问一轮 AI。任何一条前提不满足都会在返回值的 `degraded` 里说明原因。
+#[tauri::command]
+pub async fn assist_ask(app: tauri::AppHandle) -> Result<crate::assist::AssistState> {
+    blocking(move || {
+        // key 从 AppState 拿：I4 把「输入 key」挪到了「检测 Docker」前面，
+        // 这时候 `.env` 还没写出来，key 只在内存里（见 assist::ask 的注释）
+        let k = state(&app).hunter_key();
+        crate::assist::ask(k)
+    })
+    .await
+}
+
+/// 用户确认执行一个**会改动机器**的动作，执行完自动复验并接着问下一轮。
+#[tauri::command]
+pub async fn assist_confirm(
+    app: tauri::AppHandle,
+    action_id: String,
+    next_round: bool,
+) -> Result<crate::assist::AssistState> {
+    blocking(move || {
+        let k = state(&app).hunter_key();
+        crate::assist::confirm(&action_id, next_round, k)
+    })
+    .await
+}
+
+/// 执行**规则层**给的动作（这条路不经过模型）。执行完重新跑一遍规则。
+#[tauri::command]
+pub async fn assist_rule_action(
+    app: tauri::AppHandle,
+    action_id: String,
+) -> Result<crate::assist::AssistState> {
+    blocking(move || {
+        let k = state(&app).hunter_key();
+        crate::assist::run_rule_action(&action_id, k)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn assist_reset() -> Result<()> {
+    blocking(crate::assist::reset).await
 }

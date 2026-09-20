@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::err::{AppError, AppResult, Code};
 use crate::proc;
+use crate::runtime::which;
 
 /// 最低版本（方案 §5.1）：Docker Engine 24 + Compose v2.20。
 pub const MIN_ENGINE_MAJOR: u32 = 24;
@@ -79,6 +80,19 @@ pub struct DockerInfo {
     pub server_version: Option<String>,
     pub compose_version: Option<String>,
     pub arch: Option<String>,
+    /// 实际用的 docker 可执行文件的**绝对路径**（I4 的 P0）。
+    ///
+    /// 界面上要把它显示出来：用户在 mac 上同时装过 Docker Desktop 与 OrbStack 是常事，
+    /// 「启动器到底在用哪一个」不写出来谁也说不清。
+    pub docker_path: Option<String>,
+    /// 这条路径是从哪找到的：`配置` / `PATH` / `已知位置`
+    pub docker_path_source: Option<String>,
+    /// 软链指向哪里（`/usr/local/bin/docker` → OrbStack 的 xbin 就靠这一条看出来）
+    pub docker_link_target: Option<String>,
+    /// 按顺序探过的每一个位置与结果。没找到 docker 时界面会把它整份列出来
+    pub docker_probe: Vec<crate::runtime::which::Step>,
+    /// compose 是插件还是独立可执行文件，以及它在哪
+    pub compose_mode: Option<String>,
     /// 仅 Windows 有意义：WSL2 是否可用。其它平台为 `null`
     pub wsl: Option<bool>,
     pub meets_minimum: bool,
@@ -148,33 +162,61 @@ pub struct Component {
     pub name: Option<String>,
 }
 
+impl DockerInfo {
+    /// 全空的一份，`detect` 与测试共用。
+    pub fn empty() -> Self {
+        Self {
+            installed: false,
+            daemon_running: false,
+            runtime: RuntimeKind::Unknown,
+            runtime_label: None,
+            client_version: None,
+            server_version: None,
+            compose_version: None,
+            arch: None,
+            docker_path: None,
+            docker_path_source: None,
+            docker_link_target: None,
+            docker_probe: Vec::new(),
+            compose_mode: None,
+            wsl: None,
+            meets_minimum: false,
+            problem: None,
+            install_guide: None,
+        }
+    }
+}
+
 /// 真去跑一遍检测。这是整个模块唯一会碰外部进程的函数。
+///
+/// **第一步是定位可执行文件，不是跑命令**（I4 的 P0）：macOS 的 GUI 程序拿不到
+/// 用户 shell 的 PATH，基于 PATH 的查找在那里必然失败。定位逻辑与已知位置清单
+/// 全在 [`crate::runtime::which`]，这里只消费它的结果。
 pub fn detect() -> DockerInfo {
+    let mut info = DockerInfo::empty();
+
+    let probe = which::docker_probe();
+    info.docker_path = probe.resolved.clone();
+    info.docker_path_source = probe.source.clone();
+    info.docker_link_target = probe.link_target.clone();
+    info.docker_probe = probe.steps.clone();
+
+    // 定位不到时仍然用裸名字跑一次：最坏情况与 I4 之前一致（由系统自己去 PATH 上找），
+    // 不多出一种「启动器自己不肯试」的新失败模式。
+    let bin = probe
+        .resolved
+        .clone()
+        .unwrap_or_else(|| "docker".to_string());
     let ran = proc::run_timeout(
-        "docker",
+        &bin,
         &["version", "--format", "json"],
         Duration::from_secs(20),
     );
 
-    let mut info = DockerInfo {
-        installed: false,
-        daemon_running: false,
-        runtime: RuntimeKind::Unknown,
-        runtime_label: None,
-        client_version: None,
-        server_version: None,
-        compose_version: None,
-        arch: None,
-        wsl: None,
-        meets_minimum: false,
-        problem: None,
-        install_guide: None,
-    };
-
     match ran {
         // 进程起不来 = 没装（M0 §5.4）
         Err(_) => {
-            info.problem = Some("命令行里找不到 docker。".to_string());
+            info.problem = Some(missing_hint(&probe));
         }
         Ok(r) => {
             let parsed = parse_version(&r.stdout);
@@ -229,7 +271,9 @@ pub fn detect() -> DockerInfo {
     }
 
     if info.daemon_running {
-        info.compose_version = compose_version();
+        let c = which::compose_info();
+        info.compose_version = c.version.clone();
+        info.compose_mode = Some(c.label());
     }
     if cfg!(target_os = "windows") {
         info.wsl = Some(wsl_available());
@@ -305,7 +349,7 @@ fn apply_version(info: &mut DockerInfo, v: VersionJson, context: Option<&str>) {
 /// * 而 `docker version` 的**第一行**是 `Client:       Podman Engine`，
 ///   和 argv[0] 无关，这才是靠得住的那一个。
 fn plain_version_text() -> Option<String> {
-    let r = proc::run_timeout("docker", &["version"], Duration::from_secs(10)).ok()?;
+    let r = proc::run_timeout(&which::docker_bin(), &["version"], Duration::from_secs(10)).ok()?;
     let head: String = r.stdout.lines().take(3).collect::<Vec<_>>().join(" ");
     if head.trim().is_empty() {
         None
@@ -392,11 +436,32 @@ pub fn classify(
 }
 
 fn context_name() -> Option<String> {
-    proc::run_timeout("docker", &["context", "show"], Duration::from_secs(10))
-        .ok()
-        .filter(|r| r.ok())
-        .map(|r| r.stdout.trim().to_string())
-        .filter(|s| !s.is_empty())
+    proc::run_timeout(
+        &which::docker_bin(),
+        &["context", "show"],
+        Duration::from_secs(10),
+    )
+    .ok()
+    .filter(|r| r.ok())
+    .map(|r| r.stdout.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
+/// 一个位置都没探到时说的话。**必须说清探过哪里** ——
+/// 0.1.3 在用户 mac 上就只有一句「命令行里找不到 docker」，
+/// 而他的 OrbStack 好好装着，这句话把他引到「是不是我没装」这条死路上去了。
+fn missing_hint(probe: &which::Probe) -> String {
+    let n = probe.steps.len();
+    let head = format!("按顺序探了 {n} 个位置，都没有可执行的 docker。");
+    if cfg!(target_os = "macos") {
+        format!(
+            "{head}\n\n             提醒一句：macOS 上「从访达或程序坞启动的程序」拿不到你终端里的 PATH\n             （GUI 程序默认只有 /usr/bin:/bin:/usr/sbin:/sbin），\n             所以「终端里 docker version 有输出」和「启动器找得到 docker」是两回事。\n             启动器已经把 /usr/local/bin、/opt/homebrew/bin、~/.orbstack/bin、\n             OrbStack 与 Docker Desktop 的 app 内目录都探过了（明细见下）。\n             如果你的 docker 装在别处，可以在 ~/.hunter/launcher.toml 的 [runtime] 段里写 docker_path 指给它。"
+        )
+    } else {
+        format!(
+            "{head}\n             装在别处的话，可以在 ~/.hunter/launcher.toml 的 [runtime] 段里写 docker_path 指给它。"
+        )
+    }
 }
 
 /// daemon 没起时，stderr 里的原话往往已经说清了原因（socket 路径、权限）。
@@ -415,25 +480,19 @@ fn daemon_hint(stderr: &str) -> String {
     )
 }
 
-/// `docker compose version --format json` → `{"version":"v5.5.1"}`（M0 §5.4 实测）
+/// compose 版本。两种形态都认（`docker compose` 插件 / 独立 `docker-compose`），
+/// 实际判断在 [`which::compose_info`]。
 pub fn compose_version() -> Option<String> {
-    let r = proc::run_timeout(
-        "docker",
-        &["compose", "version", "--format", "json"],
-        Duration::from_secs(20),
-    )
-    .ok()?;
-    if !r.ok() {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_str(r.stdout.trim()).ok()?;
-    v.get("version")?.as_str().map(|s| s.to_string())
+    which::compose_info().version
 }
 
 /// Windows：`wsl --status` 退出码 0 视为可用。
 /// 注意 wsl.exe 的输出是 UTF-16，所以**只看退出码，不解析文本**。
 fn wsl_available() -> bool {
-    proc::run_timeout("wsl", &["--status"], Duration::from_secs(20))
+    let wsl = which::resolve("wsl")
+        .resolved
+        .unwrap_or_else(|| "wsl".to_string());
+    proc::run_timeout(&wsl, &["--status"], Duration::from_secs(20))
         .map(|r| r.ok())
         .unwrap_or(false)
 }
@@ -589,7 +648,12 @@ pub fn install_guide() -> InstallGuide {
 /// mac / Windows 上启动 Docker Desktop 要用户自己点，启动器替他点不了。
 pub fn try_start_daemon() -> AppResult<String> {
     if cfg!(target_os = "linux") {
-        let r = proc::run_timeout("systemctl", &["start", "docker"], Duration::from_secs(60))?;
+        // systemctl 在 /usr/bin，各发行版的 GUI 会话里都在默认 PATH 上；
+        // 仍然走一遍定位器，口径统一（找不到就退回裸名字，行为和以前一样）
+        let sc = which::resolve("systemctl")
+            .resolved
+            .unwrap_or_else(|| "systemctl".to_string());
+        let r = proc::run_timeout(&sc, &["start", "docker"], Duration::from_secs(60))?;
         if r.ok() {
             return Ok("已请求 systemd 启动 docker 服务。".to_string());
         }
@@ -823,19 +887,6 @@ mod tests {
     }
 
     fn blank() -> DockerInfo {
-        DockerInfo {
-            installed: false,
-            daemon_running: false,
-            runtime: RuntimeKind::Unknown,
-            runtime_label: None,
-            client_version: None,
-            server_version: None,
-            compose_version: None,
-            arch: None,
-            wsl: None,
-            meets_minimum: false,
-            problem: None,
-            install_guide: None,
-        }
+        DockerInfo::empty()
     }
 }

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{ImageSpec, PROJECT};
 use crate::err::{AppError, AppResult, Code};
+use crate::runtime::which;
 use crate::{paths, proc};
 
 /// 健康轮询的上限（方案 §18 的 `E_START_TIMEOUT` 就是这个数）。
@@ -33,25 +34,27 @@ pub const PULL_ATTEMPTS: usize = 3;
 /// compose 的完整参数前缀。`-f` 的顺序有意义：覆盖文件必须排在后面，
 /// 否则 `!override` 覆盖不到（红线 4 就白写了）。
 /// `--project-directory` 也是全局参数，指到 `~/.hunter/app` 让 compose 在那里找 `.env`。
-fn full_args<'a>(
-    compose: &'a str,
-    overlay: &'a str,
-    dir: &'a str,
-    extra: &[&'a str],
-) -> Vec<&'a str> {
-    let mut v = vec![
-        "compose",
-        "--project-name",
-        PROJECT,
-        "--project-directory",
-        dir,
-        "-f",
-        compose,
-        "-f",
-        overlay,
-    ];
-    v.extend_from_slice(extra);
-    v
+///
+/// 开头那一截由 [`which::ComposeInfo::argv_prefix`] 给：
+/// `docker compose` 插件形态是 `["compose"]`，独立 `docker-compose` 形态是空的（I4）。
+fn full_args(compose: &str, overlay: &str, dir: &str, extra: &[&str]) -> (String, Vec<String>) {
+    let (program, mut v) = which::compose_info().argv_prefix();
+    v.extend(
+        [
+            "--project-name",
+            PROJECT,
+            "--project-directory",
+            dir,
+            "-f",
+            compose,
+            "-f",
+            overlay,
+        ]
+        .into_iter()
+        .map(str::to_string),
+    );
+    v.extend(extra.iter().map(|s| s.to_string()));
+    (program, v)
 }
 
 fn file_paths() -> (String, String) {
@@ -66,23 +69,21 @@ pub fn run(extra: &[&str], timeout: Duration) -> AppResult<proc::Ran> {
     let (c, o) = file_paths();
     let dir = paths::app_dir();
     let dir_s = dir.to_string_lossy().into_owned();
-    let args = full_args(&c, &o, &dir_s, extra);
-    proc::run_timeout("docker", &args, timeout)
+    let (program, args) = full_args(&c, &o, &dir_s, extra);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    proc::run_timeout(&program, &refs, timeout)
 }
 
-/// 同一条命令的**完整参数（带所有权）**。
+/// 同一条命令的**程序名 + 完整参数（带所有权）**。
 ///
 /// 给需要自己接管子进程 stdin/stdout 的调用方用 —— 目前是 [`crate::backup`]：
 /// `pg_dump` 的输出要直接落盘，不能先在内存里攒成一个 String
 /// （用户的库可能有几百 MB，攒在内存里就是等着 OOM）。
-pub fn argv(extra: &[&str]) -> Vec<String> {
+pub fn argv(extra: &[&str]) -> (String, Vec<String>) {
     let (c, o) = file_paths();
     let dir = paths::app_dir();
     let dir_s = dir.to_string_lossy().into_owned();
     full_args(&c, &o, &dir_s, extra)
-        .into_iter()
-        .map(str::to_string)
-        .collect()
 }
 
 // ── 进度解析 ──────────────────────────────────────────────────────────────
@@ -156,6 +157,13 @@ pub struct PullProgress {
     pub log: Vec<String>,
     /// 出错时的原因（已脱敏）
     pub error: Option<String>,
+    /// 出错时的**真实错误码**（`E_PULL_FAILED` / `E_PROJECT_CONFLICT` / `E_COMPOSE_FETCH` …）。
+    ///
+    /// I4 之前这个字段不存在，前端把安装阶段的**任何**失败都当成 `PULL_FAILED` 发给状态机，
+    /// 于是「另一个工作目录占着 compose 项目名」会显示成「镜像拉取失败」——
+    /// 标题说拉取失败，正文却在讲项目名冲突，而 I4 的诊断助手据此给出「换个镜像源」这种
+    /// 完全跑偏的建议（本轮取错误页截图时当场撞出来的）。
+    pub error_code: Option<String>,
 }
 
 impl PullProgress {
@@ -173,6 +181,7 @@ impl PullProgress {
             attempt: 1,
             log: Vec::new(),
             error: None,
+            error_code: None,
         }
     }
 }
@@ -455,6 +464,9 @@ impl PullAggregator {
             attempt: self.attempt,
             log: self.log.clone(),
             error,
+            // 聚合器本身不知道错误码（它只管进度）。真正的码由 commands.rs
+            // 那一层从 `AppError` 上取出来填进去。
+            error_code: None,
         }
     }
 
@@ -493,9 +505,9 @@ pub fn pull_streaming(
     let dir = paths::app_dir();
     let dir_s = dir.to_string_lossy().into_owned();
     // --progress 是 `docker compose` 的**全局**参数，必须写在 pull 前面（M0 §5.1）
-    let args = full_args(&c, &o, &dir_s, &["--progress", "json", "pull"]);
+    let (program, args) = full_args(&c, &o, &dir_s, &["--progress", "json", "pull"]);
 
-    let mut child = proc::base_command("docker")
+    let mut child = proc::base_command(&program)
         .args(&args)
         .current_dir(&dir)
         .stdin(Stdio::null())
@@ -898,7 +910,7 @@ pub fn guard_project_owner() -> AppResult<()> {
     let app_dir = paths::app_dir().to_string_lossy().into_owned();
     let filter = format!("label=com.docker.compose.project={PROJECT}");
     let r = match proc::run_timeout(
-        "docker",
+        &which::docker_bin(),
         &["ps", "-a", "--filter", &filter, "--format", OWNER_FORMAT],
         Duration::from_secs(20),
     ) {
@@ -1515,19 +1527,57 @@ mod tests {
         assert_eq!(not_ready, vec!["api".to_string(), "opencode".to_string()]);
     }
 
+
+    /// 安装阶段失败的原因不止「拉不下来」一种。
+    ///
+    /// I4 之前 `PullProgress` 只有一段错误文字，前端把**任何**安装失败都当成
+    /// `PULL_FAILED` 发给状态机 —— 于是「另一个工作目录占着 compose 项目名」
+    /// 在界面上显示成「镜像拉取失败」：标题和正文互相打架，
+    /// I4 的诊断助手还据此给出「换个镜像源」这种完全跑偏的建议
+    /// （本轮取错误页截图时当场撞出来的）。
+    #[test]
+    fn 进度快照带得动真实错误码() {
+        let mut p = PullProgress::empty();
+        assert_eq!(p.error_code, None, "没出错时不该有码");
+
+        // commands.rs 里安装失败那一支写的就是这两行
+        p.phase = PullPhase::Failed;
+        p.error = Some("这台机器上已经有一套 Hunter 在用 compose 项目名「hunter」".into());
+        p.error_code = Some(crate::err::Code::ProjectConflict.as_str().to_string());
+        assert_eq!(p.error_code.as_deref(), Some("E_PROJECT_CONFLICT"));
+
+        // 序列化成 camelCase 给前端（前端按 errorCode 决定发哪个事件）
+        let j = serde_json::to_value(&p).expect("能序列化");
+        assert_eq!(j["errorCode"], "E_PROJECT_CONFLICT");
+        assert_eq!(j["phase"], "failed");
+    }
+
     #[test]
     fn 项目名固定为_hunter_且参数顺序正确() {
         assert_eq!(PROJECT, "hunter");
-        let args = full_args(
+        let (program, args) = full_args(
             "a.yml",
             "b.yml",
             "/tmp/app",
             &["--progress", "json", "pull"],
         );
+        // I4 起程序名是**定位出来的绝对路径**（定位不到就退回裸名字）
+        assert!(
+            program.ends_with("docker")
+                || program.ends_with("docker.exe")
+                || program.ends_with("docker-compose"),
+            "{program}"
+        );
+        // 插件形态下 compose 子命令还在；独立 docker-compose 形态下没有它。
+        // 跑测试的这台机器上是哪一种不由测试决定，所以把它剥掉之后再比后面的固定部分。
+        let rest: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .skip_while(|a| *a == "compose")
+            .collect();
         assert_eq!(
-            args,
+            rest,
             vec![
-                "compose",
                 "--project-name",
                 "hunter",
                 "--project-directory",
@@ -1542,13 +1592,13 @@ mod tests {
             ]
         );
         // --progress 必须在 pull 之前（它是 compose 的全局参数，不是 pull 的）
-        let pi = args.iter().position(|a| *a == "pull").unwrap();
-        let gi = args.iter().position(|a| *a == "--progress").unwrap();
+        let pi = args.iter().position(|a| a == "pull").unwrap();
+        let gi = args.iter().position(|a| a == "--progress").unwrap();
         assert!(gi < pi);
         // 覆盖文件必须排在基础文件后面
         let f: Vec<&str> = args
             .iter()
-            .copied()
+            .map(String::as_str)
             .filter(|a| a.ends_with(".yml"))
             .collect();
         assert_eq!(f, vec!["a.yml", "b.yml"]);
