@@ -3,6 +3,7 @@ import { Button } from '../components/Button'
 import { LogBox } from '../components/LogBox'
 import { SegmentedControl, Toggle } from '../components/Field'
 import { PlainLayout } from '../components/WizardLayout'
+import { copyText } from '../lib/clipboard'
 import * as ipc from '../lib/ipc'
 import { redact } from '../lib/mask'
 import { useStore } from '../state/context'
@@ -38,6 +39,8 @@ export function Logs() {
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // null = 还没点过。剪贴板用不了时要如实说，不能照样显示「已复制」（红线 1）
+  const [copied, setCopied] = useState<boolean | null>(null)
   const boxRef = useRef<HTMLDivElement>(null)
 
   /** 拉一次日志。实时滚动开着的时候每 2 秒来一次。 */
@@ -108,9 +111,9 @@ export function Logs() {
           <Button
             size="sm"
             data-testid="logs-copy"
-            onClick={() => void navigator.clipboard?.writeText(lines.join('\n'))}
+            onClick={() => void copyText(lines.join('\n')).then(setCopied)}
           >
-            {t.logs.copyAll}
+            {copied === null ? t.logs.copyAll : copied ? t.common.copied : t.common.copyFailed}
           </Button>
           <Button size="sm" data-testid="logs-export" disabled={busy} onClick={() => void doExport()}>
             {busy ? t.common.working : t.logs.exportFile}

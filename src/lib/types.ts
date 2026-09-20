@@ -231,6 +231,14 @@ export interface LauncherSettings {
   modelBaseUrl: string
   modelName: string
   registryPrefix: string
+  /**
+   * web 端口只允许本机访问。**默认 false** —— 也就是绑所有网卡，
+   * 同一网络里的其他设备打开 `http://<这台机器的 IP>:<端口>` 就能直接用。
+   *
+   * 这是既定设计（总控规则红线 4 把 web 明确排除在「只绑 127.0.0.1」之外），
+   * I2 只是把开关做出来，默认值没动 —— 默认该是哪一个由用户决定（待办池 P1-20）。
+   */
+  webLocalOnly: boolean
 }
 
 /** 「查看本机将要发送的数据」。lines 就是 queue.jsonl 的原文。 */

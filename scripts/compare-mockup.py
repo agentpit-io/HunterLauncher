@@ -44,6 +44,11 @@ PAIRS_BY_MILESTONE = {
         ("07-拉取镜像-真实进度.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
         ("10-运行面板.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
     ],
+    "I2": [
+        ("04-输入key-已验证.png", "hunter-launcher-01-输入key.jpg", "对照-01-输入key.png"),
+        ("07-拉取镜像-真实进度.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
+        ("10-运行面板.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
+    ],
 }
 
 

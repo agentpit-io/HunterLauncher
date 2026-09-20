@@ -6,6 +6,7 @@ import { LogBox } from '../components/LogBox'
 import { Modal } from '../components/Modal'
 import { PlainLayout } from '../components/WizardLayout'
 import { useAsync } from '../lib/useAsync'
+import { copyText } from '../lib/clipboard'
 import * as ipc from '../lib/ipc'
 import { bytes } from '../lib/format'
 import { useStore } from '../state/context'
@@ -144,7 +145,8 @@ function LauncherCard() {
 
 function ManualDialog({ m, onClose }: { m: ManualInstall; onClose: () => void }) {
   const { t } = useStore()
-  const [copied, setCopied] = useState(false)
+  // null = 还没点过；true/false = 真的复制成功 / 真的没成（红线 1：不许假装成功）
+  const [copied, setCopied] = useState<boolean | null>(null)
   return (
     <Modal
       testId="manual-install"
@@ -160,11 +162,14 @@ function ManualDialog({ m, onClose }: { m: ManualInstall; onClose: () => void })
             variant="primary"
             data-testid="copy-install-cmd"
             onClick={() => {
-              void navigator.clipboard?.writeText(m.command)
-              setCopied(true)
+              void copyText(m.command).then(setCopied)
             }}
           >
-            {copied ? t.common.copied : t.common.copy}
+            {copied === null
+              ? t.common.copy
+              : copied
+                ? t.common.copied
+                : t.common.copyFailed}
           </Button>
         </>
       }

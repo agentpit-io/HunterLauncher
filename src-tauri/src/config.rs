@@ -99,6 +99,44 @@ pub struct HunterSection {
     pub registry_prefix: String,
     pub base_prefix: String,
     pub ports: Ports,
+    /// web 端口绑在哪张网卡上。`all` = 所有网卡（同一网络里的人都能打开）；
+    /// `local` = 只有本机。**默认 `all`**，见下。
+    ///
+    /// ## 为什么默认是 `all`，以及为什么这是一个开关而不是一个决定
+    ///
+    /// 总控规则红线 4 的原话是「除 web 之外的端口一律绑 127.0.0.1」——
+    /// web **被明确排除在外**，也就是说「对外」是既定的产品设计，不是疏忽。
+    ///
+    /// I1 实测了它的后果并记在报告第七节：从另一台机器打
+    /// `http://<这台机器的 IP>:3101`，不需要任何凭证就能进聊天界面、
+    /// 调工具、烧掉用户当天的额度（上游 api 保护住了 `/api/setup/*` 那些**配置**接口，
+    /// 但没有保护**使用**界面）。
+    ///
+    /// 改默认值属于改产品决策，本项目单方面定不了。I2 做的是**把开关做出来**：
+    /// 配置项、设置页的勾选、覆盖文件里的渲染、单测全都齐了，
+    /// 想收紧的用户现在点一下就能收紧；**默认行为一个字节没动**。
+    /// 「默认该是哪一个、已装机器要不要在升级时自动收紧」仍然是待办池 P1-20，
+    /// 等用户决定。
+    #[serde(default = "default_web_bind")]
+    pub web_bind: String,
+}
+
+fn default_web_bind() -> String {
+    WEB_BIND_ALL.into()
+}
+
+/// web 绑所有网卡（默认）。
+pub const WEB_BIND_ALL: &str = "all";
+/// web 只绑本机回环。
+pub const WEB_BIND_LOCAL: &str = "local";
+
+impl HunterSection {
+    /// web 端口是不是只听本机。认不出来的取值一律按默认（`all`）处理 ——
+    /// 手改配置文件写错一个字不该悄悄改变安全边界的**方向**，
+    /// 而「继续保持现状」比「悄悄收紧」更不容易让人摸不着头脑。
+    pub fn web_local_only(&self) -> bool {
+        self.web_bind == WEB_BIND_LOCAL
+    }
 }
 
 impl Default for HunterSection {
@@ -109,6 +147,7 @@ impl Default for HunterSection {
             registry_prefix: "ghcr.io/agentpit-io".into(),
             base_prefix: "docker.io/library".into(),
             ports: Ports::default(),
+            web_bind: default_web_bind(),
         }
     }
 }
@@ -268,13 +307,19 @@ fn next_free(want: u16, all_interfaces: bool, taken: &[u16], own: &[u16]) -> App
 /// `own` 是**当前 `hunter` 项目自己已经在用**的端口。第二次打开启动器时，
 /// 3101 正被我们自己的 web 容器占着 —— 要是把它也算成「被占用」，
 /// 每开一次启动器端口就往上挪一格，用户存的书签全会失效（M2 用例 9 实测撞出来的）。
-pub fn resolve_ports(want: &Ports, own: &[u16]) -> AppResult<(Ports, Vec<PortChange>)> {
+pub fn resolve_ports(
+    want: &Ports,
+    own: &[u16],
+    web_local_only: bool,
+) -> AppResult<(Ports, Vec<PortChange>)> {
     let mut taken: Vec<u16> = Vec::new();
     let mut changes = Vec::new();
     let mut out = want.clone();
 
     for (name, wanted) in want.as_pairs() {
-        let all_if = name == "web";
+        // web 默认要对外监听，所以按 0.0.0.0 试；设置里收紧成「只有本机」之后
+        // 它和别的服务一样只要 127.0.0.1 占得住就行（I2 加的开关）
+        let all_if = name == "web" && !web_local_only;
         let actual = next_free(wanted, all_if, &taken, own)?;
         taken.push(actual);
         if actual != wanted {
@@ -395,6 +440,19 @@ pub struct StickySecrets {
     pub opencode_pass: Option<String>,
 }
 
+/// 这台机器上已有的 `POSTGRES_PASSWORD` 能不能安全地拼进 DSN。
+///
+/// 见 [`crate::secretgen`] 的模块头：0.1.1 及之前用标准 base64 生成口令，
+/// 里面可能有 `/` 或 `+`，而上游会把它拼进
+/// `postgresql://hunter:<口令>@postgres:5432/hunter` —— 一个 `/` 就让 api 起不来。
+///
+/// 0.1.2 起新生成的口令只含字母数字，但**已经写在 `.env` 里的那一个不会被换掉**
+/// （换了就连不上已经初始化过的数据卷）。所以这里只负责**认出来并说清楚**，
+/// 不悄悄改、更不删数据卷。
+pub fn sticky_password_safe(pw: &str) -> bool {
+    pw.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 pub fn read_sticky(path: &Path) -> StickySecrets {
     let map = parse_env_file(path);
     let pick = |k: &str| map.get(k).filter(|v| !v.is_empty()).cloned();
@@ -403,6 +461,20 @@ pub fn read_sticky(path: &Path) -> StickySecrets {
         postgres_password: pick("POSTGRES_PASSWORD"),
         opencode_pass: pick("OPENCODE_PASS"),
     };
+    // 认出 0.1.1 及之前留下的那种会把 DSN 截断的口令。**不打印口令本身**（红线 2）
+    if let Some(pw) = s.postgres_password.as_deref() {
+        if !sticky_password_safe(pw) {
+            crate::lwarn!(
+                "已有的 POSTGRES_PASSWORD 里有 URL 里的特殊字符（0.1.1 及之前生成的口令用的是标准 base64）。\
+                 上游会把它拼进 postgresql://hunter:<口令>@postgres:5432/hunter，\
+                 碰上 `/` 时 api 容器会一直报 invalid integer value ... for connection option \"port\" 起不来。\
+                 这一版不会替你改它（换口令连不上已经初始化过的数据卷）。\
+                 这套装起来过就不用管；要是本来就没装起来，最干净的办法是重装一次：\
+                 docker compose -p hunter down -v 之后删掉 {} 再装。",
+                path.display()
+            );
+        }
+    }
     for v in [&s.jwt_secret, &s.postgres_password, &s.opencode_pass]
         .into_iter()
         .flatten()
@@ -440,19 +512,46 @@ pub fn parse_env(s: &str) -> BTreeMap<String, String> {
     m
 }
 
+/// 会被原样写进 `.env` 的那几个值里不许有换行（I2 自审发现）。
+///
+/// `.env` 是一行一个 `KEY=值` 的格式，值里有 `\n` 就等于**又定义了一个环境变量** ——
+/// compose 读 `.env` 时后定义的会盖掉先定义的，于是一个多出来的换行能把
+/// `HUNTER_API_KEY` / `POSTGRES_PASSWORD` 这类关键项整个换掉。
+///
+/// 这些值的来源全是用户手输或粘贴的（模型名、BASE_URL、自定义镜像源），
+/// 不是远程输入，所以这不是一个「别人能打的洞」；但从剪贴板里带出一个尾随换行
+/// 是非常常见的事，而它造成的后果是一套**装得起来但行为莫名其妙**的栈。
+/// 宁可当场报一句人话。
+fn check_env_value(field: &str, value: &str) -> AppResult<()> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err(AppError::new(
+            Code::ConfigWrite,
+            format!("{field} 里有换行。这一项会原样写进 .env，一行只能有一个值 —— 多半是粘贴时带进来的，去掉换行再试一次。"),
+        ));
+    }
+    Ok(())
+}
+
 /// 渲染 `.env`。`sticky` 里有值的就沿用，没有的现生成。
 pub fn render_env(input: &EnvInput, sticky: &StickySecrets) -> AppResult<String> {
+    check_env_value("模型名", input.llm_model)?;
+    check_env_value("模型 BASE_URL", input.llm_base_url)?;
+    check_env_value("模型 key", input.llm_api_key)?;
+    check_env_value("hunter key", input.hunter_key)?;
+    check_env_value("镜像源地址", input.registry_prefix)?;
+    check_env_value("Hunter 版本号", input.tag)?;
+
     let jwt = match &sticky.jwt_secret {
         Some(v) => v.clone(),
-        None => crate::secretgen::random_base64(48)?,
+        None => crate::secretgen::random_token(48)?,
     };
     let pg = match &sticky.postgres_password {
         Some(v) => v.clone(),
-        None => crate::secretgen::random_base64(24)?,
+        None => crate::secretgen::random_token(24)?,
     };
     let oc = match &sticky.opencode_pass {
         Some(v) => v.clone(),
-        None => crate::secretgen::random_base64(18)?,
+        None => crate::secretgen::random_token(18)?,
     };
     crate::redact::register_secret(input.hunter_key);
     if !input.llm_api_key.is_empty() {
@@ -567,23 +666,35 @@ pub fn write_env(input: &EnvInput) -> AppResult<()> {
 ///    compose 对 `ports` 默认做追加合并，不加标签会变成「既听 0.0.0.0 又听 127.0.0.1」（M0 §3.4 实测）。
 /// 2. 用国内源时把 `postgres` / `redis` 的 `image:` 也改写过去。
 ///    另外四个服务的镜像地址由 `.env` 的 `HUNTER_REGISTRY` 控制，不用在这里写。
-pub fn render_override(ports: &Ports, base_prefix: &str) -> String {
+pub fn render_override(ports: &Ports, base_prefix: &str, web_local_only: bool) -> String {
     let mut s = String::new();
     s.push_str(
         "# ~/.hunter/app/docker-compose.launcher.yml\n\
          # 由 Hunter 启动器生成 · 请勿手改（改了下次启动会被覆盖）\n\
          # 作用：1) 把除 web 之外的端口全部收回 127.0.0.1（总控规则红线 4）\n\
          #       2) 落实端口冲突改写后的值\n\
-         #       3) 用国内镜像源时改写 postgres / redis 的镜像地址\n\
+         #       3) 按设置决定 web 端口绑所有网卡还是只绑本机\n\
+         #       4) 用国内镜像源时改写 postgres / redis 的镜像地址\n\
          #\n\
          # `!override` 标签是必须的：compose 默认对 ports 做**追加**合并，不加这个标签会变成\n\
          # 「既监听 0.0.0.0 又监听 127.0.0.1」，红线 4 就白写了（M0 §3.4 已实测验证）。\n\
          services:\n",
     );
-    s.push_str(&format!(
-        "  web:\n    ports: !override [\"{}:3000\"]\n",
-        ports.web
-    ));
+    // web 是唯一一个可以对外的端口（红线 4 把它明确排除在「只绑本机」之外）。
+    // 设置页里勾上「只允许本机访问」之后这里会多一个 127.0.0.1: 前缀，默认不勾。
+    if web_local_only {
+        s.push_str("  # 设置里勾了「只允许这台电脑访问」：web 也收回本机\n");
+        s.push_str(&format!(
+            "  web:\n    ports: !override [\"127.0.0.1:{}:3000\"]\n",
+            ports.web
+        ));
+    } else {
+        s.push_str("  # 默认：web 绑所有网卡，同一网络里的其他设备也能打开（见设置页的说明）\n");
+        s.push_str(&format!(
+            "  web:\n    ports: !override [\"{}:3000\"]\n",
+            ports.web
+        ));
+    }
     s.push_str(&format!(
         "  api:\n    ports: !override [\"127.0.0.1:{}:8000\"]\n",
         ports.api
@@ -614,10 +725,10 @@ pub fn render_override(ports: &Ports, base_prefix: &str) -> String {
     s
 }
 
-pub fn write_override(ports: &Ports, base_prefix: &str) -> AppResult<()> {
+pub fn write_override(ports: &Ports, base_prefix: &str, web_local_only: bool) -> AppResult<()> {
     paths::ensure_dirs()?;
     let p = paths::override_file();
-    std::fs::write(&p, render_override(ports, base_prefix))
+    std::fs::write(&p, render_override(ports, base_prefix, web_local_only))
         .map_err(|e| AppError::new(Code::ConfigWrite, format!("写 {} 失败：{e}", p.display())))?;
     paths::chmod_600(&p)?;
     Ok(())
@@ -955,7 +1066,7 @@ mod tests {
             postgres: 5443,
             redis: 6480,
         };
-        let s = render_override(&ports, "docker.io/library");
+        let s = render_override(&ports, "docker.io/library", false);
         assert!(s.contains("ports: !override [\"3101:3000\"]"), "{s}");
         for (p, c) in [(8101, 8000), (3922, 3901), (5443, 5432), (6480, 6379)] {
             assert!(
@@ -978,10 +1089,131 @@ mod tests {
         }
     }
 
+    /// 待办池 P1-20 的开关。**默认必须还是对外**（那是既定设计，改默认要用户拍板），
+    /// 勾上之后 web 才多一个 127.0.0.1 前缀。
+    #[test]
+    fn web_只允许本机时覆盖文件多一个本机前缀() {
+        let ports = Ports {
+            web: 3101,
+            api: 8101,
+            opencode: 3922,
+            postgres: 5443,
+            redis: 6480,
+        };
+        let open = render_override(&ports, "docker.io/library", false);
+        assert!(open.contains("ports: !override [\"3101:3000\"]"), "{open}");
+        assert!(
+            !open.contains("127.0.0.1:3101:3000"),
+            "默认不该收紧：{open}"
+        );
+
+        let local = render_override(&ports, "docker.io/library", true);
+        assert!(
+            local.contains("ports: !override [\"127.0.0.1:3101:3000\"]"),
+            "{local}"
+        );
+        // 收紧之后五行全是本机
+        for line in local
+            .lines()
+            .filter(|l| l.trim_start().starts_with("ports: !override"))
+        {
+            assert!(line.contains("127.0.0.1:"), "这一行没绑本机：{line}");
+        }
+    }
+
+    /// I2 的 GUI 回归撞到的那个 P0（详见 `secretgen` 的模块头）：
+    /// 0.1.1 及之前生成的 `POSTGRES_PASSWORD` 里可能有 `/`，会把上游拼出来的 DSN 截断。
+    #[test]
+    fn 认得出会把_dsn_截断的旧口令() {
+        assert!(sticky_password_safe("aB3xYz09"));
+        // 下面这两个是标准 base64 会产出的形状
+        assert!(!sticky_password_safe("ab/cdEF012"));
+        assert!(!sticky_password_safe("ab+cdEF012"));
+        assert!(!sticky_password_safe("abcdEF012="));
+        // 真出现在 I2 回归里的那一类：一个 `/` 就够。
+        // URL 的 authority 到**第一个** `/` 为止（RFC 3986），所以口令里的 `/`
+        // 会让解析器在那里就收尾，真正的主机与端口全被甩进 path ——
+        // 实测的报错就是 `invalid integer value ... for connection option "port"`。
+        let bad = "K7mQ1wZ/u3s9CkgP2vTnR4xLbJhA6eYd";
+        assert!(!sticky_password_safe(bad));
+        let authority = |dsn: &str| {
+            dsn.split_once("://")
+                .unwrap()
+                .1
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            authority(&format!("postgresql://hunter:{bad}@postgres:5432/hunter")),
+            "hunter:K7mQ1wZ",
+            "带 `/` 的口令必须把 authority 截断 —— 这正是 api 起不来的原因"
+        );
+        // 换成只含字母数字的口令，authority 就是对的
+        let good = "K7mQ1wZu3s9CkgP2vTnR4xLbJhA6eYd";
+        assert!(sticky_password_safe(good));
+        assert_eq!(
+            authority(&format!("postgresql://hunter:{good}@postgres:5432/hunter")),
+            format!("hunter:{good}@postgres:5432")
+        );
+    }
+
+    #[test]
+    fn web_bind_的默认值是对外() {
+        let h = HunterSection::default();
+        assert_eq!(h.web_bind, WEB_BIND_ALL);
+        assert!(
+            !h.web_local_only(),
+            "默认必须是对外（总控规则红线 4 的既定设计）"
+        );
+        // 老的 launcher.toml 里根本没有这一项，读回来也得是默认值
+        let c: LauncherConfig = toml::from_str("[hunter]\ntag = \"1.2.0\"\nregistry_id = \"ghcr\"\nregistry_prefix = \"ghcr.io/agentpit-io\"\nbase_prefix = \"docker.io/library\"\n[hunter.ports]\nweb = 3100\napi = 8100\nopencode = 3921\npostgres = 5442\nredis = 6479\n").expect("老配置要读得回来");
+        assert!(!c.hunter.web_local_only(), "升级上来的机器不该被悄悄收紧");
+        // 写错了也按默认走，不悄悄改变方向
+        let h2 = HunterSection {
+            web_bind: "loacl".into(),
+            ..Default::default()
+        };
+        assert!(!h2.web_local_only());
+    }
+
+    /// I2 自审：会原样写进 `.env` 的值里不许有换行 —— 一个换行等于多定义一个环境变量。
+    #[test]
+    fn 模型名里有换行时写_env_要报错而不是悄悄注入() {
+        let ports = Ports::default();
+        let bad = EnvInput {
+            tag: "1.2.0",
+            registry_prefix: "ghcr.io/agentpit-io",
+            ports: &ports,
+            hunter_key: "hunt_tools_x",
+            model_mode: "own",
+            llm_base_url: "https://api.deepseek.com/v1",
+            llm_model: "deepseek-chat\nHUNTER_API_KEY=injected",
+            llm_api_key: "sk-abc",
+            schema_sanitize: false,
+        };
+        let e = render_env(&bad, &StickySecrets::default()).expect_err("带换行的模型名必须被拒");
+        assert!(e.msg.contains("换行"), "{}", e.msg);
+
+        // 正常的值照样能渲染出来，而且渲染结果里只有一行 HUNTER_API_KEY
+        let ok = EnvInput {
+            llm_model: "deepseek-chat",
+            ..bad
+        };
+        let out = render_env(&ok, &StickySecrets::default()).expect("正常的值应当能渲染");
+        assert_eq!(
+            out.lines()
+                .filter(|l| l.starts_with("HUNTER_API_KEY="))
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn 国内源下_postgres_与_redis_也换成镜像地址() {
         let ports = Ports::default();
-        let s = render_override(&ports, "hkccr.ccs.tencentyun.com/agentpit");
+        let s = render_override(&ports, "hkccr.ccs.tencentyun.com/agentpit", false);
         assert!(
             s.contains("image: hkccr.ccs.tencentyun.com/agentpit/postgres:16-alpine"),
             "{s}"
@@ -991,7 +1223,7 @@ mod tests {
             "{s}"
         );
         // GHCR 下则保持官方库的写法
-        let s2 = render_override(&ports, "docker.io/library");
+        let s2 = render_override(&ports, "docker.io/library", false);
         assert!(s2.contains("image: postgres:16-alpine"), "{s2}");
         assert!(
             !s2.contains("docker.io/library/postgres"),
@@ -1058,7 +1290,7 @@ mod tests {
             postgres: 5442,
             redis: 6479,
         };
-        let (got, changes) = resolve_ports(&want, &[]).unwrap();
+        let (got, changes) = resolve_ports(&want, &[], false).unwrap();
         assert_ne!(got.api, pa, "被占的端口必须换掉");
         assert!(changes.iter().any(|c| c.service == "api" && c.wanted == pa));
         // 五个端口互不相同
@@ -1081,7 +1313,7 @@ mod tests {
             postgres: free + 3,
             redis: free + 4,
         };
-        let (got, changes) = resolve_ports(&want, &[]).unwrap();
+        let (got, changes) = resolve_ports(&want, &[], false).unwrap();
         if changes.is_empty() {
             assert_eq!(got, want);
         }
@@ -1102,12 +1334,12 @@ mod tests {
         };
 
         // 不告诉它这是自己的 → 换端口
-        let (got, changes) = resolve_ports(&want, &[]).unwrap();
+        let (got, changes) = resolve_ports(&want, &[], false).unwrap();
         assert_ne!(got.api, p);
         assert!(!changes.is_empty());
 
         // 告诉它这是自己的 → 原样保留，也不产生「端口已改」的提示
-        let (got, changes) = resolve_ports(&want, &[p]).unwrap();
+        let (got, changes) = resolve_ports(&want, &[p], false).unwrap();
         assert_eq!(got.api, p, "自己占着的端口应当原样保留");
         assert!(
             changes.iter().all(|c| c.service != "api"),
@@ -1180,7 +1412,7 @@ mod tests {
         let ports = Ports::default();
         LauncherConfig::default().save().expect("写 launcher.toml");
         write_env(&input(&ports, "gateway")).expect("写 .env");
-        write_override(&ports, "docker.io/library").expect("写覆盖文件");
+        write_override(&ports, "docker.io/library", false).expect("写覆盖文件");
         write_compose("services: {}\n").expect("写 compose");
 
         for p in [

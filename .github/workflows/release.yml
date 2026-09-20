@@ -253,6 +253,31 @@ jobs:
               mv "$f" "${f/hunter-launcher.app.tar.gz/hunter-launcher_${V}_universal.app.tar.gz}"
             done
           fi
+          # ── .deb 的版本号改用 Debian 写法（待办池 P1-19）────────────────
+          # dpkg 里 `-` 之后那一段是「Debian 修订号」，越大越新，于是
+          #   dpkg --compare-versions 0.1.0 gt 0.1.0-rc.2  → 假（rc 反而更"新"）
+          #   dpkg --compare-versions 0.1.0 gt 0.1.0~rc.2  → 真
+          # 从 rc 升到正式版时前者会被 apt 判成降级直接拒绝（M4 实测）。
+          # Tauri 没有单独覆盖 deb 版本号的配置项，所以在这里拆包改 control 再打回去。
+          # 规则与 selfupdate.rs 的 deb_version() 必须一致（那边有测试盯着）。
+          if [ "$RUNNER_OS" = "Linux" ] && [ "${V#*-}" != "$V" ]; then
+            DEB_V="${V%%-*}~${V#*-}"
+            for d in out/*_amd64.deb; do
+              [ -e "$d" ] || continue
+              echo "重打 $d：版本 $V → $DEB_V"
+              work=$(mktemp -d)
+              dpkg-deb -R "$d" "$work/pkg"
+              sed -i "s/^Version: .*/Version: $DEB_V/" "$work/pkg/DEBIAN/control"
+              grep '^Version:' "$work/pkg/DEBIAN/control"
+              new="out/hunter-launcher_${DEB_V}_amd64.deb"
+              dpkg-deb --build "$work/pkg" "$new"
+              rm -f "$d"
+              rm -rf "$work"
+              echo "→ $new"
+            done
+            dpkg-deb -f out/hunter-launcher_${DEB_V}_amd64.deb Version Package
+          fi
+
           echo "── out/ ──"
           ls -la out/
           # 有包必须有签名：少一个 .sig 就等于那个平台的自更新是坏的
@@ -365,6 +390,20 @@ jobs:
           python3 scripts/cos-upload.py staged "launcher/${{ steps.v.outputs.version }}"
           # 国内版清单固定在 /launcher/latest.json，启动器的第一个 updater 端点就是它
           python3 scripts/cos-upload.py latest.cn.json "launcher/latest.json"
+
+      - name: 清掉桶里已经没用的旧预发布包（待办池 P1-17）
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ vars.COS_BUCKET }}
+          COS_REGION: ${{ vars.COS_REGION }}
+        # 规则见脚本文件头：正式版一个不删，预发布版只在同号正式版已发布且不是最新那个时才删。
+        # 放在上传**之后**：先保证这一版已经在桶里，再动别的版本。
+        # 规则本身有 --self-test（CI 里跑），这里只负责执行。
+        run: |
+          set -e
+          pip install --quiet boto3
+          python3 scripts/cos-prune.py
 
       - name: 小结
         run: |

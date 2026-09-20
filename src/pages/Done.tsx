@@ -11,6 +11,12 @@ export function Done() {
   const { t, send } = useStore()
   const rt = useAsync(() => ipc.runtimeStatus(), [])
   const url = rt.data?.webUrl ?? null
+  // 最后一条提示讲的是「谁能打开这个地址」，而那件事是可配置的（设置页 · 待办池 P1-20）。
+  // 设置读不出来时按默认（对外）显示 —— 那才是真实的默认行为。
+  const st = useAsync(() => ipc.readSettings(), [])
+  const tips = st.data?.webLocalOnly
+    ? [...t.done.tips.slice(0, -1), t.done.tipLocalOnly]
+    : t.done.tips
 
   return (
     <WizardLayout
@@ -40,7 +46,7 @@ export function Done() {
 
       <Card className="mt-[26px]">
         <ul className="flex flex-col gap-[11px]">
-          {t.done.tips.map((tip) => (
+          {tips.map((tip) => (
             <li key={tip} className="flex gap-2.5 text-md leading-[1.5] text-body">
               <span className="mt-[9px] size-[5px] shrink-0 rounded-full bg-amber" />
               {tip}

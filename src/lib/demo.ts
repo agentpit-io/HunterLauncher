@@ -265,6 +265,8 @@ export const demoSettings: LauncherSettings = {
   locale: 'zh-CN',
   autostart: false,
   checkUpdate: true,
+  // 默认对外 —— 和真实默认值一致（演示模式也不该显示一个不存在的默认）
+  webLocalOnly: false,
   registry: 'ghcr',
   hunterTag: DEMO_HUNTER_TAG,
   workDir: '~/.hunter',

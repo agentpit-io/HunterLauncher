@@ -249,6 +249,30 @@ function RegistryCard({
           </Button>
         </div>
       </Field>
+
+      {/* 谁能打开 Hunter（待办池 P1-20 的开关）。
+          默认「同一网络里的设备都可以」—— 这是既定设计（总控规则红线 4 把 web 明确排除在
+          「只绑 127.0.0.1」之外），I2 只把开关做出来，**默认值一个字节没动**。
+          改完要重新起容器才生效，下面那句提示写清楚了。 */}
+      <div className="mt-[14px] border-t border-line pt-[14px]">
+        <div className="text-md text-ink-2">{t.settings.webAccess}</div>
+        <div className="mt-[10px]">
+          <SegmentedControl<string>
+            value={settings?.webLocalOnly ? 'local' : 'all'}
+            testIdPrefix="web-access"
+            onChange={(v) => void onPatch({ webLocalOnly: v === 'local' })}
+            options={[
+              { id: 'all', label: t.settings.webAccessAll },
+              { id: 'local', label: t.settings.webAccessLocal },
+            ]}
+          />
+        </div>
+        <div className="mt-[10px] text-xs leading-[1.5] text-muted">{t.settings.webAccessHint}</div>
+        <div className="mt-[6px] text-xs leading-[1.5] text-amber-text">
+          {t.settings.webAccessApply}
+        </div>
+      </div>
+
       {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.saving}</div>}
     </Card>
   )

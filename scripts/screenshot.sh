@@ -77,4 +77,7 @@ for page in "${PAGES[@]}"; do
   if [ "$SAT" -lt 20 ]; then echo "平均饱和度 ${SAT}‰ 近似灰度，疑似底色没上"; exit 1; fi
 done
 
+# 最后再整批过一遍 —— 单张的三道校验抓不到「同一页截了好几次」（I1 报告第十节第 6 条）
+bash "$(dirname "$0")/check-shots.sh" "$OUT"
+
 echo "全部完成：$OUT"

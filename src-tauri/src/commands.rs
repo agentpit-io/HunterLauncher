@@ -94,9 +94,16 @@ pub fn open_url_checked<R: tauri::Runtime>(app: &tauri::AppHandle<R>, url: &str)
 
 /// 放行规则：任意 https，或者**本机**的 http。
 ///
-/// 明文 http 只认 `localhost` / `127.0.0.1` 两个主机，而且主机名后面必须紧跟
-/// `:`（端口）、`/`（路径）或者就此结束 —— 只比前缀的话
-/// `http://localhost.example.com/` 会被当成本机放进来（I1 自审发现）。
+/// 明文 http 的 authority（`://` 到第一个 `/`、`?`、`#` 之间的那一段）必须**整段**
+/// 等于 `localhost` / `127.0.0.1`，后面最多再跟一个纯数字端口。
+///
+/// 这里不能只比前缀，也不能只看「主机名后面紧跟 `:` 或 `/`」——
+/// 两条真实的绕法都被这个函数挡着：
+///
+/// * `http://localhost.example.com/`（I1 自审发现）：前缀相同但主机不是本机；
+/// * `http://localhost:1@evil.com/`（I2 自审发现）：`localhost:1` 在 URL 语法里是
+///   **userinfo**，真正的主机是 `evil.com`，浏览器会去开 evil.com。
+///   只判「后面紧跟 `:`」的写法会把它放行。
 pub fn url_allowed(url: &str) -> bool {
     if url.starts_with("https://") {
         return true;
@@ -104,11 +111,22 @@ pub fn url_allowed(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else {
         return false;
     };
-    ["localhost", "127.0.0.1"].iter().any(|h| {
-        rest.strip_prefix(h).is_some_and(|after| {
-            after.is_empty() || after.starts_with(':') || after.starts_with('/')
-        })
-    })
+    // authority 到第一个 `/`、`?`、`#` 为止；里面出现 `@` 一律拒绝（那就是 userinfo）
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    let (host, port) = match authority.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (authority, None),
+    };
+    if !matches!(host, "localhost" | "127.0.0.1") {
+        return false;
+    }
+    match port {
+        None => true,
+        Some(p) => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()),
+    }
 }
 
 /// 在系统文件管理器里定位一个文件（导出诊断包 / 日志之后用）。
@@ -475,6 +493,10 @@ pub struct LauncherSettings {
     /// 当前镜像源的完整前缀（自定义源时界面要显示它）
     #[serde(default)]
     pub registry_prefix: String,
+    /// web 端口只允许本机访问。**默认 false**（= 绑所有网卡，与 I1 之前的行为一致）。
+    /// 改这一项要重新生成覆盖文件并重启容器才生效，界面上写清楚了。
+    #[serde(default)]
+    pub web_local_only: bool,
 }
 
 #[tauri::command]
@@ -496,6 +518,11 @@ pub async fn write_settings(
         let mut c = st.config();
         c.launcher.locale = settings.locale;
         c.launcher.check_update_hours = if settings.check_update { 24 } else { 0 };
+        c.hunter.web_bind = if settings.web_local_only {
+            config::WEB_BIND_LOCAL.into()
+        } else {
+            config::WEB_BIND_ALL.into()
+        };
 
         // 开机自启：**真去动系统**（Linux 的 .desktop / mac 的 LaunchAgent / Windows 注册表），
         // 然后把系统里的真实状态记回配置，而不是把用户点的那一下直接当成结果（红线 1）。
@@ -523,7 +550,19 @@ pub async fn write_settings(
 
         if let Some(cand) = registry::by_id(&settings.registry) {
             c.apply_registry(cand);
-        } else if !settings.registry.is_empty() && settings.registry.contains('/') {
+        } else if !settings.registry.trim().is_empty() {
+            // 手填的自定义源要先过形状校验 —— 它会原样进 .env 与覆盖文件（I2 自审）
+            if !registry::prefix_ok(&settings.registry) {
+                return Err(AppError::new(
+                    Code::ConfigWrite,
+                    format!(
+                        "自定义镜像源「{}」的写法不对。要的是「主机[:端口]/路径」，\
+                         例如 registry.example.com/agentpit 或 10.0.0.2:5000/hunter；\
+                         不要带镜像名、tag、空格或换行。",
+                        settings.registry.trim()
+                    ),
+                ));
+            }
             let cand = registry::custom(&settings.registry);
             c.apply_registry(&cand);
         }
@@ -549,6 +588,7 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         model_base_url: c.model.base_url.clone(),
         model_name: c.model.model.clone(),
         registry_prefix: c.hunter.registry_prefix.clone(),
+        web_local_only: c.hunter.web_local_only(),
     }
 }
 
@@ -1176,6 +1216,24 @@ mod tests {
         assert!(!url_allowed("http://localhost-evil.test"));
         assert!(!url_allowed("http://127.0.0.1.example.com/"));
         assert!(!url_allowed("http://127.0.0.10:80"));
+    }
+
+    #[test]
+    fn 把本机写成_userinfo_的不能放行() {
+        // I2 自审发现：`localhost:1` 在 URL 语法里是 userinfo，真正的主机是 @ 后面那个。
+        // I1 修完的版本（只判「主机名后紧跟 : 或 /」）会把前两条放行。
+        assert!(!url_allowed("http://localhost:1@evil.com/"));
+        assert!(!url_allowed("http://localhost:3101@evil.com"));
+        assert!(!url_allowed("http://127.0.0.1@evil.com/x"));
+        assert!(!url_allowed("http://user@localhost:3101/"));
+    }
+
+    #[test]
+    fn 端口必须是纯数字() {
+        assert!(url_allowed("http://localhost:3101/x?y=1"));
+        assert!(!url_allowed("http://localhost:/x"));
+        assert!(!url_allowed("http://localhost:80a/x"));
+        assert!(!url_allowed("http://localhost:3101x"));
     }
 
     #[test]

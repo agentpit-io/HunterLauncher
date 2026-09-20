@@ -94,7 +94,22 @@ pub fn ensure_dirs() -> AppResult<()> {
     }
     // 工作目录整体收成 700。`.env` 本身已经是 600（红线 2），
     // 这一层是纵深防御：同一台机器上别的用户连目录都列不出来。
+    //
+    // **子目录也要收**（I2 自审发现）：原来只收了 root，子目录跟着 umask 走 ——
+    // 测试机上的 umask 是 002，于是 `~/.hunter/app` 这几个实际是 775。
+    // 根目录 700 已经挡住了遍历，所以这只是纵深防御的一层；但「工作目录里的东西
+    // 只有属主能碰」要么是真的，要么就别写在文档里。
     chmod_dir_700(&root())?;
+    for d in [
+        app_dir(),
+        logs_dir(),
+        backups_dir(),
+        telemetry_dir(),
+        diagnostics_dir(),
+        updates_dir(),
+    ] {
+        chmod_dir_700(&d)?;
+    }
     Ok(())
 }
 
@@ -160,6 +175,22 @@ mod tests {
         ensure_dirs().expect("建目录应当成功");
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "工作目录必须是 700，实际是 {mode:o}");
+        // 子目录也要 700：umask 是 002 的机器上它们原本会是 775（I2 自审）
+        for sub in [
+            "app",
+            "logs",
+            "backups",
+            "telemetry",
+            "diagnostics",
+            "updates",
+        ] {
+            let m = std::fs::metadata(dir.join(sub))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(m, 0o700, "{sub} 必须是 700，实际是 {m:o}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
         match old {
             Some(v) => std::env::set_var("HUNTER_HOME", v),

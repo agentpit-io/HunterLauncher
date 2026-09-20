@@ -53,7 +53,58 @@ pub fn by_id(id: &str) -> Option<&'static Candidate> {
     CANDIDATES.iter().find(|c| c.id == id)
 }
 
+/// 自定义镜像源前缀的合法形状：`主机[:端口]/一段或多段路径`。
+///
+/// 为什么要校验（I2 自审发现）：这个字符串是用户在设置页手打的，而它会被**原样**写进
+/// 两个地方 —— `.env` 的 `HUNTER_REGISTRY=` 那一行，以及覆盖文件里 postgres / redis 的
+/// `image:` 那两行。里面带上换行、空格或者引号，轻则渲染出一份 compose 解析不了的 YAML，
+/// 重则在 `.env` 里多定义出一个环境变量。原来这里只 `trim()` 了一下就直接用。
+///
+/// 规则按 OCI 的引用语法收紧（只留真正会出现的字符），并且**不允许带 tag**
+/// （`:1.2.0` 由我们自己拼）—— 主机名后面那个冒号只能跟纯数字端口。
+pub fn prefix_ok(prefix: &str) -> bool {
+    let p = prefix.trim().trim_end_matches('/');
+    if p.is_empty() || p.len() > 253 {
+        return false;
+    }
+    let mut parts = p.split('/');
+    let Some(host) = parts.next() else {
+        return false;
+    };
+    let (name, port) = match host.split_once(':') {
+        Some((h, po)) => (h, Some(po)),
+        None => (host, None),
+    };
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return false;
+    }
+    if let Some(po) = port {
+        if po.is_empty() || !po.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+    }
+    // 至少要有一段路径（`ghcr.io` 光一个主机名拼不出我们要的镜像名）
+    let mut any = false;
+    for seg in parts {
+        any = true;
+        if seg.is_empty()
+            || !seg
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+        {
+            return false;
+        }
+    }
+    any
+}
+
 /// 用户在设置里手填的自定义源。给自建镜像仓库的内网用户用。
+///
+/// 调用前务必先过 [`prefix_ok`]。
 pub fn custom(prefix: &str) -> Candidate {
     // 'static 的要求让自定义源不能直接塞进 Candidate；这里只在需要时泄漏一次，
     // 一个进程最多泄漏几十字节，换来的是全链路一套类型。
@@ -370,6 +421,45 @@ pub fn oci_arch() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// I2 自审：自定义源会**原样**进 `.env`（`HUNTER_REGISTRY=`）与覆盖文件的
+    /// `image:` 两行。原来这里只 trim 了一下就用，带上换行或引号就能把 `.env` 写坏。
+    #[test]
+    fn 自定义镜像源的形状要校验() {
+        for ok in [
+            "registry.example.com/agentpit",
+            "ghcr.io/agentpit-io",
+            "10.0.0.2:5000/hunter",
+            "hkccr.ccs.tencentyun.com/agentpit",
+            "registry.example.com/team/sub",
+            "registry.example.com/agentpit/", // 末尾斜杠会被 trim 掉
+            // 末尾的空白（粘贴时最常见的那种）也放行：prefix_ok 与 custom()
+            // 用的是同一句 trim，存下来的值里不会留着它
+            "registry.example.com/agentpit\r",
+            "  registry.example.com/agentpit  ",
+        ] {
+            assert!(prefix_ok(ok), "应当放行：{ok}");
+        }
+        // 上面那条「同一句 trim」必须是真的，否则校验过了、存下来的却是带空白的
+        assert_eq!(
+            custom("  registry.example.com/agentpit\r ").prefix,
+            "registry.example.com/agentpit"
+        );
+        for bad in [
+            "",
+            "ghcr.io",                                  // 光一个主机名拼不出镜像名
+            "registry.example.com/a b",                 // 空格
+            "registry.example.com/a\nHUNTER_API_KEY=x", // 换行 —— 正是要挡的那一条
+            "registry.example\r.com/a",                 // 中间的回车挡得住
+            "registry.example.com/agentpit:1.2.0",      // 带 tag
+            "registry.example.com:abc/a",               // 端口不是数字
+            "registry.example.com//a",                  // 空路径段
+            "registry.example.com/A",                   // 大写（OCI 的仓库名只许小写）
+            "registry.example.com/a\"b",
+        ] {
+            assert!(!prefix_ok(bad), "应当拒绝：{bad:?}");
+        }
+    }
 
     #[test]
     fn 候选源的前缀与标签() {

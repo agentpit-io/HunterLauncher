@@ -262,6 +262,7 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
         println!("  ✗ {}", check.message.clone().unwrap_or_default());
         let code = match check.reason {
             gateway::KeyReason::Exhausted => Code::QuotaExhausted,
+            gateway::KeyReason::RateLimited => Code::RateLimited,
             gateway::KeyReason::Network => Code::ProxyBlock,
             _ => Code::KeyInvalid,
         };
