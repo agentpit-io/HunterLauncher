@@ -1,3 +1,4 @@
+import { AssistPanel } from '../components/AssistPanel'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { AlertTriangle } from '../components/Icons'
@@ -59,6 +60,15 @@ export function ErrorPage() {
           {code === 'E_PULL_FAILED' && <OfflineImport variant="button" />}
         </div>
       </Card>
+
+      {/* 诊断助手（I4）：先跑确定性规则，认不出来才给「让 AI 帮我看看」。
+          错误页是它最该出现的地方 —— 用户走到这里就是卡住了。 */}
+      <AssistPanel
+        className="mt-gap max-w-[820px]"
+        errorCode={code}
+        errorMessage={state.detail}
+        stage={state.from}
+      />
     </PlainLayout>
   )
 }

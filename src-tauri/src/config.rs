@@ -208,6 +208,78 @@ pub struct InstallSection {
     pub offline: bool,
 }
 
+/// 可执行文件的定位策略（I4 的 P0）。
+///
+/// 为什么要有这一段：macOS 上从访达 / 程序坞启动的 GUI 程序，PATH 只有
+/// `/usr/bin:/bin:/usr/sbin:/sbin`，**不含 `/usr/local/bin`**，于是基于 PATH 的
+/// `docker` 查找必然失败 —— 哪怕用户的 OrbStack 好好装着。详见
+/// [`crate::runtime::which`] 的模块注释。
+///
+/// 内置的已知位置清单写在 [`crate::runtime::which::builtin_dirs`]，**只写那一处**；
+/// 这一段是给用户/排障用的覆盖入口。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeSection {
+    /// 手动指定 docker 可执行文件的绝对路径。非空时**只认它**，找不到就如实报错，
+    /// 不会悄悄回退到别处的 docker。默认空 = 自动探测
+    #[serde(default)]
+    pub docker_path: String,
+    /// 手动指定独立 `docker-compose` 的绝对路径。默认空 = 自动探测
+    /// （而且绝大多数机器上用的是 `docker compose` 插件，根本用不到这一项）
+    #[serde(default)]
+    pub compose_path: String,
+    /// 追加到内置清单**前面**的搜索目录。支持 `~/` 开头
+    #[serde(default)]
+    pub search_paths: Vec<String>,
+    /// 要不要用内置的已知位置清单。默认 true
+    #[serde(default = "yes")]
+    pub use_builtin_paths: bool,
+    /// 要不要走 PATH。默认 true
+    #[serde(default = "yes")]
+    pub use_env_path: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for RuntimeSection {
+    fn default() -> Self {
+        Self {
+            docker_path: String::new(),
+            compose_path: String::new(),
+            search_paths: Vec::new(),
+            use_builtin_paths: true,
+            use_env_path: true,
+        }
+    }
+}
+
+impl RuntimeSection {
+    pub fn to_policy(&self) -> crate::runtime::which::Policy {
+        crate::runtime::which::Policy {
+            docker_path: self.docker_path.clone(),
+            compose_path: self.compose_path.clone(),
+            extra_dirs: self.search_paths.clone(),
+            use_builtin: self.use_builtin_paths,
+            use_env_path: self.use_env_path,
+        }
+    }
+}
+
+/// AI 诊断助手的开关（I4 §三）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistSection {
+    /// 默认**开**。关掉之后只用第一层的确定性规则，一个 token 也不花
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+impl Default for AssistSection {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LauncherConfig {
     #[serde(default)]
@@ -220,6 +292,10 @@ pub struct LauncherConfig {
     pub model: ModelSection,
     #[serde(default)]
     pub install: InstallSection,
+    #[serde(default)]
+    pub runtime: RuntimeSection,
+    #[serde(default)]
+    pub assist: AssistSection,
 }
 
 impl LauncherConfig {

@@ -6,6 +6,7 @@ import { WizardLayout } from '../components/WizardLayout'
 import * as ipc from '../lib/ipc'
 import { bytes, duration, percent } from '../lib/format'
 import { useStore } from '../state/context'
+import type { ErrorCode } from '../state/machine'
 import type { ImagePull, PullProgress } from '../lib/types'
 
 /**
@@ -73,7 +74,11 @@ export function Pull() {
     }
     if (p?.phase === 'failed' && p.error && !advanced.current) {
       advanced.current = true
-      send({ type: 'PULL_FAILED', detail: p.error })
+      // 安装阶段失败的原因不止「拉不下来」一种（项目名冲突、compose 取不到、写配置失败…）。
+      // 按 Rust 给的**真实错误码**走；拿不到才退回 PULL_FAILED（I4 修，见 types.ts 的注释）。
+      const code = p.errorCode
+      if (code && code !== 'E_PULL_FAILED') send({ type: 'FAIL', code: code as ErrorCode, detail: p.error })
+      else send({ type: 'PULL_FAILED', detail: p.error })
     }
   }, [p, send])
 

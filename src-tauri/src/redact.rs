@@ -81,6 +81,94 @@ fn mask_shapes(input: &str) -> String {
     out
 }
 
+/// 路径里的用户名（I4）。
+///
+/// 诊断报文会带一堆绝对路径（`/Users/zhangsan/.hunter/app/.env`、
+/// `C:\Users\zhangsan\.hunter`），送到模型那边去之前得把人名换掉 ——
+/// 用户名往往就是真名或公司工号，属于个人信息，而排查完全用不上它。
+///
+/// 换成 `<用户目录>`，**保留后面的相对部分** —— 「`.hunter/app/.env` 写不进去」
+/// 这种问题还得靠后半截才看得出来。
+///
+/// 三种形状都认：
+/// * 当前进程的真实家目录（最准的一条，先做）
+/// * `/Users/<名字>`（macOS）、`/home/<名字>`（Linux）
+/// * `C:\Users\<名字>`（Windows，大小写与斜杠方向都放宽）
+pub fn mask_home(input: &str) -> String {
+    const PLACEHOLDER: &str = "<用户目录>";
+    let mut out = input.to_string();
+
+    // ① 真实家目录：最准，而且能覆盖各种发行版与 macOS 的特殊布局
+    let home = crate::paths::home();
+    let h = home.to_string_lossy();
+    if h.len() >= 4 && h != "/" && h != "." {
+        out = out.replace(h.as_ref(), PLACEHOLDER);
+        // Windows 上路径可能以 `/` 写出来（很多库会这么打）
+        if cfg!(windows) {
+            out = out.replace(&h.replace('\\', "/"), PLACEHOLDER);
+        }
+    }
+
+    // ② 形状匹配：日志里可能有**别的用户**的路径（多用户机器、拷来的日志）
+    for prefix in ["/Users/", "/home/", "/var/home/"] {
+        out = mask_user_after(&out, prefix);
+    }
+    out = mask_win_users(&out);
+    out
+}
+
+/// 把 `<prefix><一段用户名>` 换成 `<用户目录>`，用户名到下一个 `/` 为止。
+fn mask_user_after(s: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(prefix) {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + prefix.len()..];
+        let end = after.find('/').unwrap_or(after.len());
+        let name = &after[..end];
+        // 空的、或者本来就已经是占位符的，原样放回去
+        if name.is_empty() || name.starts_with('<') {
+            out.push_str(&rest[i..i + prefix.len()]);
+            rest = after;
+            continue;
+        }
+        out.push_str("<用户目录>");
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `C:\Users\zhangsan\…` → `<用户目录>\…`。反斜杠与正斜杠都认，盘符不限 C。
+fn mask_win_users(s: &str) -> String {
+    let lower = s.to_ascii_lowercase();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // 形如 `X:\Users\` 或 `X:/Users/`
+        let hit = i + 9 <= bytes.len()
+            && bytes[i].is_ascii_alphabetic()
+            && bytes[i + 1] == b':'
+            && matches!(bytes[i + 2], b'\\' | b'/')
+            && lower[i + 3..].starts_with("users")
+            && matches!(bytes[i + 8], b'\\' | b'/');
+        if hit {
+            let after = &s[i + 9..];
+            let end = after.find(['\\', '/']).unwrap_or(after.len());
+            if end > 0 && !after.starts_with('<') {
+                out.push_str("<用户目录>");
+                i += 9 + end;
+                continue;
+            }
+        }
+        let ch_len = utf8_len(bytes[i]);
+        out.push_str(&s[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
 /// 对话内容的整段抹除（技术方案 §12.3 第三条）。
 ///
 /// opencode / api 的日志里会把模型的输入输出原样打出来，形如
@@ -388,6 +476,64 @@ mod tests {
         assert!(!r.contains("q6sK"), "{r}");
         assert!(r.contains("hunt_tools_****"), "{r}");
         assert!(r.contains("写入 .env"), "中文不能被切坏：{r}");
+    }
+
+    // ── 路径里的用户名（I4：诊断报文要送到模型那边去） ─────────────────────
+
+    #[test]
+    fn 家目录里的用户名被换掉但后半截留着() {
+        let s = "写 /Users/zhangsan/.hunter/app/.env 失败：权限不足";
+        let r = mask_home(s);
+        assert!(!r.contains("zhangsan"), "{r}");
+        assert!(r.contains("<用户目录>/.hunter/app/.env"), "{r}");
+        assert!(r.contains("权限不足"), "中文不能被切坏：{r}");
+    }
+
+    #[test]
+    fn linux_与_windows_的形状都认() {
+        let r = mask_home("/home/support/.hunter/logs/launcher.log");
+        assert!(!r.contains("support"), "{r}");
+        assert!(r.contains("<用户目录>/.hunter/logs/launcher.log"), "{r}");
+
+        let w = mask_home(r"C:\Users\Li Lei\.hunter\app\.env");
+        assert!(!w.contains("Li Lei"), "{w}");
+        assert!(w.contains(r"<用户目录>\.hunter\app\.env"), "{w}");
+
+        // 盘符不限 C，斜杠方向也放宽
+        let d = mask_home("D:/Users/bob/.docker/bin/docker");
+        assert!(!d.contains("bob"), "{d}");
+        assert!(d.contains("<用户目录>/.docker/bin/docker"), "{d}");
+    }
+
+    #[test]
+    fn 不是用户目录的路径不动() {
+        for s in [
+            "/usr/local/bin/docker",
+            "/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
+            "/opt/homebrew/bin/docker",
+            r"C:\Program Files\Docker\Docker\resources\bin\docker.exe",
+        ] {
+            assert_eq!(mask_home(s), s, "不该动：{s}");
+        }
+    }
+
+    #[test]
+    fn 已经打过码的不会被重复处理() {
+        let once = mask_home("/Users/zhangsan/.hunter");
+        assert_eq!(mask_home(&once), once, "幂等：{once}");
+    }
+
+    /// I4 的硬要求：送去网关的诊断报文里 **grep 不到 key**，也 grep 不到用户名。
+    #[test]
+    fn 诊断报文同时过掉_key_与用户名() {
+        let raw = format!(
+            "LLM_API_KEY={FAKE}\n探测 /Users/zhangsan/.orbstack/bin/docker 失败\nAuthorization: Bearer {FAKE}"
+        );
+        let out = mask_home(&redact(&raw));
+        assert!(!out.contains("q6sK"), "{out}");
+        assert!(!out.contains("zhangsan"), "{out}");
+        assert!(out.contains("hunt_tools_****"), "{out}");
+        assert!(out.contains("<用户目录>/.orbstack/bin/docker"), "{out}");
     }
 
     #[test]

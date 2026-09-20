@@ -36,6 +36,7 @@ use serde::Serialize;
 
 use crate::config::{self, ImageSpec};
 use crate::err::{AppError, AppResult, Code};
+use crate::runtime::which;
 use crate::{linfo, lwarn, proc};
 
 /// `docker load` 的上限。几百 MB 到几 GB 的 tar，慢盘上也够。
@@ -166,7 +167,7 @@ pub fn import(tar: &Path, mut note: impl FnMut(&str)) -> AppResult<ImportResult>
 
     let t0 = Instant::now();
     // 红线 3：参数数组。`-i` 让 docker 自己读文件，不走 shell 重定向
-    let r = proc::run_timeout("docker", &["load", "-i", &path_s], LOAD_TIMEOUT)?;
+    let r = proc::run_timeout(&which::docker_bin(), &["load", "-i", &path_s], LOAD_TIMEOUT)?;
     if !r.ok() {
         return Err(AppError::new(
             Code::PullFailed,
@@ -262,7 +263,7 @@ pub fn import(tar: &Path, mut note: impl FnMut(&str)) -> AppResult<ImportResult>
 /// 两种情况下都不能当它存在）。
 pub fn inspect_size(reference: &str) -> Option<u64> {
     let r = proc::run_timeout(
-        "docker",
+        &which::docker_bin(),
         &["image", "inspect", reference, "--format", "{{.Size}}"],
         INSPECT_TIMEOUT,
     )
@@ -313,7 +314,7 @@ pub fn export(
     }
     note(&format!("正在把 6 个镜像打包到 {out_s}…"));
     let t0 = Instant::now();
-    let r = proc::run_timeout("docker", &args, SAVE_TIMEOUT)?;
+    let r = proc::run_timeout(&which::docker_bin(), &args, SAVE_TIMEOUT)?;
     if !r.ok() {
         return Err(AppError::new(
             Code::PullFailed,

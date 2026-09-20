@@ -52,8 +52,8 @@ const zhCN = {
   },
   steps: {
     welcome: { title: '欢迎', sub: '语言与协议' },
-    docker: { title: 'Docker', sub: '检测容器运行时' , detected: (label: string) => `已检测到 ${label}`, missing: '未安装' },
     key: { title: '输入 key', sub: '一把 key 解锁数据与模型' },
+    docker: { title: 'Docker', sub: '检测容器运行时' , detected: (label: string) => `已检测到 ${label}`, missing: '未安装' },
     model: { title: '选择模型', sub: '默认走 Hunter 网关' },
     pull: { title: '拉取镜像', sub: (size: string, registry: string) => `约 ${size} · ${registry}` },
     start: { title: '启动', sub: '6 个服务健康检查' },
@@ -81,7 +81,31 @@ const zhCN = {
     ],
     start: '开始',
   },
+  /** AI 诊断助手（I4 §三）。两层：确定性规则在前，AI 兜底在后。 */
+  assist: {
+    collecting: '正在收集现场信息…',
+    collectFailed: (e: string) => `收集现场信息时出错了：${e}`,
+    ruleBadge: '规则',
+    aiBadge: 'AI 建议',
+    roundLabel: (n: number, max: number) => `第 ${n} / ${max} 轮`,
+    tokensThisRound: (n: number) => `本轮约 ${n} tokens`,
+    tokensTotal: (n: number, rounds: number, max: number) => `这次诊断约 ${n} tokens · 已问 ${rounds}/${max} 轮`,
+    autoRan: '下面这些是只读动作，启动器已经自动跑过了：',
+    rejected: (name: string, reason: string) => `模型要调用「${name}」，被拒绝了：${reason}`,
+    ask: '让 AI 帮我看看',
+    askAgain: '带着新结果再问一轮',
+    stillBroken: '按上面做了还是不行',
+    run: '执行',
+    confirmRun: '确认执行',
+    copyReport: '复制诊断信息',
+    showReport: '展开完整诊断',
+    hideReport: '收起完整诊断',
+    offHint: 'AI 诊断助手在设置里关着',
+    noKeyHint: '还没填 key，AI 这一层用不了',
+  },
   docker: {
+    dockerPath: '实际用的 docker',
+    dockerPathNone: (n: number) => `探了 ${n} 个位置都没找到`,
     title: '检测 Docker',
     intro: '启动器用 docker 与 docker compose 两条命令部署 Hunter。下面是本机的检测结果。',
     detecting: '正在检测…',
@@ -244,6 +268,15 @@ const zhCN = {
     keyMissing: 'api 自报没有读到 hunter key（/api/health 的 hunter_api_key = missing）。工具调用会 403，检查 ~/.hunter/app/.env 后重启容器。',
   },
   settings: {
+    sectionAssist: 'AI 诊断助手',
+    assist: 'AI 诊断助手',
+    assistHint: '装不上的时候，把脱敏后的现场送去 Hunter 网关问一下。默认开。',
+    assistNote:
+      '关掉之后只用内置的确定性规则（多路径探测、装了没起来、端口占用、拉取失败），一个 token 也不花。' +
+      '开着时也只有在规则认不出来、或者你点了「让 AI 帮我看看」之后才会真的发请求；' +
+      '发出去的内容里不含 key，路径里的用户名会换成 <用户目录>。',
+    dockerPath: '实际用的 docker',
+    dockerPathNone: '所有已知位置都没找到',
     title: '设置',
     sectionGeneral: '通用',
     sectionDeploy: '部署',

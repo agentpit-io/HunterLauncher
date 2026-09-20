@@ -4,10 +4,15 @@
  * 这里是纯函数，不碰 React、不碰 Tauri、不做副作用，便于用 vitest 全量覆盖。
  * 页面由状态驱动：pageOf(state) 决定渲染哪一页，stepperOf(state) 决定左侧步骤条的样子。
  *
- * 与方案第 4 节的两处增补（已在 M1 成果文档里写明）：
+ * 与方案第 4 节的三处增补（前两处已在 M1 成果文档里写明，第三处是 I4）：
  *   1. 方案从 Idle 直接进 CheckDocker，这里在前面补了 Welcome（视觉稿的步骤条第一项是「欢迎」）。
  *   2. 方案里 Starting 成功后直接进 Ready，这里中间补了 Done（完成页），
  *      因为「打开浏览器」应该是用户点的，不是启动器替他点的。
+ *   3. **I4 把「输入 key」挪到了「检测 Docker」前面**：
+ *        欢迎 → 输入 key → Docker → 选模型 → 拉取镜像 → 启动
+ *      理由是 I4 新加的 AI 诊断助手要调 Hunter 网关，而网关的凭据就是那把 key；
+ *      Docker 检测又恰恰是最容易出事、最需要 AI 帮忙的一步。
+ *      填 key 这一步只需要联网，本来就不依赖 Docker，挪到前面没有任何代价。
  */
 
 export type StateName =
@@ -113,13 +118,13 @@ export const INITIAL_STATE: State = { name: 'Idle' }
 
 /** 向导里「上一步」能退到哪。没写在这里的状态没有上一步。 */
 const BACK_TARGET: Partial<Record<StateName, Exclude<StateName, 'Error'>>> = {
-  CheckDocker: 'Welcome',
-  InstallDockerGuide: 'Welcome',
-  CheckDaemon: 'Welcome',
-  StartDaemon: 'CheckDaemon',
-  NeedKey: 'CheckDaemon',
+  NeedKey: 'Welcome',
   ValidateKey: 'NeedKey',
-  ChooseModel: 'NeedKey',
+  CheckDocker: 'NeedKey',
+  InstallDockerGuide: 'NeedKey',
+  CheckDaemon: 'NeedKey',
+  StartDaemon: 'CheckDaemon',
+  ChooseModel: 'CheckDaemon',
   SelectRegistry: 'ChooseModel',
   Pulling: 'ChooseModel',
 }
@@ -175,7 +180,8 @@ export function transition(state: State, event: Event): State {
       return state
 
     case 'Welcome':
-      if (event.type === 'ACCEPT_TERMS') return s('CheckDocker')
+      // I4：欢迎之后先填 key（AI 诊断助手要用它调网关），再检测 Docker
+      if (event.type === 'ACCEPT_TERMS') return s('NeedKey')
       // boot_state 是异步回来的，那时候通常已经在 Welcome 了，所以这一步也要能跳
       if (event.type === 'RESUME_READY') return s('Ready')
       return state
@@ -190,7 +196,7 @@ export function transition(state: State, event: Event): State {
 
     case 'CheckDaemon':
       if (event.type === 'DAEMON_DOWN') return s('StartDaemon')
-      if (event.type === 'DAEMON_UP') return s('NeedKey')
+      if (event.type === 'DAEMON_UP') return s('ChooseModel')
       return state
 
     case 'StartDaemon':
@@ -201,7 +207,7 @@ export function transition(state: State, event: Event): State {
       return event.type === 'KEY_SUBMIT' ? s('ValidateKey') : state
 
     case 'ValidateKey':
-      if (event.type === 'KEY_VALID') return s('ChooseModel')
+      if (event.type === 'KEY_VALID') return s('CheckDocker')
       if (event.type === 'KEY_INVALID') return s('NeedKey')
       return state
 
@@ -257,17 +263,18 @@ export function run(state: State, events: Event[]): State {
 
 // ── 左侧步骤条 ────────────────────────────────────────────────────────────
 
-export type StepId = 'welcome' | 'docker' | 'key' | 'model' | 'pull' | 'start'
-export const STEP_IDS: StepId[] = ['welcome', 'docker', 'key', 'model', 'pull', 'start']
+export type StepId = 'welcome' | 'key' | 'docker' | 'model' | 'pull' | 'start'
+/** 步骤条的顺序。I4 把 key 挪到了 docker 前面，见文件头的说明。 */
+export const STEP_IDS: StepId[] = ['welcome', 'key', 'docker', 'model', 'pull', 'start']
 
 const STATE_STEP: Partial<Record<StateName, StepId>> = {
   Welcome: 'welcome',
+  NeedKey: 'key',
+  ValidateKey: 'key',
   CheckDocker: 'docker',
   InstallDockerGuide: 'docker',
   CheckDaemon: 'docker',
   StartDaemon: 'docker',
-  NeedKey: 'key',
-  ValidateKey: 'key',
   ChooseModel: 'model',
   SelectRegistry: 'pull',
   Pulling: 'pull',

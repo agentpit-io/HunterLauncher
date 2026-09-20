@@ -107,6 +107,30 @@ export function Settings() {
 
         <ModelCard settings={d} onDone={() => s.reload()} />
 
+        {/* AI 诊断助手（I4 §三）。**默认开**；关掉之后只用确定性规则，一个 token 也不花。 */}
+        <Card>
+          <div className="text-md font-medium text-ink">{t.settings.sectionAssist}</div>
+          <div className="mt-[16px] flex flex-col gap-[6px]">
+            <Row label={t.settings.assist} hint={t.settings.assistHint}>
+              <Toggle
+                on={d?.assist ?? true}
+                testId="settings-assist"
+                onChange={(v) => void patch({ assist: v })}
+                label={t.settings.assist}
+              />
+            </Row>
+          </div>
+          <div className="mt-[10px] text-xs leading-[1.6] text-muted">{t.settings.assistNote}</div>
+          <div className="mt-[14px]">
+            <EnvList
+              items={[
+                // 「启动器现在用的是哪一个 docker」—— I4 那个 macOS P0 之后必须能一眼看到
+                { label: t.settings.dockerPath, value: d?.dockerPath ?? null, reason: t.settings.dockerPathNone },
+              ]}
+            />
+          </div>
+        </Card>
+
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionPrivacy}</div>
           <div className="mt-[16px] flex flex-col gap-[6px]">

@@ -19,6 +19,7 @@ import type {
   BackupMeta,
   BootState,
   DiagSection,
+  AssistState,
   DockerInfo,
   ImagePull,
   KeyCheckResult,
@@ -62,6 +63,11 @@ export const demoDocker: DockerInfo = {
   serverVersion: '29.8.1',
   composeVersion: 'v5.5.1',
   arch: 'x86_64',
+  dockerPath: '/usr/bin/docker',
+  dockerPathSource: 'PATH',
+  dockerLinkTarget: null,
+  dockerProbe: [{ source: 'PATH', candidate: '/usr/bin/docker', outcome: 'found' }],
+  composeMode: 'docker compose 插件 v5.5.1',
   wsl: null,
   meetsMinimum: true,
   problem: null,
@@ -78,9 +84,19 @@ export const demoDockerMissing: DockerInfo = {
   serverVersion: null,
   composeVersion: null,
   arch: 'x86_64',
+  dockerPath: null,
+  dockerPathSource: null,
+  dockerLinkTarget: null,
+  // 演示的是 I4 之后的样子：探过哪些位置、分别什么结果，一条不落地列出来
+  dockerProbe: [
+    { source: 'PATH', candidate: '/usr/bin/docker', outcome: 'missing' },
+    { source: '已知位置', candidate: '/usr/local/bin/docker', outcome: 'missing' },
+    { source: '已知位置', candidate: '/snap/bin/docker', outcome: 'missing' },
+  ],
+  composeMode: null,
   wsl: null,
   meetsMinimum: false,
-  problem: '命令行里找不到 docker。',
+  problem: '按顺序探了 3 个位置，都没有可执行的 docker。\n装在别处的话，可以在 ~/.hunter/launcher.toml 的 [runtime] 段里写 docker_path 指给它。',
   installGuide: {
     platform: 'linux',
     title: '在 Linux 上装 Docker',
@@ -192,6 +208,7 @@ export const demoPull: PullProgress = {
     '17:42:07 opencode layer a9f2c31b7ad4 Pull complete',
   ],
   error: null,
+  errorCode: null,
 }
 
 export const demoRuntime: RuntimeStatus = {
@@ -278,6 +295,9 @@ export const demoSettings: LauncherSettings = {
   modelBaseUrl: 'https://hunter.agentpit.io/api/saas/llm/v1',
   modelName: 'hunter-chat',
   registryPrefix: DEMO_REGISTRY,
+  // AI 诊断助手默认开（I4）
+  assist: true,
+  dockerPath: '/usr/bin/docker',
 }
 
 /** 遥测队列的演示内容。开关关着时真实队列是空的，这里演示的是「开了之后长什么样」。 */
@@ -453,4 +473,49 @@ export const demoRuntimeQuotaExhausted: RuntimeStatus = {
     rpm: 20,
     concurrency: 4,
   },
+}
+
+/**
+ * AI 诊断助手的演示态（I4）。
+ *
+ * 演示的是**规则层**那一半 —— 它不花 token、不联网，演示出来是诚实的。
+ * AI 那一层在演示模式下一律显示「设置里关着」的降级态：真去问网关要花用户的额度，
+ * 而编一段模型回复放进演示数据就是在假装一个能力（红线 1）。
+ */
+export const demoAssist: AssistState = {
+  enabled: true,
+  hasKey: true,
+  rule: {
+    rule: 'docker-not-found',
+    code: 'E_DOCKER_MISSING',
+    title: '所有已知位置都没找到 docker',
+    detail:
+      '按已知位置挨个探过了，都没有可执行的 docker：\n\n' +
+      '· [PATH] /usr/bin/docker — 没有这个文件\n' +
+      '· [已知位置] /usr/local/bin/docker — 没有这个文件\n' +
+      '· [已知位置] /snap/bin/docker — 没有这个文件\n\n' +
+      '本进程拿到的 PATH：/usr/bin:/bin:/usr/sbin:/sbin\n',
+    actions: [
+      {
+        id: 'probe_docker_path',
+        kind: 'readOnly',
+        title: '重新按已知位置找一遍 docker',
+        why: 'macOS 的 GUI 程序拿不到终端里的 PATH，得按已知安装位置挨个探',
+        argv: [],
+        summary: '按已知位置重新探测 docker，不改动任何东西',
+      },
+    ],
+    confident: false,
+  },
+  turns: [],
+  pending: [],
+  totalTokens: 0,
+  rounds: 0,
+  maxRounds: 3,
+  degraded: null,
+  done: false,
+  reportText:
+    '系统: linux x86_64 Ubuntu 24.04.3 LTS\n启动器: ' +
+    DEMO_LAUNCHER_VERSION +
+    '\n错误码: E_DOCKER_MISSING\n（演示数据，不是这台机器的真实现场）\n',
 }

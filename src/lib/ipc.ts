@@ -15,6 +15,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { IpcError } from './types'
 import type {
   AppInfo,
+  AssistState,
   BackupMeta,
   BootState,
   DiagSection,
@@ -400,6 +401,48 @@ export function onPullProgress(cb: (p: PullProgress) => void): Promise<UnlistenF
 
 export function onStartProgress(cb: (s: ServiceStatus[]) => void): Promise<UnlistenFn> {
   return on<ServiceStatus[]>(EV_START, cb)
+}
+
+// ── AI 诊断助手（I4 §三） ────────────────────────────────────────────────
+//
+// 两层的顺序在 Rust 侧定死（先规则、后 AI），前端只负责按返回值把该显示的显示出来。
+// 演示模式下不调任何东西 —— 这一层会真的往网关发请求、真的动这台机器。
+
+/** 第一层 · 确定性规则。零 token，任何时候都能调。 */
+export async function assistDiagnose(ctx: {
+  errorCode?: string
+  errorMessage?: string
+  stage?: string
+}): Promise<AssistState> {
+  if (DEMO) return demo.demoAssist
+  return call<AssistState>('assist_diagnose', {
+    errorCode: ctx.errorCode ?? null,
+    errorMessage: ctx.errorMessage ?? null,
+    stage: ctx.stage ?? null,
+  })
+}
+
+/** 第二层 · 问一轮 AI。用不了时会在返回值的 degraded 里说明原因，**不抛错**。 */
+export async function assistAsk(): Promise<AssistState> {
+  if (DEMO) return demo.demoAssist
+  return call<AssistState>('assist_ask')
+}
+
+/** 确认执行一个会改动机器的动作；执行完自动复验并接着问下一轮。 */
+export async function assistConfirm(actionId: string, nextRound = true): Promise<AssistState> {
+  if (DEMO) return demo.demoAssist
+  return call<AssistState>('assist_confirm', { actionId, nextRound })
+}
+
+/** 执行规则层给的动作（不经过模型），执行完重新跑一遍规则。 */
+export async function assistRuleAction(actionId: string): Promise<AssistState> {
+  if (DEMO) return demo.demoAssist
+  return call<AssistState>('assist_rule_action', { actionId })
+}
+
+export async function assistReset(): Promise<void> {
+  if (DEMO) return
+  await call<void>('assist_reset')
 }
 
 /** 准备阶段（选源 / 取 compose / 写配置）的逐行文字，拉取页底部的日志框显示它。 */

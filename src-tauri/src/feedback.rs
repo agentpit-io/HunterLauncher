@@ -124,6 +124,20 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
         d.server_version.clone().unwrap_or_else(|| "—".into()),
         d.compose_version.clone().unwrap_or_else(|| "—".into()),
     ));
+    // I4：可执行文件定位的结果。0.1.3 在用户 mac 上那个 P0 之后，
+    // 「启动器用的是哪一个 docker」是收到 issue 时第一个要问的问题，
+    // 与其来回问，不如让诊断包自带
+    let probe = crate::runtime::which::docker_probe();
+    s.push_str(&format!("docker 定位: {}\n", probe.one_line()));
+    if !probe.found() {
+        for l in probe.detail_lines() {
+            s.push_str(&format!("  {l}\n"));
+        }
+        s.push_str(&format!(
+            "  PATH: {}\n",
+            std::env::var("PATH").unwrap_or_else(|_| "（没有）".into())
+        ));
+    }
     s.push_str(&format!("Hunter tag: {}\n", cfg.hunter.tag));
     s.push_str(&format!(
         "镜像源: {} ({})\n",
@@ -256,6 +270,16 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
                 .into(),
         ),
     });
+
+    // I4：诊断包里的路径会带着用户名（`/Users/zhangsan/.hunter/...`），
+    // 而这份东西的去处是 GitHub issue。统一再过一道 —— 用户名换成 `<用户目录>`，
+    // 后半截留着（「`.hunter/app/.env` 写不进去」还得靠它才看得出来）。
+    for sec in &mut out {
+        sec.body = redact::mask_home(&sec.body);
+        if let Some(n) = &sec.note {
+            sec.note = Some(redact::mask_home(n));
+        }
+    }
 
     out
 }
