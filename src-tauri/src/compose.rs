@@ -1527,7 +1527,6 @@ mod tests {
         assert_eq!(not_ready, vec!["api".to_string(), "opencode".to_string()]);
     }
 
-
     /// 安装阶段失败的原因不止「拉不下来」一种。
     ///
     /// I4 之前 `PullProgress` 只有一段错误文字，前端把**任何**安装失败都当成

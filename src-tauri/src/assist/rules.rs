@@ -440,7 +440,6 @@ mod tests {
         );
     }
 
-
     /// I4 取错误页截图时撞到的：装好之后再来诊断，5 个端口本来就被
     /// **我们自己的容器**占着 —— 规则层不能对着一套跑得好好的 Hunter 说
     /// 「5 个端口被别的程序占着」。
@@ -458,7 +457,11 @@ mod tests {
         let s = diagnose(&r);
         assert_eq!(s.rule, "ports-taken");
         assert!(s.detail.contains("api 8100"), "{}", s.detail);
-        assert!(!s.detail.contains("web 3100"), "自己占的那个不该列出来：{}", s.detail);
+        assert!(
+            !s.detail.contains("web 3100"),
+            "自己占的那个不该列出来：{}",
+            s.detail
+        );
     }
 
     /// 项目名冲突有自己的一条规则。

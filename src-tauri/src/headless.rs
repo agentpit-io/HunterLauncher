@@ -731,10 +731,7 @@ fn cmd_diagnose(st: &AppState, code: Option<&str>) -> AppResult<()> {
     // 整体再脱敏一遍（红线 2：诊断输出里不能有 key），并把路径里的用户名换掉 ——
     // 这段输出的去处通常是 GitHub issue，和界面上「复制诊断信息」拿到的是同一份东西，
     // 两边的口径必须一致（I4 场景 1 第一次跑时这里还漏着用户名）
-    println!(
-        "{}",
-        crate::redact::mask_home(&crate::redact::redact(&s))
-    );
+    println!("{}", crate::redact::mask_home(&crate::redact::redact(&s)));
     Ok(())
 }
 
@@ -1203,7 +1200,6 @@ mod tests {
         assert!(x.yes);
         assert!(x.action.is_none());
     }
-
 
     /// `--code` 让命令行也能按指定错误码跑一遍规则层
     /// （界面版是从状态机拿这个码的；`--diagnose` 没有状态机）。

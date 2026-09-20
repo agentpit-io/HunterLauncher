@@ -912,7 +912,6 @@ mod tests {
         );
     }
 
-
     /// 模型既没说话也没调工具时，界面上不能留一个空荡荡的「第 N 轮」——
     /// token 是真花掉了，得如实说出来（I4 场景 1 实测撞到过一次）。
     #[test]
@@ -946,7 +945,11 @@ mod tests {
         });
         let mut s3 = start(&r);
         let t3 = apply_response(&mut s3, &with_call);
-        assert!(t3.text.is_none(), "只调工具不说话不该硬塞一句话：{:?}", t3.text);
+        assert!(
+            t3.text.is_none(),
+            "只调工具不说话不该硬塞一句话：{:?}",
+            t3.text
+        );
         assert_eq!(t3.ran.len(), 1);
     }
 
