@@ -12,7 +12,7 @@ import { StatusDot } from '../components/StatusDot'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import type { LauncherUpdate } from '../lib/types'
-import { duration, percent, thousands } from '../lib/format'
+import { duration, percent, shanghaiStamp, thousands } from '../lib/format'
 import { useStore } from '../state/context'
 
 /**
@@ -86,6 +86,10 @@ export function Dashboard() {
   const services = d?.services ?? []
   const healthy = services.filter((s) => s.health === 'healthy').length
   const quota = d?.quota ?? null
+  // 网关给的 resetAt 是 ISO（2026-09-21T00:00:00+08:00），上屏太长。
+  // 网关自己写明了 reset_tz 是 Asia/Shanghai，所以只砍格式、**不做时区换算**
+  //（和 Rust 侧 gateway::pretty_reset 同一套规则）。认不出来的格式返回 null，不猜。
+  const quotaReset = shanghaiStamp(quota?.resetAt ?? null)
 
   const running = state.name === 'Ready' && (d?.running ?? false)
   const hasUpdate = !!d?.latestTag && !!d.hunterTag && d.latestTag !== d.hunterTag
@@ -157,6 +161,27 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* 今日额度用完了（I3 回归实测撞出来的）。
+          输入 key 那一页白纸黑字写着「额度用尽会明确提示，不会静默降级」，
+          可是面板上原来只摆着 304,144 / 300,000 两个数字 —— 用户在 Hunter 里
+          对话被挡住，回到这里看不出任何原因。这条横幅就是那句承诺的兑现。
+          只有网关明确说 exhausted（或 remaining ≤ 0）时才出现，读不到额度什么都不说。 */}
+      {quota?.exhausted && (
+        <div
+          className="mt-[14px] shrink-0 rounded-md border border-danger/40 bg-danger-soft px-4 py-2.5"
+          data-testid="quota-exhausted-banner"
+        >
+          <div className="text-sm font-medium text-danger">{t.dashboard.quotaExhaustedTitle}</div>
+          <div className="tnum mt-[4px] text-sm leading-[1.45] text-body">
+            {t.dashboard.quotaExhaustedBody(
+              thousands(quota.usedToday),
+              thousands(quota.limitDaily),
+              quotaReset,
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 四张统计卡 */}
       <div className="mt-[30px] grid shrink-0 grid-cols-4 gap-gap">
         <StatCard
@@ -169,9 +194,24 @@ export function Dashboard() {
               </>
             ) : null
           }
+          sub={
+            quota?.exhausted ? (
+              <span className="text-danger">
+                {quotaReset
+                  ? t.dashboard.quotaExhaustedCardWithReset(quotaReset)
+                  : t.dashboard.quotaExhaustedCard}
+              </span>
+            ) : undefined
+          }
           reason={t.app.noDataReason}
         >
-          {quota && <ProgressBar value={percent(quota.usedToday, quota.limitDaily)} className="mt-[13px]" />}
+          {quota && (
+            <ProgressBar
+              value={percent(quota.usedToday, quota.limitDaily)}
+              tone={quota.exhausted ? 'danger' : 'amber'}
+              className="mt-[13px]"
+            />
+          )}
         </StatCard>
 
         {/* 今日对话 / 晨报：上游没有接口，显示「—」并把原因写清楚（红线 1）。

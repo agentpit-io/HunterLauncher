@@ -7,6 +7,7 @@ import { Modal } from '../components/Modal'
 import { PlainLayout } from '../components/WizardLayout'
 import { useAsync } from '../lib/useAsync'
 import { copyText } from '../lib/clipboard'
+import { isoToShanghai } from '../lib/format'
 import * as ipc from '../lib/ipc'
 import { bytes } from '../lib/format'
 import { useStore } from '../state/context'
@@ -74,7 +75,11 @@ function LauncherCard() {
   return (
     <Card className="flex flex-col">
       <div className="flex items-center justify-between">
-        <div className="text-md font-medium text-ink">{t.update.launcherTitle}</div>
+        {/* 标题跟着状态走：原来无论什么状态都写「启动器有新版本」，
+            而正下方那一行写的是「启动器已经是最新版」—— 同一张卡片自己打自己（I3 自审）。 */}
+        <div className="text-md font-medium text-ink">
+          {d?.available ? t.update.launcherTitle : t.update.launcherCard}
+        </div>
         {d?.available && <Badge tone="amber">v{d.version}</Badge>}
       </div>
 
@@ -90,7 +95,9 @@ function LauncherCard() {
                 : (u.error?.message ?? t.app.noDataReason)}
       </div>
 
-      {d?.date && <div className="mt-[6px] text-xs text-muted">{t.update.published(d.date)}</div>}
+      {d?.date && (
+        <div className="mt-[6px] text-xs text-muted">{t.update.published(isoToShanghai(d.date))}</div>
+      )}
 
       {d?.notes && (
         <pre className="selectable mt-[14px] max-h-[160px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-log px-3 py-2.5 text-sm leading-[1.6] text-dim">
@@ -237,7 +244,9 @@ function HunterCard() {
   return (
     <Card className="flex flex-col">
       <div className="flex items-center justify-between">
-        <div className="text-md font-medium text-ink">{t.update.hunterTitle}</div>
+        <div className="text-md font-medium text-ink">
+          {d?.hasUpdate ? t.update.hunterTitle : t.update.hunterCard}
+        </div>
         {d?.hasUpdate && d.latest && <Badge tone="amber">v{d.latest}</Badge>}
       </div>
 
@@ -253,7 +262,9 @@ function HunterCard() {
                 : (c.error?.message ?? t.app.noDataReason)}
       </div>
       {d?.publishedAt && (
-        <div className="mt-[6px] text-xs text-muted">{t.update.published(d.publishedAt)}</div>
+        <div className="mt-[6px] text-xs text-muted">
+          {t.update.published(isoToShanghai(d.publishedAt))}
+        </div>
       )}
 
       {d?.majorJump && d.hasUpdate && (

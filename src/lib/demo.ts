@@ -434,3 +434,23 @@ export const demoOffline: OfflineImport = {
   tag: DEMO_LATEST_TAG,
   complete: true,
 }
+
+/**
+ * 「今日额度已经用完」的运行面板演示态（截图脚本 `HUNTER_DEMO_PAGE=dashboard-quota-exhausted`）。
+ *
+ * 数字取自 I3 回归当天网关的真实响应：`used_today` 已经**超过** `limit_daily`
+ * （304,144 / 300,000）—— 最后一次对话是在额度耗尽前发起的，算完才超。
+ * 进度条因此必须夹住，不能画出格子。
+ */
+export const demoRuntimeQuotaExhausted: RuntimeStatus = {
+  ...demoRuntime,
+  quota: {
+    usedToday: 304144,
+    limitDaily: 300000,
+    remaining: 0,
+    exhausted: true,
+    resetAt: '2026-09-21T00:00:00+08:00',
+    rpm: 20,
+    concurrency: 4,
+  },
+}

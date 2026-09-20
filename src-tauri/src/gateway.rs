@@ -45,6 +45,31 @@ pub struct QuotaInfo {
     pub exhausted: bool,
 }
 
+/// 千分位。与前端 `format.ts` 的 `thousands()` 同一套写法 —— 额度数字在界面上
+/// 到处都是 `300,000` 的形状，只有这条提醒里原来是裸数字。
+pub(crate) fn thousands(n: i64) -> String {
+    let neg = n < 0;
+    let digits = n.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if neg {
+        out.push('-');
+    }
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+impl QuotaInfo {
+    /// 「2026-09-21 00:00（上海）」。网关没给 `reset_at` 时返回 None —— 不猜一个出来。
+    pub fn reset_hint(&self) -> Option<String> {
+        self.reset_at.as_deref().map(pretty_reset)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelAlias {
@@ -203,10 +228,13 @@ pub fn check_key(key: &str, timeout: Duration) -> KeyCheckResult {
             message: Some(format!(
                 "这把 key 是好的，但今天的额度已经用完了（已用 {} / 上限 {}）。{}装可以照装，\
                  装完之后对话会被网关挡住，直到额度重置。现在就想用的话，下一步改用你自己的模型 key。",
-                q.used_today,
-                q.limit_daily,
-                match q.reset_at.as_deref().map(pretty_reset) {
-                    Some(t) => format!("额度在 {t} 重置。"),
+                // 界面上别处的数字都带千分位（视觉稿里就是 300,000），这里也要带 ——
+                // I3 的回归截图上一眼就能看出 `304144 / 300000` 和旁边的卡片不是一套
+                thousands(q.used_today),
+                thousands(q.limit_daily),
+                match q.reset_hint() {
+                    // 「（上海）」后面不再空一格：中文标点后跟空格读起来是断开的
+                    Some(t) => format!("额度在 {t}重置。"),
                     None => String::new(),
                 }
             )),
@@ -262,7 +290,7 @@ pub fn quota(key: &str, timeout: Duration) -> AppResult<QuotaInfo> {
 /// 网关自己就说了是上海时间（`reset_tz: Asia/Shanghai`），所以只要把 `T` 换成空格、
 /// 砍掉秒与时区，再补一句「（上海）」。**不做时区换算** —— 那需要一个时区库，
 /// 而这里唯一要传达的信息是「明天 0 点」。认不出来的格式原样返回，不猜。
-fn pretty_reset(iso: &str) -> String {
+pub(crate) fn pretty_reset(iso: &str) -> String {
     let (date, rest) = match iso.split_once('T') {
         Some(x) => x,
         None => return iso.to_string(),
@@ -665,6 +693,36 @@ mod tests {
         assert_eq!(pretty_reset("明天"), "明天");
         assert_eq!(pretty_reset("2026-09-21"), "2026-09-21");
         assert_eq!(pretty_reset("2026-09-21T0"), "2026-09-21T0");
+    }
+
+    #[test]
+    fn 千分位与界面上别处一致() {
+        assert_eq!(thousands(300000), "300,000");
+        assert_eq!(thousands(304144), "304,144");
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(-1234567), "-1,234,567");
+        assert_eq!(thousands(i64::MIN), "-9,223,372,036,854,775,808");
+    }
+
+    #[test]
+    fn 额度用尽的提醒里数字带千分位_并且句子读得通() {
+        let q = QuotaInfo {
+            used_today: 304144,
+            limit_daily: 300000,
+            remaining: 0,
+            reset_at: Some("2026-09-21T00:00:00+08:00".into()),
+            rpm: Some(20),
+            concurrency: Some(4),
+            exhausted: true,
+        };
+        let hint = q.reset_hint().expect("网关给了 reset_at");
+        assert_eq!(hint, "2026-09-21 00:00（上海）");
+        let msg = format!("额度在 {hint}重置。");
+        // I3 回归截图上看出来的两处：裸数字、以及「（上海） 重置」中间多一个空格
+        assert!(!msg.contains("） 重"), "中文右括号后面不该再空一格：{msg}");
+        assert_eq!(thousands(q.used_today), "304,144");
     }
 
     #[test]

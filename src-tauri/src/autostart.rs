@@ -259,6 +259,17 @@ pub fn plist_content(exe: &str) -> String {
     )
 }
 
+/// 凡是动 `XDG_CONFIG_HOME` / `HOME` 这类**进程级**环境变量的测试都要先拿这把锁，
+/// 否则 cargo 的并行测试会互相踩（和 `paths::env_lock` 同一个理由）。
+#[cfg(test)]
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static L: OnceLock<Mutex<()>> = OnceLock::new();
+    L.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     #[allow(unused_imports)]
@@ -281,6 +292,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn 自启文件走_xdg_config_home() {
+        let _g = env_lock();
         let old = std::env::var("XDG_CONFIG_HOME").ok();
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/hunter-xdg-test");
         assert_eq!(
@@ -302,12 +314,36 @@ mod tests {
         assert!(c.contains(APP_ID));
     }
 
-    /// 默认必须是关的（方案 §5.8）。这条测试在三个平台上都跑：
-    /// 只要没人调过 `set(true)`，`status()` 就该是 false。
+    /// 默认必须是关的（方案 §5.8）：**配置目录是干净的时候**，`status()` 就该是 false。
+    ///
+    /// 原来这条测试直接读真实用户的 `~/.config`，于是它的结果取决于跑测试那台机器的状态 ——
+    /// I3 就真的被它绊了一下：同一轮回归里 `--tray-menu autostart` 把自启打开了，
+    /// 之后 `cargo test` 就红，而代码一个字没改。更普通的情形是：开发者自己把启动器
+    /// 设成了开机自启，于是他本机的 `cargo test` 永远过不了。
+    ///
+    /// 单元测试不该去读用户的真实配置。现在把 `XDG_CONFIG_HOME` 指到一个空的临时目录，
+    /// 断言「干净环境下没有自启项」—— 这才是这条测试本来想说的话。
+    /// macOS / Windows 上路径不看这个变量，那两个平台仍然只能断言函数跑得通。
     #[test]
-    fn 默认没有自启项() {
-        // 注：CI 与开发机上都不会有人给这个程序装自启项；
-        // 真有的话这条测试失败是对的 —— 说明环境脏了。
-        assert!(!status(), "默认状态下不该存在自启项");
+    #[cfg(target_os = "linux")]
+    fn 配置目录干净时没有自启项() {
+        let _g = env_lock();
+        let old = std::env::var("XDG_CONFIG_HOME").ok();
+        let dir = std::env::temp_dir().join(format!("hunter-autostart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时配置目录");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        assert!(!status(), "干净的配置目录里不该有自启项");
+        assert_eq!(
+            desktop_file(),
+            dir.join("autostart/hunter-launcher.desktop")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        match old {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }

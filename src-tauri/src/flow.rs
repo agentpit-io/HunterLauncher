@@ -172,11 +172,14 @@ pub fn prepare(
     // 离线包导入过就**整个跳过测速**：那台机器多半根本连不上任何源（这正是用离线包的原因），
     // 去测速只会白等两个超时然后报错 —— 而镜像其实已经躺在本机了。
     // 用包里带的那个前缀就行，它是从镜像名反推出来的，一定对得上。
+    // `cand` 是**自有的** `Candidate`（I3：Candidate 的字段换成了 Cow，
+    // 自定义源不必再 `Box::leak` 进 'static，见 registry.rs 的类型注释）。
     let (cand, probes) = if offline {
-        let c: &'static registry::Candidate = registry::CANDIDATES
+        let c: registry::Candidate = registry::CANDIDATES
             .iter()
             .find(|c| c.prefix == cfg.hunter.registry_prefix)
-            .unwrap_or_else(|| Box::leak(Box::new(registry::custom(&cfg.hunter.registry_prefix))));
+            .cloned()
+            .unwrap_or_else(|| registry::custom(&cfg.hunter.registry_prefix));
         note(&format!(
             "离线模式：镜像已由离线包导入，跳过镜像源测速（源 {}）",
             c.prefix
@@ -185,8 +188,8 @@ pub fn prepare(
     } else {
         match opts.registry.as_deref() {
             Some(id) if registry::by_id(id).is_some() => {
-                let c = registry::by_id(id).unwrap();
-                let p = registry::probe(c, &opts.tag, PROBE_TIMEOUT);
+                let c = registry::by_id(id).expect("上一行的 guard 刚判过").clone();
+                let p = registry::probe(&c, &opts.tag, PROBE_TIMEOUT);
                 if !p.available {
                     return Err(AppError::new(
                         Code::PullFailed,
@@ -213,7 +216,7 @@ pub fn prepare(
                         ),
                     ));
                 }
-                let c: &'static registry::Candidate = Box::leak(Box::new(registry::custom(prefix)));
+                let c = registry::custom(prefix);
                 note(&format!(
                     "镜像源：自定义 {}（用户手填，没有做可用性探测）",
                     c.prefix
@@ -236,11 +239,11 @@ pub fn prepare(
                     ));
                 }
                 note(&format!("选定：{}", c.label));
-                (c, p)
+                (c.clone(), p)
             }
         }
     };
-    cfg.apply_registry(cand);
+    cfg.apply_registry(&cand);
     if let Ok(mut g) = state.probes.lock() {
         *g = probes;
     }
@@ -248,7 +251,7 @@ pub fn prepare(
     // ② compose 文件
     let (yml, src, cnote) = config::fetch_compose(&opts.tag, NET_TIMEOUT);
     config::write_compose(&yml)?;
-    std::fs::write(paths::version_file(), format!("{}\n", opts.tag)).ok();
+    write_version_file(&opts.tag);
     match src {
         config::ComposeSource::Download => note(&format!(
             "compose：已按 tag v{} 下载并校验（{} 字节）",
@@ -711,6 +714,18 @@ pub fn rewrite_env_and_override(
         &cfg.hunter.base_prefix,
         cfg.hunter.web_local_only(),
     )
+}
+
+/// 写 `~/.hunter/app/VERSION` 并把它收成 600（待办池 P2-16）。
+///
+/// 里面只有一个版本号，没有任何 secret，而且外层目录已经是 700 —— 所以这不是安全修复，
+/// 是**口径统一**：`~/.hunter` 下由启动器写出来的文件要么全是 600，要么就别在文档里
+/// 写「统一 600」。原来这一个文件跟着 umask 走（测试机上是 644）。
+pub fn write_version_file(tag: &str) {
+    let p = paths::version_file();
+    if std::fs::write(&p, format!("{tag}\n")).is_ok() {
+        let _ = paths::chmod_600(&p);
+    }
 }
 
 fn next_registry(current_prefix: &str, tag: &str) -> Option<&'static registry::Candidate> {

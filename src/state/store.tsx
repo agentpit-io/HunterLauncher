@@ -16,6 +16,7 @@ const DEMO_STATES: Record<string, State> = {
   start: { name: 'Starting' },
   done: { name: 'Done' },
   dashboard: { name: 'Ready' },
+  'dashboard-quota-exhausted': { name: 'Ready' },
   settings: { name: 'Ready' },
   logs: { name: 'Ready' },
   feedback: { name: 'Ready' },

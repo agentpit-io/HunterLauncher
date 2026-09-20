@@ -209,6 +209,16 @@ const zhCN = {
     sublineStopped: (tag: string) => `${tag} · 容器已停止`,
     openHunter: '打开 Hunter',
     cardQuota: '今日模型额度',
+    // 额度用尽：运行面板上必须说出来。I3 回归实测撞到过一次 ——
+    // 网关侧 remaining 已经是 0、Hunter 里的对话被挡住了，而面板上只摆着两个数字
+    // （304,144 / 300,000），一个字都没提。这和输入 key 那一页写的
+    // 「额度用尽会明确提示，不会静默降级」自相矛盾。
+    quotaExhaustedCard: '已用完',
+    quotaExhaustedCardWithReset: (t: string) => `已用完 · ${t}重置`,
+    quotaExhaustedTitle: '今日模型额度已经用完了',
+    quotaExhaustedBody: (used: string, limit: string, reset: string | null) =>
+      `已用 ${used} / ${limit}。Hunter 里的对话会被网关挡住${reset ? `，直到 ${reset} 重置` : ''}。` +
+      `想现在就继续用，可以在设置里把模型换成你自己的 key。`,
     cardConversations: '今日对话',
     cardConversationsSub: '深度分析',
     cardBrief: '晨报',
@@ -294,7 +304,10 @@ const zhCN = {
   },
   update: {
     // ── 启动器自更新（方案 §10） ──
+    /** 卡片标题：有新版本时用它 */
     launcherTitle: '启动器有新版本',
+    /** 卡片标题：没有新版本 / 还没查出来时用它（I3：原来两种状态都写「有新版本」） */
+    launcherCard: '启动器',
     launcherLine: (from: string, to: string) => `v${from} → v${to}`,
     launcherNow: '立即更新',
     launcherLater: '以后再说',
@@ -313,6 +326,7 @@ const zhCN = {
     manualReveal: '打开所在目录',
     // ── Hunter 升级（方案 §5.6、§10） ──
     hunterTitle: 'Hunter 有新版本',
+    hunterCard: 'Hunter',
     hunterCurrent: (v: string) => `当前 v${v}`,
     hunterLatest: (v: string) => `最新 v${v}`,
     hunterNone: (v: string) => `Hunter 已经是最新版 v${v}`,

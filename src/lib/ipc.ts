@@ -177,7 +177,11 @@ export async function startingStatus(): Promise<RuntimeStatus> {
 // ── 运行面板 ─────────────────────────────────────────────────────────────
 
 export async function runtimeStatus(): Promise<RuntimeStatus> {
-  if (DEMO) return demo.demoRuntime
+  if (DEMO) {
+    return demoPage() === 'dashboard-quota-exhausted'
+      ? demo.demoRuntimeQuotaExhausted
+      : demo.demoRuntime
+  }
   return call<RuntimeStatus>('runtime_status')
 }
 

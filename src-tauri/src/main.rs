@@ -24,7 +24,23 @@ fn main() {
 
     // `--tray-menu <id>`：交给**已经在跑的那个实例**去执行（single-instance 插件转发）。
     // 没有实例在跑的话这一路就是正常启动一次界面，参数被忽略 —— 下面那句提示不该出现。
-    let tray_cmd = hunter_launcher_lib::tray_menu_arg(&args);
+    let tray_kind = hunter_launcher_lib::tray_menu_arg_kind(&args);
+    // 写了 `--tray-menu` 但那个菜单项不认识（打错字、抄错文档）：**现在就退，退出码 2**。
+    // 原来是提示一句再照常开界面、退出码 0 —— 脚本里看起来像是成功了，
+    // 而实际上什么都没发生（I3 自审）。
+    if let hunter_launcher_lib::TrayArg::Unknown(v) = &tray_kind {
+        if v.is_empty() {
+            eprintln!("--tray-menu 后面要跟一个菜单项。");
+        } else {
+            eprintln!("--tray-menu 不认识「{v}」这一项，什么都没做。");
+        }
+        eprintln!("  可用的菜单项：{}", hunter_launcher_lib::tray_menu_ids());
+        std::process::exit(2);
+    }
+    let tray_cmd = match &tray_kind {
+        hunter_launcher_lib::TrayArg::Id(v) => Some(v.clone()),
+        _ => None,
+    };
     let minimized = hunter_launcher_lib::minimized_arg(&args);
 
     // 没有图形环境就别去 build 一个 GUI：tao 会在 GTK 初始化那一步 panic，

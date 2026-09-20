@@ -4,12 +4,15 @@
 export function ProgressBar({
   value,
   done = false,
+  tone = 'amber',
   height = 6,
   className = '',
 }: {
   /** 0–100 */
   value: number
   done?: boolean
+  /** 'danger' 用在「额度已经用完」这种条已经满了但不是好事的地方（I3） */
+  tone?: 'amber' | 'danger'
   height?: number
   className?: string
 }) {
@@ -25,7 +28,7 @@ export function ProgressBar({
     >
       <div
         style={{ width: `${done ? 100 : pct}%` }}
-        className={`h-full rounded-full transition-[width] duration-300 ease-out ${done ? 'bg-slate-done' : 'bg-amber'}`}
+        className={`h-full rounded-full transition-[width] duration-300 ease-out ${done ? 'bg-slate-done' : tone === 'danger' ? 'bg-danger' : 'bg-amber'}`}
       />
     </div>
   )

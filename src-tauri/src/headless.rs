@@ -276,9 +276,9 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     match &check.quota {
         Some(q) => println!(
             "  ✓ key 有效 · 今日已用 {} / {} · 剩 {} · 每分钟 {} 次 · 并发 {}",
-            q.used_today,
-            q.limit_daily,
-            q.remaining,
+            gateway::thousands(q.used_today),
+            gateway::thousands(q.limit_daily),
+            gateway::thousands(q.remaining),
             q.rpm.map(|x| x.to_string()).unwrap_or_else(|| "—".into()),
             q.concurrency
                 .map(|x| x.to_string())
@@ -437,6 +437,22 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
 }
 
 /// 读 key：优先 `--key-file`，否则交互式输入（终端里不回显）。
+/// key 文件的 POSIX 权限位。Windows 上没有这一套，返回 None（靠的是用户目录的 ACL）。
+fn file_mode(path: &str) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 fn read_key(args: &Args) -> AppResult<String> {
     if let Some(p) = &args.key_file {
         let s = std::fs::read_to_string(p)
@@ -450,6 +466,17 @@ fn read_key(args: &Args) -> AppResult<String> {
         }
         crate::redact::register_secret(&k);
         println!("  从 {p} 读到一把 key（{}）", crate::redact::mask_key(&k));
+        // 帮助里写着「文件建议权限 600」，但只写不查等于没写（I3 自审）。
+        // 同机的其他用户读得到这个文件，这把 key 就等于是公开的。
+        // 只提醒不中断：脚本化场景里用户可能有自己的理由（例如挂在只读的 secret 卷上）。
+        if let Some(mode) = file_mode(p) {
+            if mode & 0o077 != 0 {
+                println!(
+                    "  ⚠ {p} 的权限是 {:o}，同机的其他用户也读得到这把 key。建议 chmod 600 {p}",
+                    mode
+                );
+            }
+        }
         return Ok(k);
     }
     if !std::io::stdin().is_terminal() {
@@ -498,9 +525,28 @@ fn cmd_status(st: &AppState) -> AppResult<()> {
         println!("最新：{t}");
     }
     match &s.quota {
+        // 额度用完了要**说出来**，不能只把两个数字摆在那里让用户自己做减法
+        // （I3 回归实测：额度真用完那次，这里只显示「剩 0」，而 Hunter 里的对话
+        //  已经被网关挡住了 —— 界面上一个字都没提）。
+        Some(q) if q.exhausted => {
+            println!(
+                "额度：今日已用 {} / {} · 已用完",
+                gateway::thousands(q.used_today),
+                gateway::thousands(q.limit_daily)
+            );
+            println!(
+                "      Hunter 里的对话会被网关挡住，直到{}重置；想现在就用就在设置里换成自带模型 key。",
+                match q.reset_hint() {
+                    Some(t) => t,
+                    None => "额度".into(),
+                }
+            );
+        }
         Some(q) => println!(
             "额度：今日已用 {} / {} · 剩 {}",
-            q.used_today, q.limit_daily, q.remaining
+            gateway::thousands(q.used_today),
+            gateway::thousands(q.limit_daily),
+            gateway::thousands(q.remaining)
         ),
         None => println!("额度：—（网关没读到）"),
     }

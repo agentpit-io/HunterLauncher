@@ -46,7 +46,7 @@ use crate::compose::{self, PullProgress};
 use crate::config;
 use crate::err::{AppError, AppResult, Code};
 use crate::flow::{self, AppState, InstallOptions};
-use crate::{linfo, lwarn, paths, registry};
+use crate::{linfo, lwarn, registry};
 
 /// Release 信息的缓存时长。方案 §11.3 写的就是 6 小时。
 ///
@@ -391,7 +391,7 @@ fn do_upgrade(
 ) -> AppResult<()> {
     // ③ 写新配置
     config::write_compose(new_yml)?;
-    std::fs::write(paths::version_file(), format!("{target}\n")).ok();
+    crate::flow::write_version_file(target);
     let mut cfg = cfg0.clone();
     cfg.hunter.tag = target.to_string();
     flow::rewrite_env_and_override(state, &cfg, target)?;
@@ -480,7 +480,7 @@ fn rollback(
 ) -> AppResult<String> {
     let files = crate::backup::restore_config(backup_id)?;
     note(&format!("已写回升级前的 {}", files.join("、")));
-    std::fs::write(paths::version_file(), format!("{}\n", cfg0.hunter.tag)).ok();
+    crate::flow::write_version_file(&cfg0.hunter.tag);
 
     // `launcher.toml` 整份写回升级前那一版，**不是只改 tag**。
     // 因为升级过程中 `flow::pull` 可能已经换过镜像源并把它存进了 launcher.toml；

@@ -7,45 +7,60 @@
 //! 匿名拉取流程（`GET /v2/` 拿 challenge → 换 token → `HEAD /v2/<repo>/manifests/<tag>`），
 //! 只有返回 2xx 的才算数。探不到就如实标成「不可用」并写清 HTTP 状态 —— 不做假的测速界面。
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
 use crate::err::{AppError, AppResult, Code};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 一个镜像源候选。
+///
+/// 六个字段都是 [`Cow<'static, str>`] 而不是 `&'static str`（待办池 P1-22，I3 改的）。
+/// 内置的两个源用 `Cow::Borrowed`，和以前一样是零成本的常量；**用户手填的自定义源
+/// 用 `Cow::Owned`**，这样 [`custom`] 就不必再 `Box::leak` 一次。
+///
+/// 原来的写法是「字段定死 `&'static str` → 自定义源只能泄漏一个 `String` 进 `'static`」，
+/// 设置页每保存一次就泄一份（`registry::custom` 一处 + `flow::prepare` 两处）。
+/// 单次最多 253 字节、一个进程生命周期里以 KB 计，所以它一直排在 P1 末尾；
+/// 但「泄漏」这种事只会越滚越多，换成 Cow 之后整个代码库里一个 `Box::leak` 都不剩。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     /// 稳定标识，写进 launcher.toml
-    pub id: &'static str,
+    pub id: Cow<'static, str>,
     /// Hunter 四个自家镜像的前缀
-    pub prefix: &'static str,
+    pub prefix: Cow<'static, str>,
     /// postgres / redis 的前缀。GHCR 上没有它们，走 Docker Hub 官方库
-    pub base_prefix: &'static str,
+    pub base_prefix: Cow<'static, str>,
     /// 界面上显示的名字
-    pub label: &'static str,
+    pub label: Cow<'static, str>,
     /// registry 主机名，探测用
-    pub host: &'static str,
+    pub host: Cow<'static, str>,
     /// 探测用的仓库路径
-    pub probe_repo: &'static str,
+    pub probe_repo: Cow<'static, str>,
 }
 
 /// 两个候选源。顺序即「其它条件相同时的偏好」。
-pub const CANDIDATES: &[Candidate] = &[
+///
+/// 是 `static` 而不是 `const`：`Cow` 带 drop glue，`const X: &[T]` 那种写法要靠
+/// 常量提升（promotion）才能拿到 `'static`，而带 drop glue 的类型不给提升。
+/// `static` 本身就在静态存储区、永远不析构，正好。
+pub static CANDIDATES: [Candidate; 2] = [
     Candidate {
-        id: "ghcr",
-        prefix: "ghcr.io/agentpit-io",
-        base_prefix: "docker.io/library",
-        label: "GHCR · GitHub",
-        host: "ghcr.io",
-        probe_repo: "agentpit-io/hunter-community-web",
+        id: Cow::Borrowed("ghcr"),
+        prefix: Cow::Borrowed("ghcr.io/agentpit-io"),
+        base_prefix: Cow::Borrowed("docker.io/library"),
+        label: Cow::Borrowed("GHCR · GitHub"),
+        host: Cow::Borrowed("ghcr.io"),
+        probe_repo: Cow::Borrowed("agentpit-io/hunter-community-web"),
     },
     Candidate {
-        id: "tencent",
-        prefix: "hkccr.ccs.tencentyun.com/agentpit",
-        base_prefix: "hkccr.ccs.tencentyun.com/agentpit",
-        label: "腾讯云 · 香港",
-        host: "hkccr.ccs.tencentyun.com",
-        probe_repo: "agentpit/hunter-community-web",
+        id: Cow::Borrowed("tencent"),
+        prefix: Cow::Borrowed("hkccr.ccs.tencentyun.com/agentpit"),
+        base_prefix: Cow::Borrowed("hkccr.ccs.tencentyun.com/agentpit"),
+        label: Cow::Borrowed("腾讯云 · 香港"),
+        host: Cow::Borrowed("hkccr.ccs.tencentyun.com"),
+        probe_repo: Cow::Borrowed("agentpit/hunter-community-web"),
     },
 ];
 
@@ -106,22 +121,17 @@ pub fn prefix_ok(prefix: &str) -> bool {
 ///
 /// 调用前务必先过 [`prefix_ok`]。
 pub fn custom(prefix: &str) -> Candidate {
-    // 'static 的要求让自定义源不能直接塞进 Candidate；这里只在需要时泄漏一次，
-    // 一个进程最多泄漏几十字节，换来的是全链路一套类型。
-    let prefix: &'static str = Box::leak(
-        prefix
-            .trim()
-            .trim_end_matches('/')
-            .to_string()
-            .into_boxed_str(),
-    );
+    let prefix = prefix.trim().trim_end_matches('/').to_string();
+    let host = prefix.split('/').next().unwrap_or(&prefix).to_string();
     Candidate {
-        id: "custom",
-        prefix,
-        base_prefix: prefix,
-        label: "自定义镜像源",
-        host: prefix.split('/').next().unwrap_or(prefix),
-        probe_repo: "",
+        id: Cow::Borrowed("custom"),
+        prefix: Cow::Owned(prefix.clone()),
+        base_prefix: Cow::Owned(prefix),
+        label: Cow::Borrowed("自定义镜像源"),
+        host: Cow::Owned(host),
+        // 自定义源没有探测用的仓库路径 —— 我们不知道用户把镜像放在哪个 repo 下。
+        // `probe` 见到空串会如实返回「这个源没有配探测用的仓库路径」，不假装探过。
+        probe_repo: Cow::Borrowed(""),
     }
 }
 
@@ -148,21 +158,21 @@ pub fn probe_all(tag: &str, timeout: Duration) -> Vec<ProbeResult> {
 
 pub fn probe(c: &Candidate, tag: &str, timeout: Duration) -> ProbeResult {
     let t0 = Instant::now();
-    let r = fetch_manifest(c.host, c.probe_repo, tag, timeout);
+    let r = fetch_manifest(&c.host, &c.probe_repo, tag, timeout);
     let elapsed_ms = t0.elapsed().as_millis() as u64;
     match r {
         Ok(()) => ProbeResult {
-            id: c.id.into(),
-            label: c.label.into(),
-            prefix: c.prefix.into(),
+            id: c.id.to_string(),
+            label: c.label.to_string(),
+            prefix: c.prefix.to_string(),
             available: true,
             elapsed_ms,
             detail: None,
         },
         Err(e) => ProbeResult {
-            id: c.id.into(),
-            label: c.label.into(),
-            prefix: c.prefix.into(),
+            id: c.id.to_string(),
+            label: c.label.to_string(),
+            prefix: c.prefix.to_string(),
             available: false,
             elapsed_ms,
             detail: Some(e.msg),
@@ -497,7 +507,7 @@ mod tests {
         const RETIRED_SUBSTRINGS: [&str; 1] = [
             "hunter-dl-1253756459", // 广州区下载桶（已删除，香港桶是 hunter-dl-hk-…）· retired-mirror-ok
         ];
-        for c in CANDIDATES {
+        for c in CANDIDATES.iter() {
             for h in RETIRED_HOSTS {
                 assert_ne!(c.host, h, "候选源 {} 用的是已停用的主机 {h}", c.id);
                 assert!(
@@ -611,6 +621,52 @@ mod tests {
             pick("riscv64"),
             None,
             "没有的架构要如实返回 None，不能退而求其次拿 unknown 那条"
+        );
+    }
+
+    /// 待办池 P1-22：自定义源原来会 `Box::leak` 一份字符串进 `'static`，
+    /// 设置页每保存一次泄一点。换成 Cow 之后，自定义源的字段必须是 **Owned**
+    /// （自己持有、跟着 Candidate 一起析构），内置两个源仍然是 **Borrowed**（零分配）。
+    #[test]
+    fn 自定义源自己持有字符串_内置源仍然是借用的() {
+        let c = custom("registry.example.com/agentpit");
+        assert!(
+            matches!(c.prefix, Cow::Owned(_)),
+            "自定义源的 prefix 必须是 Owned，否则又回到 Box::leak 那条路上了"
+        );
+        assert!(matches!(c.base_prefix, Cow::Owned(_)));
+        assert!(matches!(c.host, Cow::Owned(_)));
+        assert_eq!(c.prefix, "registry.example.com/agentpit");
+        assert_eq!(c.host, "registry.example.com");
+        assert_eq!(c.id, "custom");
+
+        for b in CANDIDATES.iter() {
+            assert!(
+                matches!(b.prefix, Cow::Borrowed(_)),
+                "内置源 {} 不该分配堆内存",
+                b.id
+            );
+            assert!(matches!(b.label, Cow::Borrowed(_)));
+        }
+    }
+
+    /// 尾部斜杠与首尾空白在构造时就吃掉 —— 它会原样进 `.env` 与覆盖文件。
+    #[test]
+    fn 自定义源的尾斜杠与空白在构造时就去掉() {
+        let c = custom("  registry.example.com/agentpit/  ");
+        assert_eq!(c.prefix, "registry.example.com/agentpit");
+        assert_eq!(c.base_prefix, "registry.example.com/agentpit");
+    }
+
+    /// 自定义源没有探测用的 repo，`probe` 必须如实说「探不了」而不是假装可用（红线 1）。
+    #[test]
+    fn 自定义源探测时如实报告探不了() {
+        let c = custom("registry.example.com/agentpit");
+        let r = probe(&c, "1.2.0", Duration::from_millis(1));
+        assert!(!r.available);
+        assert!(
+            r.detail.unwrap_or_default().contains("探测用的仓库路径"),
+            "要说清是「没配探测路径」，不能含糊成一个网络错误"
         );
     }
 
