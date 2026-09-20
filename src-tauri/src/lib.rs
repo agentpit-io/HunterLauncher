@@ -233,11 +233,27 @@ pub fn run() {
         .expect("启动器窗口创建失败");
 }
 
+/// `--tray-menu` 的三种下场。
+///
+/// 为什么要区分「没写这个参数」和「写了但认不出来」（I3 自审）：
+/// 原来两种都返回 `None`，于是 `hunter-launcher --tray-menu stopp`（打错一个字母）
+/// 会**照常开一个界面、退出码 0**，脚本里看起来像是成功了。
+/// 拿不到结果就得说出来，不能让调用方以为做成了（红线 1 的同一条道理）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrayArg {
+    /// 命令行里没有 `--tray-menu`
+    Absent,
+    /// 认出来了，就是这一项
+    Id(String),
+    /// 写了 `--tray-menu`，但后面跟的东西不是托盘菜单里的 id（或者根本没跟）
+    Unknown(String),
+}
+
 /// 从一串命令行参数里认出 `--tray-menu <id>`。
 ///
 /// 只认**托盘菜单里真有的那些 id**（[`tray::MENU_IDS`]）—— 这个入口能让任何本机进程
 /// 指使启动器停容器、开自启，不能让它变成一个「随便传个字符串进来看看会怎样」的口子。
-pub fn tray_menu_arg(argv: &[String]) -> Option<String> {
+pub fn tray_menu_arg_kind(argv: &[String]) -> TrayArg {
     let mut it = argv.iter();
     while let Some(a) = it.next() {
         let val = if a == "--tray-menu" {
@@ -247,13 +263,30 @@ pub fn tray_menu_arg(argv: &[String]) -> Option<String> {
         };
         if let Some(v) = val {
             if tray::MENU_IDS.contains(&v) {
-                return Some(v.to_string());
+                return TrayArg::Id(v.to_string());
             }
             lwarn!("--tray-menu 收到一个不认识的菜单项：{v}");
-            return None;
+            return TrayArg::Unknown(v.to_string());
+        }
+        // `--tray-menu` 是最后一个参数、后面什么都没跟
+        if a == "--tray-menu" {
+            lwarn!("--tray-menu 后面没有跟菜单项");
+            return TrayArg::Unknown(String::new());
         }
     }
-    None
+    TrayArg::Absent
+}
+
+pub fn tray_menu_arg(argv: &[String]) -> Option<String> {
+    match tray_menu_arg_kind(argv) {
+        TrayArg::Id(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// 可用菜单项，给命令行的报错用。
+pub fn tray_menu_ids() -> String {
+    tray::MENU_IDS.join(" | ")
 }
 
 /// 开机自启拉起来的那一次带 `--minimized`：**进程起来、托盘出现，但不弹窗**。
@@ -327,6 +360,40 @@ mod tests {
         // 这个入口能指使启动器停容器，不能变成任意字符串的口子
         assert_eq!(tray_menu_arg(&["--tray-menu".into(), "rm-rf".into()]), None);
         assert_eq!(tray_menu_arg(&["--tray-menu".into(), "".into()]), None);
+    }
+
+    /// I3 自审：「没写这个参数」和「写了但认不出来」必须分得开 ——
+    /// 原来两种都是 `None`，于是打错一个字母的 `--tray-menu stopp` 会照常开一个界面、
+    /// 退出码 0，脚本里看起来像是成功了，实际上什么都没做。
+    #[test]
+    fn 没写和写错要分得开() {
+        assert_eq!(tray_menu_arg_kind(&[]), TrayArg::Absent);
+        assert_eq!(tray_menu_arg_kind(&["--minimized".into()]), TrayArg::Absent);
+        assert_eq!(
+            tray_menu_arg_kind(&["--tray-menu".into(), "stop".into()]),
+            TrayArg::Id("stop".into())
+        );
+        assert_eq!(
+            tray_menu_arg_kind(&["--tray-menu".into(), "stopp".into()]),
+            TrayArg::Unknown("stopp".into())
+        );
+        assert_eq!(
+            tray_menu_arg_kind(&["--tray-menu=rm-rf".into()]),
+            TrayArg::Unknown("rm-rf".into())
+        );
+        // `--tray-menu` 是最后一个参数、后面什么都没跟
+        assert_eq!(
+            tray_menu_arg_kind(&["--tray-menu".into()]),
+            TrayArg::Unknown(String::new())
+        );
+    }
+
+    #[test]
+    fn 报错里列得出全部菜单项() {
+        let s = tray_menu_ids();
+        for id in tray::MENU_IDS {
+            assert!(s.contains(id), "报错里少了 {id}：{s}");
+        }
     }
 
     #[test]

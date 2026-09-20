@@ -632,12 +632,91 @@ fn set_kv(src: &str, key: &str, value: &str) -> String {
     s
 }
 
+/// 把 `.env` 写完之后**读回来逐项对账**。
+///
+/// I2 修「模型名里的换行会注入进 `.env`」用的是「写之前查」（[`check_env_value`]）。
+/// 那一道拦得住已知的形状，但拦不住没想到的形状 —— 而这个文件里有 hunter key、
+/// 数据库口令、JWT secret，写错一个字符就是一次真实的事故。
+///
+/// 所以再加一道**结果校验**：把刚写出去的文件按 `.env` 的语法解析回来，逐项比对
+/// 「我本来要写的值」。任何形式的注入（换行、`export`、引号、同名键写两遍）都会让
+/// 至少一项对不上，当场报错而不是装到一半才发现。
+///
+/// 三条规则：
+/// 1. **每个键只能出现一次**。注入最典型的后果就是多出一行同名键 —— 而 `parse_env`
+///    是后写的覆盖先写的，只看解析结果反而看不出来，所以这里单独数一遍行。
+/// 2. 用户能左右的那几项值必须一字不差（含五个端口）。
+/// 3. 报错里**只说键名，绝不带值**（红线 2：key 不进日志、不进任何输出）。
+fn verify_env_written(text: &str, input: &EnvInput) -> AppResult<()> {
+    // ① 同名键不能出现两次
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for line in text.lines() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let l = l.strip_prefix("export ").unwrap_or(l);
+        if let Some((k, _)) = l.split_once('=') {
+            *seen.entry(k.trim()).or_insert(0) += 1;
+        }
+    }
+    if let Some((k, n)) = seen.iter().find(|(_, n)| **n > 1) {
+        return Err(AppError::new(
+            Code::ConfigWrite,
+            format!(".env 里 {k} 出现了 {n} 次。写完读回来对不上，没有写出这份配置 —— 请检查设置里手填的镜像源、模型名与 BASE_URL。"),
+        ));
+    }
+
+    // ② 逐项对账。ports 也比一遍：端口写错等于整套连不上
+    let m = parse_env(text);
+    let web = input.ports.web.to_string();
+    let api = input.ports.api.to_string();
+    let opencode = input.ports.opencode.to_string();
+    let postgres = input.ports.postgres.to_string();
+    let redis = input.ports.redis.to_string();
+    let expect: [(&str, &str); 11] = [
+        ("HUNTER_VERSION", input.tag),
+        ("HUNTER_REGISTRY", input.registry_prefix),
+        ("HUNTER_API_KEY", input.hunter_key),
+        ("LLM_BASE_URL", input.llm_base_url),
+        ("LLM_DEFAULT_MODEL", input.llm_model),
+        ("LLM_API_KEY", input.llm_api_key),
+        ("WEB_HOST_PORT", &web),
+        ("API_HOST_PORT", &api),
+        ("OPENCODE_HOST_PORT", &opencode),
+        ("POSTGRES_HOST_PORT", &postgres),
+        ("REDIS_HOST_PORT", &redis),
+    ];
+    for (k, want) in expect {
+        match m.get(k) {
+            Some(got) if got == want => {}
+            // 只报键名。值里可能是 key / 口令，一个字都不能进错误信息与日志（红线 2）
+            Some(_) => {
+                return Err(AppError::new(
+                    Code::ConfigWrite,
+                    format!(".env 写完读回来 {k} 和要写的值对不上，没有写出这份配置。"),
+                ))
+            }
+            None => {
+                return Err(AppError::new(
+                    Code::ConfigWrite,
+                    format!(".env 写完读回来少了 {k}，没有写出这份配置。"),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 写 `.env` 并把权限收成 600（红线 2）。
 pub fn write_env(input: &EnvInput) -> AppResult<()> {
     paths::ensure_dirs()?;
     let path = paths::env_file();
     let sticky = read_sticky(&path);
     let content = render_env(input, &sticky)?;
+    // 落盘之前先对一遍账：渲染错了就根本不要碰磁盘上那一份
+    // （旧的 `.env` 还在，用户至少还能用原来那套起来）
+    verify_env_written(&content, input)?;
     std::fs::write(&path, content).map_err(|e| {
         AppError::new(
             Code::ConfigWrite,
@@ -645,6 +724,8 @@ pub fn write_env(input: &EnvInput) -> AppResult<()> {
         )
     })?;
     paths::chmod_600(&path)?;
+    // 再把磁盘上那一份读回来对一遍：盘满、被别的进程截断、编码出岔子都在这里露馅
+    verify_env_written(&std::fs::read_to_string(&path).unwrap_or_default(), input)?;
     crate::linfo!(
         "已写 {}（权限 600）· JWT_SECRET {}",
         path.display(),
@@ -1159,6 +1240,78 @@ mod tests {
         );
     }
 
+    /// I3（I2 报告第十节第 4 条的建议）：`.env` 写完要读回来逐项对账。
+    /// 「写之前查」拦的是已知形状，「写完对账」拦的是**所有**形状。
+    #[test]
+    fn 写完的_env_读回来要逐项对得上() {
+        let ports = Ports::default();
+        let i = input(&ports, "gateway");
+        let text = render_env(&i, &StickySecrets::default()).expect("正常输入要渲染得出来");
+        verify_env_written(&text, &i).expect("自己渲染出来的当然要对得上");
+    }
+
+    #[test]
+    fn 对账能抓到多出来的同名键() {
+        let ports = Ports::default();
+        let i = input(&ports, "gateway");
+        let mut text = render_env(&i, &StickySecrets::default()).expect("渲染");
+        // 模拟「不知怎么多写了一行」：解析器是后写覆盖先写，光看解析结果看不出来
+        text.push_str(&format!("HUNTER_API_KEY={FAKE_KEY}\n"));
+        let e = verify_env_written(&text, &i).expect_err("多一行同名键必须被抓到");
+        assert!(e.msg.contains("HUNTER_API_KEY"), "{}", e.msg);
+        assert!(e.msg.contains("2 次"), "{}", e.msg);
+        assert!(
+            !e.msg.contains(FAKE_KEY),
+            "报错里不许带 key 的明文：{}",
+            e.msg
+        );
+    }
+
+    #[test]
+    fn 对账能抓到被改过的值_并且报错里不带明文() {
+        let ports = Ports::default();
+        let i = input(&ports, "gateway");
+        let text = render_env(&i, &StickySecrets::default())
+            .expect("渲染")
+            .replace(FAKE_KEY, "hunt_tools_别的东西");
+        let e = verify_env_written(&text, &i).expect_err("值被换掉必须被抓到");
+        assert!(e.msg.contains("HUNTER_API_KEY"), "{}", e.msg);
+        assert!(
+            !e.msg.contains(FAKE_KEY),
+            "报错里不许带 key 的明文：{}",
+            e.msg
+        );
+        assert!(
+            !e.msg.contains("别的东西"),
+            "读回来那个值也不许进报错：{}",
+            e.msg
+        );
+    }
+
+    #[test]
+    fn 对账能抓到端口写漏或写错() {
+        let ports = Ports {
+            web: 3101,
+            ..Default::default()
+        };
+        let i = input(&ports, "gateway");
+        let text = render_env(&i, &StickySecrets::default()).expect("渲染");
+        verify_env_written(&text, &i).expect("端口没动时要对得上");
+
+        let 改坏 = text.replace("WEB_HOST_PORT=3101", "WEB_HOST_PORT=3100");
+        let e = verify_env_written(&改坏, &i).expect_err("端口被改必须被抓到");
+        assert!(e.msg.contains("WEB_HOST_PORT"), "{}", e.msg);
+
+        let 删掉: String = text
+            .lines()
+            .filter(|l| !l.starts_with("API_HOST_PORT="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let e2 = verify_env_written(&删掉, &i).expect_err("少一项必须被抓到");
+        assert!(e2.msg.contains("API_HOST_PORT"), "{}", e2.msg);
+        assert!(e2.msg.contains("少了"), "{}", e2.msg);
+    }
+
     #[test]
     fn web_bind_的默认值是对外() {
         let h = HunterSection::default();
@@ -1392,10 +1545,11 @@ mod tests {
         assert!(!c.install.done);
     }
 
-    /// 待办池 P2-11：`~/.hunter` 下由启动器写出来的文件一律 600，不只是 `.env`。
+    /// 待办池 P2-11 + P2-16：`~/.hunter` 下由启动器写出来的文件一律 600，不只是 `.env`。
+    /// I3 把最后那个漏网的 `app/VERSION` 也收进来了（原来跟着 umask 走，测试机上是 644）。
     #[test]
     #[cfg(unix)]
-    fn 启动器写出来的四个文件都是_600() {
+    fn 启动器写出来的五个文件都是_600() {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::{Mutex, OnceLock};
         static L: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1414,12 +1568,14 @@ mod tests {
         write_env(&input(&ports, "gateway")).expect("写 .env");
         write_override(&ports, "docker.io/library", false).expect("写覆盖文件");
         write_compose("services: {}\n").expect("写 compose");
+        crate::flow::write_version_file("1.2.0");
 
         for p in [
             paths::launcher_toml(),
             paths::env_file(),
             paths::override_file(),
             paths::compose_file(),
+            paths::version_file(),
         ] {
             let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{} 应当是 600，实际 {mode:o}", p.display());

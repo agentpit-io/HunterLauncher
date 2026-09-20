@@ -125,6 +125,11 @@ struct Side {
     version: Option<String>,
     #[serde(rename = "Arch")]
     arch: Option<String>,
+    /// **podman 独有**的键（`"OsArch":"linux/amd64"`）。Docker 的客户端 JSON 里
+    /// 对应的是分开的 `Os` + `Arch`，从来没有 `OsArch`。
+    /// I3 实测的两份原文见 `podman_与_docker_的_client_json_形状不同` 那条测试。
+    #[serde(rename = "OsArch")]
+    os_arch: Option<String>,
     #[serde(rename = "Platform")]
     platform: Option<Platform>,
     #[serde(rename = "Components")]
@@ -179,7 +184,24 @@ pub fn detect() -> DockerInfo {
                     let ctx = context_name();
                     apply_version(&mut info, v, ctx.as_deref());
                     if !info.daemon_running {
-                        info.problem = Some(daemon_hint(&r.stderr));
+                        // I3 实测（待办池 P1-5）：**podman 4.9.3 的 `version --format json`
+                        // 是能解析的 Docker 形状的 JSON**（只有 Client 没有 Server），
+                        // 于是上面那条「stdout 不是 JSON 才认 podman」的分支根本轮不到，
+                        // 用户看到的是「Docker 客户端在，但连不上 daemon」加一整页装 Docker 的指引 ——
+                        // 而这台机器上 podman 好好的，只是没有 docker 那个 socket。
+                        //
+                        // 纯文本的 `docker --version` 一句话就能分清（podman 打的是
+                        // `podman version 4.9.3`），而且**只在这条失败路径上多跑一个进程**。
+                        if matches!(info.runtime, RuntimeKind::Unknown) {
+                            if let Some(text) = plain_version_text() {
+                                info.runtime = classify_plain(&text);
+                            }
+                        }
+                        info.problem = Some(if matches!(info.runtime, RuntimeKind::Podman) {
+                            podman_hint(info.client_version.as_deref())
+                        } else {
+                            daemon_hint(&r.stderr)
+                        });
                     }
                 }
                 None => {
@@ -261,8 +283,71 @@ fn apply_version(info: &mut DockerInfo, v: VersionJson, context: Option<&str>) {
                 None,
                 context,
             );
+            // 上面那几个来源对 podman 全是空的（它的 Client 里没有 Platform）。
+            // `OsArch` 是 podman 独有的键，**不用多跑一个进程**就能分出来（I3 实测）。
+            if matches!(info.runtime, RuntimeKind::Unknown)
+                && v.client.as_ref().is_some_and(|c| c.os_arch.is_some())
+            {
+                info.runtime = RuntimeKind::Podman;
+            }
         }
     }
+}
+
+/// `docker version`（**不带 `--format`**）的头几行纯文本。只在「JSON 里没有 Server」
+/// 那条路上跑一次。
+///
+/// 为什么是这一条命令：
+/// * `version --format json` 认不出 podman —— 那份 JSON 里一个 `podman` 字样都没有；
+/// * `docker --version`（两道杠）**也认不出** —— podman 用 `argv[0]` 当程序名，
+///   通过一个叫 `docker` 的软链调用时它打的是 `docker version 4.9.3`（I3 实测，
+///   第一版就栽在这里）；
+/// * 而 `docker version` 的**第一行**是 `Client:       Podman Engine`，
+///   和 argv[0] 无关，这才是靠得住的那一个。
+fn plain_version_text() -> Option<String> {
+    let r = proc::run_timeout("docker", &["version"], Duration::from_secs(10)).ok()?;
+    let head: String = r.stdout.lines().take(3).collect::<Vec<_>>().join(" ");
+    if head.trim().is_empty() {
+        None
+    } else {
+        Some(head)
+    }
+}
+
+/// 从 `docker version` 的头几行认运行时。认不出来就 Unknown —— **不猜成 Docker**。
+pub fn classify_plain(text: &str) -> RuntimeKind {
+    let l = text.to_lowercase();
+    if l.contains("podman") {
+        RuntimeKind::Podman
+    } else if l.contains("orbstack") {
+        RuntimeKind::Orbstack
+    } else if l.contains("colima") {
+        RuntimeKind::Colima
+    } else if l.contains("docker engine") {
+        RuntimeKind::DockerEngine
+    } else {
+        RuntimeKind::Unknown
+    }
+}
+
+/// 认出 Podman 时该说的话。**不假装支持**（红线 1）：本项目没有在 Podman 上
+/// 跑通过完整安装，只验过「认得出来」这一步，所以这里把已知和未知分开写。
+fn podman_hint(client_version: Option<&str>) -> String {
+    // 传进来的是**版本号**（"4.9.3"），不是整行。不补上「Podman」三个字的话
+    // 界面上会写成「实际上是 4.9.3，不是 Docker」—— I3 第一次真机验证时就是这样，
+    // 那句话读起来不知所云
+    let v = match client_version.map(str::trim) {
+        Some(v) if !v.is_empty() => format!("Podman {v}"),
+        _ => "Podman".to_string(),
+    };
+    format!(
+        "命令行里的 docker 实际上是 {v}，不是 Docker，而且现在连不上它的服务。\
+         Podman 目前是**实验支持**：启动器认得出它，但整套安装从来没有在 Podman 上跑通过 —— \
+         `docker compose` 在 Podman 上要另外装一个 compose provider（podman-compose 或 docker-compose），\
+         没有它 Hunter 起不来。\
+         最稳的做法是装 Docker Engine；一定要用 Podman 的话，请先确认 `docker compose version` 有输出，\
+         再用 `podman system service` 把服务起起来。"
+    )
 }
 
 /// 从 `Server.Platform.Name` / 组件名 / context 名判断运行时种类。
@@ -577,6 +662,96 @@ mod tests {
             classify(Some("Docker Engine"), None, Some("orbstack")),
             RuntimeKind::Orbstack
         );
+    }
+
+    /// 待办池 P1-5 的实测（I3 在测试机上真装了一次 podman 4.9.3，
+    /// 用一个叫 `docker` 的软链指过去）。下面两段 JSON 都是**原文**。
+    ///
+    /// 三件事一眼可见：
+    ///   1. podman 那份是**合法的 Docker 形状 JSON**，`parse_version` 解析得动 ——
+    ///      所以「stdout 不是 JSON 才认 podman」那条老分支永远轮不到；
+    ///   2. 整段里**一个 `podman` 字样都没有**；
+    ///   3. 但它有一个 Docker 从来不发的键：`OsArch`（Docker 那边是分开的 `Os` + `Arch`）。
+    ///      这就是不用多跑一个进程就能分出来的那个记号。
+    #[test]
+    fn podman_与_docker_的_client_json_形状不同() {
+        let podman = r#"{"Client":{"APIVersion":"4.9.3","Version":"4.9.3","GoVersion":"go1.22.2",
+            "GitCommit":"","BuiltTime":"Thu Jan  1 00:00:00 1970","Built":0,
+            "OsArch":"linux/amd64","Os":"linux"}}"#;
+        assert!(
+            !podman.to_lowercase().contains("podman"),
+            "这正是问题所在：JSON 里一个 podman 字样都没有"
+        );
+        let v = parse_version(podman).expect("podman 的这份 JSON 是解析得动的");
+        assert!(v.server.is_none(), "podman 的 docker 兼容输出里没有 Server");
+        let mut info = blank();
+        apply_version(&mut info, v, None);
+        assert!(!info.daemon_running);
+        assert_eq!(
+            info.runtime,
+            RuntimeKind::Podman,
+            "靠 OsArch 这个键就该认出来，不必多跑一个进程"
+        );
+
+        // 对照：同一台机器上真实 docker 29.8.1 的 Client 块，没有 OsArch
+        let docker = r#"{"Client":{"Platform":{"Name":""},"Version":"29.8.1",
+            "ApiVersion":"1.56","DefaultAPIVersion":"1.56","GitCommit":"4a63305",
+            "GoVersion":"go1.26.8","Os":"linux","Arch":"amd64","Context":"default"}}"#;
+        let v2 = parse_version(docker).expect("docker 的 JSON");
+        let mut info2 = blank();
+        apply_version(&mut info2, v2, None);
+        assert_ne!(
+            info2.runtime,
+            RuntimeKind::Podman,
+            "真 docker 不能被认成 podman"
+        );
+    }
+
+    /// 纯文本那一条是第二道保险。**不能用 `docker --version`（两道杠）** ——
+    /// podman 用 `argv[0]` 当程序名，通过一个叫 `docker` 的软链调用时它打的是
+    /// `docker version 4.9.3`，一个 podman 字样都没有（I3 第一版就栽在这里）。
+    /// `docker version`（不带 `--format`）的第一行才靠得住。
+    #[test]
+    fn 纯文本的_version_能分清运行时() {
+        // 实测原文（podman 通过名为 docker 的软链调用）
+        assert_eq!(
+            classify_plain("Client:       Podman Engine Version:      4.9.3 API Version:  4.9.3"),
+            RuntimeKind::Podman
+        );
+        // 实测原文（同一台机器上真实的 docker）
+        assert_eq!(
+            classify_plain("Client: Docker Engine - Community  Version:           29.8.1"),
+            RuntimeKind::DockerEngine
+        );
+        // 这一行是 `docker --version` 在 podman 上的输出 —— 正是那个陷阱：
+        // 既不含 podman，也不含「docker engine」，所以只能是 Unknown，
+        // **绝不能被当成 Docker Engine**
+        assert_eq!(
+            classify_plain("docker version 4.9.3"),
+            RuntimeKind::Unknown,
+            "认不出来就说认不出来，不许猜成 Docker"
+        );
+        assert_eq!(classify_plain(""), RuntimeKind::Unknown);
+    }
+
+    /// 认出 Podman 之后说的话必须**把没验过的部分说出来**（红线 1）。
+    #[test]
+    fn podman_的提示不许假装支持() {
+        // 传进来的是版本号，不是整行 —— 这里补出来的必须是「Podman 4.9.3」。
+        // I3 第一次真机验证时这里漏了，界面上写成「实际上是 4.9.3，不是 Docker」
+        let h = podman_hint(Some("4.9.3"));
+        assert!(h.contains("实际上是 Podman 4.9.3，"), "{h}");
+        assert!(h.contains("实验支持"), "{h}");
+        assert!(h.contains("从来没有在 Podman 上跑通过"), "{h}");
+        assert!(h.contains("compose"), "要说清缺的是 compose provider：{h}");
+        // 不能出现「Docker 客户端在但连不上 daemon」那套会把人带偏的话
+        assert!(!h.contains("连不上后台服务"), "{h}");
+
+        // 版本号读不到时也得是一句通顺的话，不能留一个空洞
+        let h2 = podman_hint(None);
+        assert!(h2.contains("实际上是 Podman，"), "{h2}");
+        let h3 = podman_hint(Some("   "));
+        assert!(h3.contains("实际上是 Podman，"), "{h3}");
     }
 
     #[test]

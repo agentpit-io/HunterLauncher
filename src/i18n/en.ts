@@ -214,6 +214,11 @@ const en: Dict = {
     sublineStopped: (tag: string) => `${tag} · containers stopped`,
     openHunter: 'Open Hunter',
     cardQuota: 'Daily model quota',
+    quotaExhaustedCard: 'used up',
+    quotaExhaustedTitle: "Today's model quota is used up",
+    quotaExhaustedBody: (used: string, limit: string, reset: string | null) =>
+      `${used} / ${limit} used. The gateway will reject chats in Hunter${reset ? ` until it resets at ${reset}` : ''}. ` +
+      `To keep going right now, switch to your own model key in Settings.`,
     cardConversations: 'Conversations today',
     cardConversationsSub: 'Deep analyses',
     cardBrief: 'Morning brief',
@@ -308,6 +313,7 @@ const en: Dict = {
   },
   update: {
     launcherTitle: 'A newer launcher is available',
+    launcherCard: 'Launcher',
     launcherLine: (from: string, to: string) => `v${from} → v${to}`,
     launcherNow: 'Update now',
     launcherLater: 'Later',
@@ -324,6 +330,7 @@ const en: Dict = {
     manualThen: 'Reopen the launcher afterwards and it will be the new version. Containers are untouched.',
     manualReveal: 'Open containing folder',
     hunterTitle: 'A newer Hunter is available',
+    hunterCard: 'Hunter',
     hunterCurrent: (v: string) => `current v${v}`,
     hunterLatest: (v: string) => `latest v${v}`,
     hunterNone: (v: string) => `Hunter is up to date (v${v})`,
