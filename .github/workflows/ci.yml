@@ -41,6 +41,8 @@ jobs:
       - name: 字体子集覆盖了所有会上屏的中文（忘了重新生成 = 界面上多一个豆腐块）
         # 只盯「能显示出来的字」：前端全文 + Rust 的字符串字面量。改注释不会触发。
         run: python3 scripts/check-fonts.py
+      - name: COS 清理规则的自测（这个脚本会真删桶里的东西，逻辑不能只靠眼看）
+        run: python3 scripts/cos-prune.py --self-test
       - name: 单元测试
         run: pnpm test
       - name: 构建前端

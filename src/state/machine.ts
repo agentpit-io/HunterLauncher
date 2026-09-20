@@ -48,6 +48,10 @@ export type ErrorCode =
   | 'E_COMPOSE_FETCH'
   | 'E_CONFIG_WRITE'
   | 'E_PROJECT_CONFLICT'
+  // I2 补的：网关限流（HTTP 429）。**key 是好的**，等一分钟就行 ——
+  // 实测限流只作用于 POST /v1/chat/completions，启动器用的 /quota 与 /v1/models
+  // 都不受限，所以这一条平时打不到；留着是为了别把「等一下」显示成「key 无效」
+  | 'E_RATE_LIMITED'
   | 'E_NOT_IMPLEMENTED'
   | 'E_UNKNOWN'
 
@@ -65,6 +69,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_COMPOSE_FETCH',
   'E_CONFIG_WRITE',
   'E_PROJECT_CONFLICT',
+  'E_RATE_LIMITED',
   'E_NOT_IMPLEMENTED',
   'E_UNKNOWN',
 ]
@@ -126,6 +131,8 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   E_WSL_MISSING: 'CheckDocker',
   E_KEY_INVALID: 'NeedKey',
   E_QUOTA_EXHAUSTED: 'ChooseModel',
+  // 限流是等一分钟就好的事，重试当然回到填 key 那一页
+  E_RATE_LIMITED: 'NeedKey',
   E_PULL_FAILED: 'Pulling',
   E_START_TIMEOUT: 'Starting',
   E_COMPOSE_FETCH: 'Pulling',

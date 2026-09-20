@@ -202,7 +202,17 @@ pub fn prepare(
                 (c, vec![p])
             }
             Some(prefix) => {
-                // 用户手填的自定义源：探不了 manifest（不知道仓库路径），直接信任并写清楚
+                // 用户手填的自定义源：探不了 manifest（不知道仓库路径），直接信任并写清楚。
+                // 但形状要先过一遍 —— 它会原样进 .env 与覆盖文件（I2 自审）
+                if !registry::prefix_ok(prefix) {
+                    return Err(AppError::new(
+                        Code::ConfigWrite,
+                        format!(
+                            "自定义镜像源「{prefix}」的写法不对。要的是「主机[:端口]/路径」，\
+                             例如 registry.example.com/agentpit；不要带镜像名、tag、空格或换行。"
+                        ),
+                    ));
+                }
                 let c: &'static registry::Candidate = Box::leak(Box::new(registry::custom(prefix)));
                 note(&format!(
                     "镜像源：自定义 {}（用户手填，没有做可用性探测）",
@@ -269,7 +279,8 @@ pub fn prepare(
             "现有的这一套 hunter 正占着端口 {own_ports:?}，这些不算冲突"
         ));
     }
-    let (ports, changes) = config::resolve_ports(&cfg.hunter.ports, &own_ports)?;
+    let (ports, changes) =
+        config::resolve_ports(&cfg.hunter.ports, &own_ports, cfg.hunter.web_local_only())?;
     for c in &changes {
         note(&format!(
             "端口 {} 被占用，自动改用 {}（服务 {}）",
@@ -317,7 +328,7 @@ pub fn prepare(
         llm_api_key: &llm_key,
         schema_sanitize: sanitize,
     })?;
-    config::write_override(&ports, &cfg.hunter.base_prefix)?;
+    config::write_override(&ports, &cfg.hunter.base_prefix, cfg.hunter.web_local_only())?;
     note(&format!(
         "已写 {}（权限 600）与覆盖文件；端口 web {} · api {} · opencode {} · postgres {} · redis {}",
         paths::env_file().display(),
@@ -695,7 +706,11 @@ pub fn rewrite_env_and_override(
         llm_api_key: &llm_key,
         schema_sanitize: sanitize,
     })?;
-    config::write_override(&cfg.hunter.ports, &cfg.hunter.base_prefix)
+    config::write_override(
+        &cfg.hunter.ports,
+        &cfg.hunter.base_prefix,
+        cfg.hunter.web_local_only(),
+    )
 }
 
 fn next_registry(current_prefix: &str, tag: &str) -> Option<&'static registry::Candidate> {

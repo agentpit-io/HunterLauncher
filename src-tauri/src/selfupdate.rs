@@ -140,18 +140,49 @@ pub fn install_kind() -> InstallKind {
     }
 }
 
+/// semver 版本号 → **Debian 版本号**。`0.1.0-rc.2` → `0.1.0~rc.2`，正式版原样返回。
+///
+/// 为什么要换这一下（待办池 P1-19，I2 做的）：**dpkg 对预发布版的排序和 semver 相反**。
+/// 在 Debian 的版本语法里 `-` 后面那一段是「Debian 修订号」，修订号越大越新，于是
+///
+/// ```text
+/// dpkg --compare-versions 0.1.0 gt 0.1.0-rc.2   → 假（rc.2 反而更"新"）
+/// dpkg --compare-versions 0.1.0 gt 0.1.0~rc.2   → 真（波浪号排在一切之前，包括空）
+/// ```
+///
+/// 从 rc 升到正式版时前者会被 apt 判成降级并拒绝（M4 实测，当时用 `--allow-downgrades` 绕过）。
+/// 换成波浪号之后排序就对了。
+///
+/// 只换**第一个** `-`：semver 里 `-` 之后才是预发布段，再往后的 `-` 属于那一段的内容。
+/// `release.yml` 的 Linux 打包步骤用同一个规则重打 `.deb` 并改名，两边必须一致
+/// —— 下面有一条测试专门盯这件事。
+pub fn deb_version(version: &str) -> String {
+    match version.split_once('-') {
+        Some((base, pre)) => format!("{base}~{pre}"),
+        None => version.to_string(),
+    }
+}
+
+/// `.deb` 的文件名。注意版本段用的是 Debian 写法（见 [`deb_version`]）。
+pub fn deb_file_name(version: &str) -> String {
+    format!("hunter-launcher_{}_amd64.deb", deb_version(version))
+}
+
 /// `.deb` 安装包在 GitHub Release 上的地址。命名与 `release.yml` 里写死的一致。
+/// **tag 里是 semver，文件名里是 Debian 版本号**，这两段不一样是故意的。
 pub fn deb_url_github(version: &str) -> String {
     format!(
-        "https://github.com/{REPO}/releases/download/launcher-v{version}/hunter-launcher_{version}_amd64.deb"
+        "https://github.com/{REPO}/releases/download/launcher-v{version}/{}",
+        deb_file_name(version)
     )
 }
 
 /// 同一个包的国内地址（COS 香港）。
 pub fn deb_url_cn(version: &str) -> String {
     format!(
-        "{}/launcher/{version}/hunter-launcher_{version}_amd64.deb",
-        crate::config::CN_DOWNLOAD_BASE
+        "{}/launcher/{version}/{}",
+        crate::config::CN_DOWNLOAD_BASE,
+        deb_file_name(version)
     )
 }
 
@@ -172,9 +203,10 @@ pub fn release_url(version: &str) -> String {
 ///   `E: Packages were downgraded and -y was used without --allow-downgrades`。
 ///   加上这个开关就通了；它只在真的需要时才起作用，正常升级不受影响。
 ///
-/// > 更彻底的修法是让 `.deb` 的版本号用 Debian 的写法（`0.1.0~rc.2`，波浪号排在一切之前，
-/// > 实测 `dpkg --compare-versions 0.1.0 gt 0.1.0~rc.2` 为**真**）。但 Tauri 目前没有
-/// > 单独覆盖 deb 版本号的配置项，只能等上游或者自己改打包脚本。记在待办池里。
+/// > **I2 更新**：更彻底的那个修法已经做了 —— 见 [`deb_version`]，`.deb` 的版本号现在是
+/// > `0.1.0~rc.2`，排序本身就对了。`--allow-downgrades` **仍然留着**：它只在 apt 真判成
+/// > 降级时才起作用，而「从 0.1.2 退回 0.1.1」这种手动降级仍然是一条要留给用户的路
+/// > （出了问题先退回去），少了它那条路会被 apt 直接挡掉。
 pub fn deb_install_command(path: &str) -> String {
     format!("sudo apt install -y --allow-downgrades {path}")
 }
@@ -265,7 +297,7 @@ pub async fn install<R: tauri::Runtime>(
 /// 把新版 `.deb` 下到 `~/.hunter/updates/`。两个地址按顺序试（国内在前）。
 fn download_only(version: &str) -> AppResult<ManualInstall> {
     paths::ensure_dirs()?;
-    let name = format!("hunter-launcher_{version}_amd64.deb");
+    let name = deb_file_name(version);
     let dst = paths::updates_dir().join(&name);
     let mut why: Vec<String> = Vec::new();
     for url in [deb_url_cn(version), deb_url_github(version)] {
@@ -386,6 +418,34 @@ mod tests {
     #[test]
     fn 预发布版本号也能拼出地址() {
         assert!(deb_url_github("0.1.0-rc.1").contains("launcher-v0.1.0-rc.1"));
+    }
+
+    /// 待办池 P1-19：`.deb` 的版本号要用 Debian 的波浪号写法，否则从 rc 升到正式版
+    /// 会被 dpkg 判成降级。`release.yml` 的 Linux 打包步骤按同一个规则重打并改名。
+    #[test]
+    fn deb_版本号用波浪号不用连字符() {
+        assert_eq!(deb_version("0.1.0"), "0.1.0");
+        assert_eq!(deb_version("0.1.2"), "0.1.2");
+        assert_eq!(deb_version("0.1.0-rc.2"), "0.1.0~rc.2");
+        // 只换第一个 `-`：再往后的属于预发布段自己的内容
+        assert_eq!(deb_version("1.0.0-beta-3"), "1.0.0~beta-3");
+        assert_eq!(
+            deb_file_name("0.1.0-rc.2"),
+            "hunter-launcher_0.1.0~rc.2_amd64.deb"
+        );
+        assert_eq!(deb_file_name("0.1.2"), "hunter-launcher_0.1.2_amd64.deb");
+    }
+
+    /// tag 段用 semver、文件名段用 Debian 版本号 —— 这两段**不一样**是故意的。
+    /// 写反了就是 404。
+    #[test]
+    fn 预发布版的_tag_与文件名各用各的写法() {
+        let u = deb_url_github("0.1.0-rc.2");
+        assert!(u.contains("/launcher-v0.1.0-rc.2/"), "{u}");
+        assert!(u.ends_with("/hunter-launcher_0.1.0~rc.2_amd64.deb"), "{u}");
+        let c = deb_url_cn("0.1.0-rc.2");
+        assert!(c.contains("/launcher/0.1.0-rc.2/"), "{c}");
+        assert!(c.ends_with("/hunter-launcher_0.1.0~rc.2_amd64.deb"), "{c}");
     }
 
     #[test]
@@ -662,7 +722,7 @@ pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
 
 /// 下 `.deb` 与它的 `.sig`，验完再返回落地路径。
 fn download_and_verify_deb(version: &str, note: &mut impl FnMut(&str)) -> AppResult<String> {
-    let name = format!("hunter-launcher_{version}_amd64.deb");
+    let name = deb_file_name(version);
     let dst = paths::updates_dir().join(&name);
     let mut why: Vec<String> = Vec::new();
     for url in [deb_url_cn(version), deb_url_github(version)] {

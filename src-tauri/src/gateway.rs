@@ -62,6 +62,8 @@ pub enum KeyReason {
     Rejected,
     /// 额度用尽（HTTP 402）。key 本身是好的
     Exhausted,
+    /// 网关限流（HTTP 429）。key 本身也是好的，等一分钟就行
+    RateLimited,
     /// 网络层没通（DNS、超时、代理拦截）
     Network,
 }
@@ -156,6 +158,24 @@ pub fn check_key(key: &str, timeout: Duration) -> KeyCheckResult {
                 code: Some(Code::QuotaExhausted.as_str().to_string()),
             };
         }
+        429 => {
+            // I2 实测（见 I2 报告用例 4）：限流**只作用于**
+            // `POST /v1/chat/completions`，`/quota` 与 `/v1/models` 连打 30 次都不触发，
+            // 所以正常情况下这一支走不到。留着是因为「key 好好的但这一刻问不出来」
+            // 绝不能显示成「这把 key 无效」—— 那会让用户去重新申请一把根本不需要的 key。
+            let wait = retry_after(&resp).unwrap_or(60);
+            return KeyCheckResult {
+                valid: false,
+                reason: KeyReason::RateLimited,
+                quota: None,
+                models: Vec::new(),
+                message: Some(format!(
+                    "网关说请求太频繁了（每分钟最多 20 次），这一下没问成。\
+                     **这不是 key 的问题** —— 等 {wait} 秒再点一次「校验」就行。"
+                )),
+                code: Some(Code::RateLimited.as_str().to_string()),
+            };
+        }
         s => {
             return KeyCheckResult {
                 valid: false,
@@ -218,6 +238,13 @@ pub fn quota(key: &str, timeout: Duration) -> AppResult<QuotaInfo> {
         return Err(AppError::new(
             Code::KeyInvalid,
             "网关不认这把 key".to_string(),
+        ));
+    }
+    if r.status == 429 {
+        let wait = retry_after(&r).unwrap_or(60);
+        return Err(AppError::new(
+            Code::RateLimited,
+            format!("网关限流了（每分钟最多 20 次），{wait} 秒后再试。这不是 key 的问题。"),
         ));
     }
     if !r.ok() && r.status != 402 {
@@ -462,6 +489,30 @@ pub fn check_own_key(base_url: &str, model: &str, api_key: &str, timeout: Durati
     }
 }
 
+/// 429 时该等几秒。先看响应头 `retry-after`，再看响应体里的 `error.retry_after`。
+///
+/// I2 实测的真实 429（把 `POST /v1/chat/completions` 一分钟打到第 21 次）：
+///
+/// ```text
+/// HTTP/1.1 429 Too Many Requests
+/// retry-after: 60
+/// {"error":{"message":"请求太频繁了：每分钟最多 20 次，这一分钟已经第 21 次。…",
+///           "type":"rate_limit_error","code":"rate_limited","param":null,"retry_after":60}}
+/// ```
+///
+/// 两处都读是因为它们是两个不同的东西（HTTP 头 / 业务体），谁都可能先变。
+/// 两处都读不出来就由调用方按 60 兜底 —— 那是网关自报的窗口长度。
+fn retry_after(r: &crate::http::Resp) -> Option<i64> {
+    if let Some(v) = r.header("retry-after").and_then(|v| v.trim().parse().ok()) {
+        return Some(v);
+    }
+    r.json()?
+        .get("error")?
+        .get("retry_after")?
+        .as_i64()
+        .filter(|n| *n > 0)
+}
+
 fn first_line(body: &str) -> String {
     let b = body.trim();
     // 网关的错误体是 {"error":{"message":"…"}}，直接把 message 拎出来最好读
@@ -560,6 +611,48 @@ mod tests {
         assert!(q.exhausted, "额度用尽必须认出来，否则装完才发现对话被拒");
         assert_eq!(q.remaining, 0);
         assert_eq!(q.limit_daily, 1);
+    }
+
+    /// 待办池 P1-11：I2 把限流真打了一次（并发 4 × 7 批，28 次压进十几秒），
+    /// 下面用的就是当时抓到的响应头与响应体原文，一个字没改。
+    #[test]
+    fn 限流_429_能读出要等多久() {
+        use std::collections::HashMap;
+        let body = r#"{"error":{"message":"请求太频繁了：每分钟最多 20 次，这一分钟已经第 21 次。等一分钟再试即可；如果是脚本在批量跑，请自行加个间隔。","type":"rate_limit_error","code":"rate_limited","param":null,"retry_after":60}}"#;
+
+        // 响应头里有 retry-after
+        let mut h = HashMap::new();
+        h.insert("retry-after".to_string(), "60".to_string());
+        let r = crate::http::Resp {
+            status: 429,
+            headers: h,
+            body: body.to_string(),
+        };
+        assert_eq!(retry_after(&r), Some(60));
+
+        // 头没了也要能从体里读出来
+        let r2 = crate::http::Resp {
+            status: 429,
+            headers: HashMap::new(),
+            body: body.to_string(),
+        };
+        assert_eq!(retry_after(&r2), Some(60));
+
+        // 两处都没有时返回 None，由调用方兜底成 60
+        let r3 = crate::http::Resp {
+            status: 429,
+            headers: HashMap::new(),
+            body: "{}".to_string(),
+        };
+        assert_eq!(retry_after(&r3), None);
+    }
+
+    /// 限流绝不能显示成「这把 key 无效」—— 那会让用户去重新申请一把根本不需要的 key。
+    #[test]
+    fn 限流的文案里不许说_key_有问题() {
+        let t = Code::RateLimited.title();
+        assert!(!t.contains("key"), "{t}");
+        assert_ne!(Code::RateLimited.as_str(), Code::KeyInvalid.as_str());
     }
 
     #[test]

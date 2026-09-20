@@ -29,6 +29,16 @@ pub enum Code {
     /// 方案没有这一条：它假设一台机器上只有一个 `~/.hunter`，而 M2 实测换过
     /// `HUNTER_HOME` 之后 `up -d` 会把先装好的那一套连配置带端口一起顶掉。
     ProjectConflict,
+    /// 网关限流（HTTP 429）。I2 实测的真实响应：
+    /// `{"error":{"message":"请求太频繁了：每分钟最多 20 次…","type":"rate_limit_error",
+    /// "code":"rate_limited","retry_after":60}}`，响应头 `retry-after: 60`。
+    ///
+    /// **这一条目前打不到启动器身上**：实测限流只作用于
+    /// `POST /v1/chat/completions`，而启动器只用 `/quota` 与 `/v1/models`
+    /// （30 次连打都不触发，触发之后 `/quota` 照样 200）。留着是因为
+    /// 「key 好好的但这一刻问不出来」和「key 是坏的」必须分得开 ——
+    /// 网关哪天把限流扩到别的路径上，这里不该显示成「key 无效」。
+    RateLimited,
     NotImplemented,
     Unknown,
 }
@@ -49,6 +59,7 @@ impl Code {
             Code::ComposeFetch => "E_COMPOSE_FETCH",
             Code::ConfigWrite => "E_CONFIG_WRITE",
             Code::ProjectConflict => "E_PROJECT_CONFLICT",
+            Code::RateLimited => "E_RATE_LIMITED",
             Code::NotImplemented => "E_NOT_IMPLEMENTED",
             Code::Unknown => "E_UNKNOWN",
         }
@@ -70,6 +81,7 @@ impl Code {
             Code::ComposeFetch => "取不到 Hunter 的 compose 文件",
             Code::ConfigWrite => "写配置失败",
             Code::ProjectConflict => "另一个工作目录正占着 hunter 这个项目名",
+            Code::RateLimited => "请求太频繁，网关暂时挡了一下",
             Code::NotImplemented => "这个功能还没实现",
             Code::Unknown => "出了点意外",
         }
@@ -145,6 +157,7 @@ mod tests {
             Code::WslMissing,
             Code::KeyInvalid,
             Code::QuotaExhausted,
+            Code::RateLimited,
             Code::PullFailed,
             Code::PortInUse,
             Code::StartTimeout,

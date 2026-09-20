@@ -15,6 +15,10 @@ fn main() {
         unsafe {
             windows_attach_console();
         }
+        #[cfg(unix)]
+        unsafe {
+            restore_sigpipe();
+        }
         std::process::exit(headless::run(&parsed));
     }
 
@@ -49,6 +53,32 @@ fn main() {
         eprintln!("没认出这些参数：{}。用 --help 看用法。", args.join(" "));
     }
     hunter_launcher_lib::run()
+}
+
+/// 把 `SIGPIPE` 恢复成系统默认行为（**只在命令行模式下**，界面模式不碰）。
+///
+/// Rust 的运行时在 `main` 之前会把 `SIGPIPE` 设成忽略，于是往一个已经关掉的管道里写
+/// 不再是「进程安静地结束」，而是 `write` 返回 `EPIPE` → `println!` 拿不到错误处理 → **panic**。
+/// 实测（I1 收尾发现、I2 复现）：
+///
+/// ```text
+/// $ hunter-launcher --status | head -2     → 退出码 134，终端里多一段 Rust backtrace
+/// $ hunter-launcher --logs   | head -2     → stderr 里 "panicked at ... Broken pipe"
+/// ```
+///
+/// `| head`、`| grep -m1`、`| less` 然后按 q —— 都是命令行里最平常的用法。
+/// 恢复默认行为之后进程会像 `cat` / `yes` 一样被 `SIGPIPE` 安静地结束（退出码 141）。
+///
+/// 界面模式不动它：GUI 那边的 stdout 没人读，而进程被信号杀掉会比现在难查。
+#[cfg(unix)]
+unsafe fn restore_sigpipe() {
+    // 只用一个 extern 声明，不为这一行把 libc 拖进依赖树
+    extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    signal(SIGPIPE, SIG_DFL);
 }
 
 /// 这台机器有没有图形环境。X11 看 `DISPLAY`，Wayland 看 `WAYLAND_DISPLAY`，
