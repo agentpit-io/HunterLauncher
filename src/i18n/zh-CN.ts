@@ -213,11 +213,12 @@ const zhCN = {
     // 网关侧 remaining 已经是 0、Hunter 里的对话被挡住了，而面板上只摆着两个数字
     // （304,144 / 300,000），一个字都没提。这和输入 key 那一页写的
     // 「额度用尽会明确提示，不会静默降级」自相矛盾。
+    // 卡片只有面板四分之一宽，副行写长了会被 truncate 截掉半句话；
+    // 完整的一句（含重置时间）由上面那条横幅负责说（I3 回归截图上看出来的）
     quotaExhaustedCard: '已用完',
-    quotaExhaustedCardWithReset: (t: string) => `已用完 · ${t}重置`,
     quotaExhaustedTitle: '今日模型额度已经用完了',
     quotaExhaustedBody: (used: string, limit: string, reset: string | null) =>
-      `已用 ${used} / ${limit}。Hunter 里的对话会被网关挡住${reset ? `，直到 ${reset} 重置` : ''}。` +
+      `已用 ${used} / ${limit}。Hunter 里的对话会被网关挡住${reset ? `，直到 ${reset}重置` : ''}。` +
       `想现在就继续用，可以在设置里把模型换成你自己的 key。`,
     cardConversations: '今日对话',
     cardConversationsSub: '深度分析',

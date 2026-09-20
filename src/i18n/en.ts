@@ -215,7 +215,6 @@ const en: Dict = {
     openHunter: 'Open Hunter',
     cardQuota: 'Daily model quota',
     quotaExhaustedCard: 'used up',
-    quotaExhaustedCardWithReset: (t: string) => `used up · resets ${t}`,
     quotaExhaustedTitle: "Today's model quota is used up",
     quotaExhaustedBody: (used: string, limit: string, reset: string | null) =>
       `${used} / ${limit} used. The gateway will reject chats in Hunter${reset ? ` until it resets at ${reset}` : ''}. ` +

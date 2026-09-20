@@ -535,10 +535,11 @@ fn cmd_status(st: &AppState) -> AppResult<()> {
                 gateway::thousands(q.limit_daily)
             );
             println!(
-                "      Hunter 里的对话会被网关挡住，直到{}重置；想现在就用就在设置里换成自带模型 key。",
+                "      Hunter 里的对话会被网关挡住，{}想现在就用就在设置里换成自带模型 key。",
+                // 网关没给 reset_at 就不提时间 —— 「直到 额度 重置」那种句子不如不写
                 match q.reset_hint() {
-                    Some(t) => t,
-                    None => "额度".into(),
+                    Some(t) => format!("直到 {t} 重置；"),
+                    None => "直到额度重置；".to_string(),
                 }
             );
         }

@@ -49,6 +49,13 @@ PAIRS_BY_MILESTONE = {
         ("07-拉取镜像-真实进度.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
         ("10-运行面板.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
     ],
+    # I3 的运行面板截图文件名带了「额度已用完」—— 那一轮的额度是真用完的，
+    # 面板上多一条横幅，正好也让对照图能看出新加的那一条
+    "I3": [
+        ("04-输入key-已验证.png", "hunter-launcher-01-输入key.jpg", "对照-01-输入key.png"),
+        ("07-拉取镜像-真实进度.png", "hunter-launcher-02-拉取镜像.jpg", "对照-02-拉取镜像.png"),
+        ("10-运行面板-额度已用完.png", "hunter-launcher-03-运行面板.jpg", "对照-03-运行面板.png"),
+    ],
 }
 
 

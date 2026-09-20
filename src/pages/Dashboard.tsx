@@ -196,11 +196,7 @@ export function Dashboard() {
           }
           sub={
             quota?.exhausted ? (
-              <span className="text-danger">
-                {quotaReset
-                  ? t.dashboard.quotaExhaustedCardWithReset(quotaReset)
-                  : t.dashboard.quotaExhaustedCard}
-              </span>
+              <span className="text-danger">{t.dashboard.quotaExhaustedCard}</span>
             ) : undefined
           }
           reason={t.app.noDataReason}
