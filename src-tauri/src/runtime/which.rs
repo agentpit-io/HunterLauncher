@@ -671,8 +671,9 @@ mod tests {
         let d = tmpdir("empty");
         let p = resolve_with("docker", "", &policy(&[&d]));
         assert!(!p.found());
-        assert_eq!(p.steps.len(), 1);
-        assert_eq!(p.steps[0].outcome, Outcome::Missing);
+        // Windows 上一个目录要试 4 种后缀（.exe/.cmd/.bat/裸名），别的平台只有 1 种
+        assert_eq!(p.steps.len(), name_variants("docker").len());
+        assert!(p.steps.iter().all(|s| s.outcome == Outcome::Missing));
         assert!(p.one_line().contains("没找到 docker"), "{}", p.one_line());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -726,7 +727,14 @@ mod tests {
         let mut pol = policy(&[&d, &d]);
         pol.extra_dirs.push(d.to_string_lossy().into_owned());
         let p = resolve_with("docker", "", &pol);
-        assert_eq!(p.steps.len(), 1, "{:?}", p.steps);
+        // 三个条目指的是同一个目录，所以只该探出「一个目录份」的候选
+        // （Windows 上一个目录是 4 条后缀变体，别的平台是 1 条）
+        assert_eq!(
+            p.steps.len(),
+            name_variants("docker").len(),
+            "同一个目录被探了不止一遍：{:?}",
+            p.steps
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
