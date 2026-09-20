@@ -1,0 +1,41 @@
+name: COS 清理
+
+# 手动清一次腾讯云下载桶里已经没用的旧预发布包（待办池 P1-17）。
+#
+# 平时不用跑它 —— `release.yml` 每次发版上传完之后会自动跑一遍。
+# 这个入口是给两种情况准备的：
+#
+#   1. 清理脚本本身改过，想**用 main 上的新版本**跑一次
+#      （`release.yml` 里那一步 checkout 的是 tag，改了脚本得等下一次发版才生效）；
+#   2. 想先看看会删什么再决定（`dry_run` 默认就是 true）。
+#
+# 规则见 `scripts/cos-prune.py` 的文件头：正式版一个不删，
+# 预发布版只在同号正式版已经发布、而且不是最新的那个时才删。
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只列出会删什么，不真删'
+        type: boolean
+        default: true
+
+jobs:
+  prune:
+    name: 清理 · ${{ inputs.dry_run && '试跑' || '真删' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: 规则自测（这个脚本会真删东西，先过一遍它自己的测试）
+        run: python3 scripts/cos-prune.py --self-test
+      - name: 跑清理
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_BUCKET: ${{ vars.COS_BUCKET }}
+          COS_REGION: ${{ vars.COS_REGION }}
+        run: |
+          set -e
+          pip install --quiet boto3
+          python3 scripts/cos-prune.py ${{ inputs.dry_run && '--dry-run' || '' }}

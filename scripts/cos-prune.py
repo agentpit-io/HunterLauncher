@@ -187,13 +187,21 @@ def main() -> int:
     if dry:
         print(f"--dry-run：没有真删。会释放 {freed:,} 字节。")
         return 0
-    # delete_objects 一次最多 1000 个
-    for i in range(0, len(keys), 1000):
-        batch = [{"Key": k} for k in keys[i:i + 1000]]
-        resp = s3.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
-        for e in resp.get("Errors", []):
-            print(f"::warning::删不掉 {e.get('Key')}：{e.get('Message')}")
-    print(f"清理完成：{len(keys)} 个对象，释放 {freed:,} 字节")
+    # **一个一个删，不用批量的 DeleteObjects**。
+    # 实测（2026-09-20 第一次真跑）：COS 对批量删除要求带 `Content-MD5` 头，
+    # 而 boto3 不带，于是整批直接失败：
+    #     InvalidRequest: Missing required header for this request: Content-MD5
+    # 这和 M4 撞到的「COS 不支持 boto3 的分片上传」是同一类问题 —— S3 兼容不等于全兼容。
+    # 单个 `DeleteObject` 没有这个要求。我们一次最多也就几十个对象，逐个删完全够。
+    failed = 0
+    for k in keys:
+        try:
+            s3.delete_object(Bucket=bucket, Key=k)
+        except Exception as e:  # noqa: BLE001 —— 删不掉一个不该让整条流水线红
+            failed += 1
+            print(f"::warning::删不掉 {k}：{e}")
+    print(f"清理完成：{len(keys) - failed} 个对象，释放约 {freed:,} 字节"
+          + (f"；{failed} 个没删掉" if failed else ""))
     return 0
 
 
