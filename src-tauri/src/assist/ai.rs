@@ -970,14 +970,18 @@ mod tests {
 
     #[test]
     fn 待办动作能原样反推回调用() {
-        let p = actions::plan(&Call::with("start_runtime", "app", "systemd")).expect("能规划");
-        let c = call_from_plan(&p);
-        assert_eq!(c.id, "start_runtime");
-        assert_eq!(c.args.get("app").map(String::as_str), Some("systemd"));
-
+        // 换镜像源三个平台都规划得出来
         let p =
             actions::plan(&Call::with("switch_registry", "registry", "tencent")).expect("能规划");
         let c = call_from_plan(&p);
         assert_eq!(c.args.get("registry").map(String::as_str), Some("tencent"));
+
+        // 启动运行时按平台来：Linux 只有 systemd，mac 只有 open -a，Windows 一个都没有
+        if let Some((app, _)) = actions::tests::startable_app() {
+            let p = actions::plan(&Call::with("start_runtime", "app", app)).expect("能规划");
+            let c = call_from_plan(&p);
+            assert_eq!(c.id, "start_runtime");
+            assert_eq!(c.args.get("app").map(String::as_str), Some(app));
+        }
     }
 }

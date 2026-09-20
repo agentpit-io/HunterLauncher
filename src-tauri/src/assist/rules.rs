@@ -332,10 +332,24 @@ mod tests {
     /// I4 测试场景 2 的期望：规则层直接识别并给「启动」动作，**不该走到 AI**。
     #[test]
     fn 装了但没起来时规则层直接给启动动作且不走_ai() {
+        // 按平台挑一个这台机器上真能启动的运行时 —— 写死 systemd 的话，
+        // CI 的 macOS / Windows runner 上必红（I4 第一版就是这样）
+        let Some((app_id, cmd_part)) = actions::tests::startable_app() else {
+            // Windows：一个都启动不了，那就验「结论照给、但说清没法替你按」那条路
+            let mut r = base();
+            r.daemon_running = false;
+            r.apps = vec![app("docker-desktop", Some(true), Some(false))];
+            let s = diagnose(&r);
+            assert_eq!(s.rule, "daemon-down-app-installed");
+            assert!(s.confident);
+            assert!(s.actions.is_empty());
+            assert!(s.detail.contains("没法替你启动它"), "{}", s.detail);
+            return;
+        };
+
         let mut r = base();
-        r.os = "linux".into();
         r.daemon_running = false;
-        r.apps = vec![app("systemd", Some(true), Some(false))];
+        r.apps = vec![app(app_id, Some(true), Some(false))];
         let s = diagnose(&r);
         assert_eq!(s.rule, "daemon-down-app-installed");
         assert!(
@@ -351,7 +365,7 @@ mod tests {
         );
         // 展示的命令必须是完整的那一条
         assert!(
-            s.actions[0].command_line().contains("start docker"),
+            s.actions[0].command_line().contains(cmd_part),
             "{}",
             s.actions[0].command_line()
         );

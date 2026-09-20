@@ -636,8 +636,24 @@ fn disk_report() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// 这个平台上**能真的规划出启动动作**的那个运行时，以及它命令里该出现的一段。
+    ///
+    /// 三平台不一样：Linux 只有 systemd，macOS 只有 `open -a`，Windows 一个都没有
+    /// （Docker Desktop 在 Windows 上没有可靠的命令行启动方式，`start_runtime_argv`
+    /// 如实拒绝）。测试要跟着平台走，否则在 CI 的 macOS / Windows runner 上必红 ——
+    /// I4 第一版就是写死 `systemd`，三条测试在那两个平台上全挂。
+    pub(crate) fn startable_app() -> Option<(&'static str, &'static str)> {
+        if cfg!(target_os = "linux") {
+            Some(("systemd", "start docker"))
+        } else if cfg!(target_os = "macos") {
+            Some(("orbstack", "-a OrbStack"))
+        } else {
+            None
+        }
+    }
 
     #[test]
     fn 白名单之外的动作一律拒绝() {
@@ -697,11 +713,23 @@ mod tests {
         }
     }
 
+    /// 用 `remap_ports`：它在三个平台上都规划得出来，所以这条测试盯的是
+    /// 「没确认就不执行」这一道闸本身，而不是某个平台有没有那个运行时。
     #[test]
     fn 改动系统的动作没确认就不执行() {
-        let e = execute(&Call::with("start_runtime", "app", "systemd"), false)
-            .expect_err("没确认不能执行");
+        let e = execute(&Call::new("remap_ports"), false).expect_err("没确认不能执行");
         assert!(e.msg.contains("确认"), "{}", e.msg);
+        assert_eq!(
+            plan(&Call::new("remap_ports")).unwrap().kind,
+            Kind::Mutating
+        );
+
+        // 这个平台上能启动的那个运行时，同样要挡住
+        if let Some((app, _)) = startable_app() {
+            let e = execute(&Call::with("start_runtime", "app", app), false)
+                .expect_err("没确认不能执行");
+            assert!(e.msg.contains("确认"), "{}", e.msg);
+        }
     }
 
     #[test]
