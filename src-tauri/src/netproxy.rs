@@ -428,8 +428,11 @@ fn read_scutil() -> Option<String> {
         crate::lwarn!("读系统代理被守卫拦下了：{}", e.msg);
         return None;
     }
+    // **用 `_bare`**：这一条不能走套 `runtime::env` 的那条路 ——
+    // 那会绕回 `netproxy::current()`，而它正是调用我们的那一个（见 proc::base_command_bare）
     let r =
-        crate::proc::run_timeout("/usr/sbin/scutil", &["--proxy"], Duration::from_secs(10)).ok()?;
+        crate::proc::run_timeout_bare("/usr/sbin/scutil", &["--proxy"], Duration::from_secs(10))
+            .ok()?;
     r.ok().then_some(r.stdout)
 }
 
@@ -518,7 +521,8 @@ fn read_windows() -> Option<Settings> {
         crate::lwarn!("读系统代理被守卫拦下了：{}", e.msg);
         return None;
     }
-    let r = crate::proc::run_timeout("reg", &["query", KEY], Duration::from_secs(10)).ok()?;
+    // 同 `read_scutil`：不能走套 `runtime::env` 的那条路，否则递归
+    let r = crate::proc::run_timeout_bare("reg", &["query", KEY], Duration::from_secs(10)).ok()?;
     r.ok().then(|| parse_windows_reg(&r.stdout))
 }
 
@@ -580,6 +584,40 @@ pub fn parse_windows_reg(text: &str) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **读系统代理不许绕回自己。**
+    ///
+    /// CI 的 macOS runner 上炸过一次 `fatal runtime error: stack overflow`：
+    ///
+    /// ```text
+    /// netproxy::current() → detect() → read_scutil() → proc::run_timeout()
+    ///   → base_command() → runtime::env::apply() → env::current()
+    ///   → env::compute() → netproxy::current() → ……
+    /// ```
+    ///
+    /// 两个缓存都还空着，所以它一直绕。Linux 上 `detect()` 根本不走 `scutil`
+    /// 那一支，所以本地 482 条全绿 —— **又一条只有 macOS 才炸的**。
+    ///
+    /// **这条测试在 Linux 上抓不到这个缺陷** —— 那里 `detect()` 压根不跑子进程，
+    /// 环也就不存在。说清楚比装作能抓到要好：它真正生效的地方是 **CI 的
+    /// macOS runner**（`ci.yml` 里那一步会点名跑 `netproxy::tests`）。
+    /// Linux 上它是一条便宜的冒烟测试，确认两个缓存空着时 `current()` 能返回。
+    ///
+    /// 真有递归时它是**栈溢出**而不是断言失败 —— 整个测试进程会挂掉，
+    /// 那一样是红的，而且一眼看得出是哪一条。
+    #[test]
+    fn 读系统代理不会绕回自己() {
+        invalidate();
+        crate::runtime::env::invalidate();
+        // 不许炸、不许挂。返回什么取决于这台机器，这里不断言内容
+        let _ = current();
+        // 反方向也走一遍：先算子进程环境，它内部会问一次 netproxy
+        invalidate();
+        crate::runtime::env::invalidate();
+        let _ = crate::runtime::env::current();
+        // 两个方向都走完、缓存都填上了，再问一次仍然不许炸
+        let _ = current();
+    }
 
     /// I8 实测撞出来的那 60.7 秒：同一个主机在一次安装里只该试一次直连。
     #[test]

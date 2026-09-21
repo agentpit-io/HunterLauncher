@@ -67,7 +67,18 @@ pub fn run_timeout_env(
     timeout: Duration,
     env: &[(&str, &str)],
 ) -> AppResult<Ran> {
-    let mut cmd = base_command(program);
+    run_cmd_timeout(base_command(program), program, args, timeout, env)
+}
+
+/// `run_timeout_env` 与 `run_timeout_bare` 共用的那一段。
+/// 差别只有一个：`cmd` 是 [`base_command`] 建的还是 [`base_command_bare`] 建的。
+fn run_cmd_timeout(
+    mut cmd: Command,
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> AppResult<Ran> {
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);
@@ -159,6 +170,46 @@ pub fn exists(program: &str) -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok()
+}
+
+/// 读系统代理那两条命令专用：**不套 [`crate::runtime::env`]**（I8）。
+///
+/// ## 为什么要单开一条路
+///
+/// `netproxy::current()` 要跑 `scutil --proxy`（macOS）或 `reg query`（Windows）。
+/// 走 [`base_command`] 的话，链条是这样的：
+///
+/// ```text
+/// netproxy::current()  ← 缓存还空着
+///   → detect() → read_scutil() → proc::run_timeout() → base_command()
+///   → runtime::env::apply() → env::current()  ← 缓存也还空着
+///   → env::compute() → netproxy::current()    ← 回到第一行
+/// ```
+///
+/// **两个缓存都还没写，所以它会一直绕下去。** CI 的 macOS runner 上就是这么
+/// `fatal runtime error: stack overflow` 的 —— Linux 上 `detect()` 根本不走
+/// `scutil` 那一支（`cfg!(target_os = "macos")`），所以本地 482 条全绿。
+/// 又一条「只有 macOS 才炸」的。
+///
+/// 断链的办法是**这两条命令不需要那份环境**：程序用的是绝对路径 `/usr/sbin/scutil`
+/// （不需要 PATH 补全），读一份本机设置也不需要代理变量。所以干脆不套。
+pub fn base_command_bare(program: &str) -> Command {
+    // `mut` 只有 Windows 那一支用得上；不加 allow 的话非 Windows 上 clippy 会红
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// 带超时、**不套 [`crate::runtime::env`]** 的版本。只给 [`crate::netproxy`] 用，
+/// 理由见 [`base_command_bare`]。
+pub fn run_timeout_bare(program: &str, args: &[&str], timeout: Duration) -> AppResult<Ran> {
+    run_cmd_timeout(base_command_bare(program), program, args, timeout, &[])
 }
 
 /// 建 Command。**这是全项目唯一建子进程的地方**，两件事在这里统一做掉：
