@@ -1,0 +1,6 @@
+65:2026-09-21 15:20:27 [info] 子进程 PATH 补了 2 个目录：/usr/local/bin、/snap/bin
+76:2026-09-21 15:22:16 [info] 子进程 PATH 补了 2 个目录：/usr/local/bin、/snap/bin
+81:2026-09-21 15:22:24 [warn] 第 1 次拉取失败：Docker 要用本机的凭据助手去取登录信息，但在这个程序看得到的 PATH 上找不到它。这和下载源无关，换源修不好。原话：error getting credentials - err: exec: "docker-credential-fakehelper": executable file not found in $PATH, out: ``
+83:2026-09-21 15:22:26 [info] 诊断助手执行动作 use_isolated_docker_config（Safe · auto）：在 <用户目录>/.hunter/docker-config 里生成一份去掉 credsStore / credHelpers / auths 的 docker 配置，之后用 DOCKER_CONFIG 指过去（用户的 ~/.docker/config.json 不动）
+84:2026-09-21 15:22:26 [info] 已在 <用户目录>/.hunter/docker-config 另起一份不带凭据助手的 docker 配置（去掉了 credsStore）
+87:2026-09-21 15:22:26 [info] 子进程 PATH 补了 2 个目录：/usr/local/bin、/snap/bin；DOCKER_CONFIG=<用户目录>/.hunter/docker-config

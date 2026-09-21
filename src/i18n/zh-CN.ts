@@ -538,6 +538,7 @@ const zhCN = {
       E_PULL_FAILED: { title: '镜像拉取失败', hint: '已重试 3 次仍然失败。可以换一个镜像源，或者从离线包导入。' },
       E_PORT_IN_USE: { title: '端口被占用', hint: '启动器已经自动改用别的端口，不需要你操作。' },
       E_PORT_CONFLICT: { title: 'Docker 说端口已经被占了', hint: '启动器已经重新探过端口并换了一组空闲的。要是还撞上，多半是这台机器上另有程序在抢同一个端口，下面写了它是谁。' },
+      E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，**你的 ~/.docker/config.json 不会被改动**。' },
       E_START_TIMEOUT: { title: '启动超时', hint: '180 秒内没有等到全部服务健康。下面写明了是哪个服务没就绪。' },
       E_PROXY_BLOCK: { title: '容器连不上网', hint: '代理的 TUN 模式经常导致这个问题。给 Docker 配上 NO_PROXY，或者临时关掉代理。' },
       E_UPDATE_FAILED: { title: '升级失败', hint: '已经回滚到升级前的版本。把诊断包发给我们能更快定位。' },

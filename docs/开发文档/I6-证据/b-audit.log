@@ -1,0 +1,4 @@
+{"action":"autopilot_start","args":{},"at":"2026-09-21 15:20:27","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"autopilot_start","args":{},"at":"2026-09-21 15:22:16","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"use_isolated_docker_config","args":{},"at":"2026-09-21 15:22:26","by":"rule","level":"Safe","result":"成功：已在 <用户目录>/.hunter/docker-config 另起一份不带凭据助手的 docker 配置（去掉了 credsStore）。拉公开镜像本来就不需要凭据，所以这样够用了。"}
+{"action":"retry_pull","args":{"delay_seconds":"0"},"at":"2026-09-21 15:22:27","by":"rule","level":"Safe","result":"成功：重新拉取完成。"}

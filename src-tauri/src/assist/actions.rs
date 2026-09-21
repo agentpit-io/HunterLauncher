@@ -241,6 +241,22 @@ pub const ACTIONS: &[Spec] = &[
         params: &[("seconds", "健康检查等待上限，180–900 秒")],
     },
     Spec {
+        id: "probe_cred_helper",
+        level: Level::ReadOnly,
+        title: "查一下本机的 docker 凭据助手",
+        why: "拉不动公开镜像时，第一件要分清的事是「源不通」还是「本机取不到凭据」",
+        desc: "只读地看 ~/.docker/config.json 里配的 credsStore / credHelpers，并在补全后的 PATH 上找一遍那几个可执行文件。**不读 auths 里的任何值**。",
+        params: &[],
+    },
+    Spec {
+        id: "use_isolated_docker_config",
+        level: Level::Safe,
+        title: "另起一份不带凭据助手的 docker 配置",
+        why: "补全 PATH 之后仍然找不到 docker-credential-* 时，拉公开镜像根本不需要凭据",
+        desc: "在 ~/.hunter/docker-config/ 里生成一份去掉 credsStore / credHelpers / auths 的配置，之后所有 docker 子进程用 DOCKER_CONFIG 指过去。**用户的 ~/.docker/config.json 一个字节都不改**（守卫会拦）。",
+        params: &[],
+    },
+    Spec {
         id: "export_feedback_bundle",
         level: Level::Safe,
         title: "生成一份脱敏诊断包",
@@ -492,6 +508,16 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
                 "往 ~/.hunter/launcher.toml 的 [hunter] 段写 start_timeout_secs = {n}"
             ));
         }
+        "probe_cred_helper" => {
+            p.summary = Some("只读：看一眼 credsStore 配的是谁、那个可执行文件在不在".into())
+        }
+        "use_isolated_docker_config" => {
+            p.summary = Some(format!(
+                "在 {} 里生成一份去掉 credsStore / credHelpers / auths 的 docker 配置，\
+                 之后用 DOCKER_CONFIG 指过去（用户的 ~/.docker/config.json 不动）",
+                crate::redact::mask_home(&crate::dockercfg::isolated_dir().to_string_lossy())
+            ))
+        }
         "export_feedback_bundle" => {
             p.summary = Some("把日志与配置脱敏后打包到 ~/.hunter/diagnostics/".into())
         }
@@ -658,12 +684,34 @@ pub fn execute_as(
             if r.ok() {
                 "重新拉取完成。".to_string()
             } else {
-                // 这里跑的是 `pull` 不是 `up`，要用拉取那张归类表
+                // 这里跑的是 `pull` 不是 `up`，要用拉取那张归类表。
+                // **两个流都要看**：stderr 空着的时候「原话」不能跟着空（I6）
+                let text = {
+                    let e = crate::compose::extract_error_text(&split_lines(&r.stderr));
+                    if e.trim().is_empty() {
+                        crate::compose::extract_error_text(&split_lines(&r.stdout))
+                    } else {
+                        e
+                    }
+                };
                 return Err(AppError::new(
-                    Code::PullFailed,
-                    crate::compose::classify_pull_error(&r.stderr, r.status),
+                    crate::compose::pull_error_code(&text),
+                    crate::compose::classify_pull_error(&text, r.status),
                 ));
             }
+        }
+        "probe_cred_helper" => cred_helper_report(),
+        "use_isolated_docker_config" => {
+            let out = crate::dockercfg::enable()?;
+            let mut s = out.one_line();
+            s.push_str("。拉公开镜像本来就不需要凭据，所以这样够用了。");
+            if !out.not_linked.is_empty() {
+                s.push_str(
+                    "（没能带过来的那几项写在上面；万一 docker 因此连不上，\
+                     把 ~/.hunter/launcher.toml 里 [runtime] isolated_docker_config 改回 false 即可）",
+                );
+            }
+            s
         }
         "remove_own_stale_containers" => {
             let removed = crate::compose::remove_own_stale_containers()?;
@@ -731,6 +779,42 @@ fn wait_daemon(max: Duration) -> String {
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// 把一整段输出切成行，交给 [`crate::compose::extract_error_text`]。
+fn split_lines(s: &str) -> Vec<String> {
+    s.lines().map(str::to_string).collect()
+}
+
+/// 本机 docker 凭据助手的现状（I6）。**只报事实**：配的是谁、在不在、在哪。
+fn cred_helper_report() -> String {
+    let setup = crate::dockercfg::read_user();
+    let mut s = String::new();
+    s.push_str(&format!(
+        "docker 配置目录：{}（config.json {}）\n",
+        crate::redact::mask_home(&crate::dockercfg::user_dir().to_string_lossy()),
+        if setup.present { "在" } else { "不在" }
+    ));
+    match &setup.creds_store {
+        Some(v) => s.push_str(&format!("credsStore = {v}\n")),
+        None => s.push_str("credsStore：没配\n"),
+    }
+    if !setup.cred_helpers.is_empty() {
+        s.push_str(&format!("credHelpers：{}\n", setup.cred_helpers.join("、")));
+    }
+    let st = crate::dockercfg::helper_status();
+    if st.is_empty() {
+        s.push_str("没有要用的凭据助手，拉公开镜像不会走这条路。\n");
+        return s;
+    }
+    for (name, found) in st {
+        match found {
+            Some(p) => s.push_str(&format!("✓ {name} → {}\n", crate::redact::mask_home(&p))),
+            None => s.push_str(&format!("✗ {name} —— 补全后的 PATH 上也找不到\n")),
+        }
+    }
+    s.push_str(&format!("{}\n", crate::runtime::env::current().one_line()));
+    s
 }
 
 fn network_report() -> String {

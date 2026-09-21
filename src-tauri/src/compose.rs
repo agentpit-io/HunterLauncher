@@ -538,7 +538,8 @@ pub fn pull_streaming(
     ] {
         let Some(stream) = stream else { continue };
         let tx = tx.clone();
-        // 非 JSON 的 stderr 行要留着做失败分类，所以顺手收一份
+        // **两个流都收**。原来只收 stderr —— 而「原话」是给用户看的唯一一句实话，
+        // 少收一个流就可能让它是空的（I6：0.1.5 那次「原话：」后面什么都没有）
         let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&collected);
         let h = std::thread::spawn(move || {
@@ -547,13 +548,11 @@ pub fn pull_streaming(
                 Either::Err(s) => Box::new(BufReader::new(s)),
             };
             for line in reader.lines().map_while(Result::ok) {
-                if is_err {
-                    if let Ok(mut g) = sink.lock() {
-                        g.push(line.clone());
-                        if g.len() > 400 {
-                            let n = g.len() - 400;
-                            g.drain(..n);
-                        }
+                if let Ok(mut g) = sink.lock() {
+                    g.push(line.clone());
+                    if g.len() > 400 {
+                        let n = g.len() - 400;
+                        g.drain(..n);
                     }
                 }
                 if tx.send(line).is_err() {
@@ -590,22 +589,39 @@ pub fn pull_streaming(
     let status = child
         .wait()
         .map_err(|e| AppError::new(Code::PullFailed, format!("等 compose pull 结束失败：{e}")))?;
-    let mut err_text = String::new();
+    // stderr 优先，它空了才看 stdout
+    let mut from_err = String::new();
+    let mut from_out = String::new();
     for (h, collected, is_err) in readers {
         let _ = h.join();
-        if is_err {
-            if let Ok(g) = collected.lock() {
-                err_text = extract_error_text(&g);
+        if let Ok(g) = collected.lock() {
+            let t = extract_error_text(&g);
+            if is_err {
+                from_err = t;
+            } else {
+                from_out = t;
             }
         }
     }
+    let err_text = if from_err.trim().is_empty() {
+        from_out
+    } else {
+        from_err
+    };
     on_progress(&agg.snapshot(PullPhase::Pulling, None));
 
     if status.success() {
         Ok(())
     } else {
+        if err_text.trim().is_empty() {
+            // 两个流都没说话。**如实说「一个字都没说」**，别留一句半截话给用户
+            crate::lwarn!(
+                "docker compose pull 退出码 {:?}，但 stdout / stderr 都没有可识别的错误行",
+                status.code()
+            );
+        }
         Err(AppError::new(
-            Code::PullFailed,
+            pull_error_code(&err_text),
             classify_pull_error(&err_text, status.code()),
         ))
     }
@@ -619,9 +635,28 @@ enum Either {
 
 /// 从 stderr 的全部行里挑出「能说明失败原因」的部分。
 ///
-/// compose 在 `--progress json` 下把**报错也塞进 JSON 行**（`text` 是 `Error`，
-/// 具体原因在 `details` 里），纯文本行常常一条都没有。
+/// compose 在 `--progress json` 下把**报错也塞进 JSON 行**，纯文本行常常一条都没有。
 /// 只挑非 JSON 行的话，用户看到的就是「退出码 1。原话：」后面空一片（M2 用例 6c 实测）。
+///
+/// ## 三种 JSON 形状都要认（I6）
+///
+/// 0.1.5 在用户 Mac 上失败时，「原话：」后面**真的是空的** —— 因为 compose v5 把
+/// 顶层错误写成的是第三种形状，而这里当时只认头两种。测试机上 `docker compose
+/// --progress json pull` 的实测原文（`DOCKER_CONFIG` 里写了个找不到的 credsStore）：
+///
+/// ```text
+/// {"id":"Image ghcr.io/…:1.2.0","status":"Working","text":"Pulling"}
+/// {"error":true,"message":"error getting credentials - err: exec: \"docker-credential-fakehelper\": executable file not found in $PATH, out: ``"}
+/// ```
+///
+/// | 形状 | 取哪里 | 谁会发 |
+/// |---|---|---|
+/// | `{"text":"Error","details":"…"}` / `{"status":"Error",…}` | `details`，退而取 `status` | compose 的逐镜像进度事件 |
+/// | `{"errorDetail":{"message":"…"}}` / `{"error":"…"}` | 里面的 message | `docker pull` 的原生流 |
+/// | `{"error":true,"message":"…"}` | `message` | **compose v5 的顶层错误** ← 0.1.5 漏的就是它 |
+///
+/// 纯文本行与 JSON 里挑出来的**都要**（纯文本排在前面）—— 只要谁说了一句实话，
+/// 就不能让「原话」是空的。
 pub fn extract_error_text(lines: &[String]) -> String {
     let mut plain: Vec<String> = Vec::new();
     let mut from_json: Vec<String> = Vec::new();
@@ -632,17 +667,8 @@ pub fn extract_error_text(lines: &[String]) -> String {
         }
         if t.starts_with('{') {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
-                let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
-                let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("");
-                if text.eq_ignore_ascii_case("error") || status.eq_ignore_ascii_case("error") {
-                    let detail = v
-                        .get("details")
-                        .and_then(|x| x.as_str())
-                        .or_else(|| v.get("status").and_then(|x| x.as_str()))
-                        .unwrap_or("");
-                    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
-                    let line = format!("{id} {detail}").trim().to_string();
-                    if !line.is_empty() {
+                if let Some(line) = json_error_line(&v) {
+                    if !from_json.contains(&line) {
                         from_json.push(line);
                     }
                 }
@@ -651,10 +677,82 @@ pub fn extract_error_text(lines: &[String]) -> String {
         }
         plain.push(t.to_string());
     }
-    if !plain.is_empty() {
-        plain.join("\n")
+    let mut out = plain;
+    for j in from_json {
+        if !out.iter().any(|p| p.contains(&j) || j.contains(p)) {
+            out.push(j);
+        }
+    }
+    out.join("\n")
+}
+
+/// 一条 JSON 进度行里的错误原话。不是错误行就返回 `None`。
+fn json_error_line(v: &serde_json::Value) -> Option<String> {
+    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+    // ③ compose v5 的顶层错误：`{"error":true,"message":"…"}`
+    match v.get("error") {
+        Some(serde_json::Value::Bool(true)) => {
+            let m = v.get("message").and_then(|x| x.as_str()).unwrap_or("");
+            let line = format!("{id} {m}").trim().to_string();
+            if !line.is_empty() {
+                return Some(line);
+            }
+        }
+        // ② docker 原生流：`{"error":"…"}`
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
+            return Some(format!("{id} {s}").trim().to_string());
+        }
+        _ => {}
+    }
+    // ② docker 原生流：`{"errorDetail":{"message":"…"}}`
+    if let Some(m) = v
+        .get("errorDetail")
+        .and_then(|x| x.get("message"))
+        .and_then(|x| x.as_str())
+    {
+        if !m.trim().is_empty() {
+            return Some(format!("{id} {m}").trim().to_string());
+        }
+    }
+    // ① compose 的逐镜像进度事件
+    let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("");
+    let status = v.get("status").and_then(|x| x.as_str()).unwrap_or("");
+    if text.eq_ignore_ascii_case("error") || status.eq_ignore_ascii_case("error") {
+        let detail = v
+            .get("details")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("message").and_then(|x| x.as_str()))
+            .or_else(|| v.get("status").and_then(|x| x.as_str()))
+            .unwrap_or("");
+        let line = format!("{id} {detail}").trim().to_string();
+        if !line.is_empty() {
+            return Some(line);
+        }
+    }
+    None
+}
+
+/// 本机凭据助手缺失的判据（I6）。
+///
+/// 三条任一命中就算 —— 用户 Mac 上的原话同时命中了前两条：
+/// `error getting credentials - err: exec: "docker-credential-osxkeychain":
+/// executable file not found in $PATH, out: ``。
+///
+/// **这是本机配置的问题，和下载源没有半点关系**，换源永远修不好它
+/// （0.1.5 在用户机器上换了三次源，白花 268 秒）。
+pub fn is_cred_helper_error(text: &str) -> bool {
+    let s = text.to_lowercase();
+    s.contains("error getting credentials")
+        || s.contains("docker-credential-")
+        || (s.contains("executable file not found") && !s.contains("docker-compose"))
+}
+
+/// 拉取失败该归到哪个错误码。
+pub fn pull_error_code(text: &str) -> Code {
+    if is_cred_helper_error(text) {
+        Code::CredHelper
     } else {
-        from_json.join("；")
+        Code::PullFailed
     }
 }
 
@@ -667,6 +765,20 @@ pub fn classify_pull_error(stderr: &str, code: Option<i32>) -> String {
         .unwrap_or("")
         .trim()
         .to_string();
+    // 凭据助手这一条要排在网络那几条前面 —— 它的原话里常常也有别的关键词
+    if is_cred_helper_error(stderr) {
+        return format!(
+            "Docker 要用本机的凭据助手去取登录信息，但在这个程序看得到的 PATH 上找不到它。\
+             这和下载源无关，换源修不好。原话：{tail}"
+        );
+    }
+    if tail.is_empty() {
+        // 半截话比没有话更糟：「原话：」后面空一片，用户与 AI 都无从下手
+        return format!(
+            "docker compose pull 退出码 {}，而且 stdout / stderr 里一个字的错误都没有。",
+            code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into())
+        );
+    }
     if s.contains("proxyconnect") || s.contains("proxy") && s.contains("refused") {
         return format!("代理把镜像源挡住了。检查 HTTP_PROXY / HTTPS_PROXY，或者在代理里放行镜像源。原话：{tail}");
     }
@@ -1065,6 +1177,16 @@ pub fn classify_up_error(text: &str, code: Option<i32>) -> AppError {
         );
     }
     let low = text.to_lowercase();
+    // `up` 也会顺手拉镜像，所以凭据助手这一条在这里同样会出现（I6）
+    if is_cred_helper_error(text) {
+        return AppError::new(
+            Code::CredHelper,
+            format!(
+                "起容器时要拉镜像，Docker 去找本机的凭据助手没找到。这和下载源无关。原话：{}",
+                last_line(text)
+            ),
+        );
+    }
     if low.contains("no space left") {
         return AppError::new(
             Code::PullFailed,
@@ -1906,19 +2028,93 @@ mod tests {
         let t = extract_error_text(&lines);
         assert!(t.contains("connection refused"), "{t}");
 
-        // 有纯文本行时优先用纯文本
+        // 纯文本与 JSON 都有时**两个都要**，纯文本排前面 ——
+        // 少收哪一个都可能让「原话」是空的（I6）
         let mixed: Vec<String> = vec![
             r#"{"id":"x","text":"Error","details":"json 里的原因"}"#.into(),
             "Error response from daemon: 明文原因".into(),
         ];
-        assert_eq!(
-            extract_error_text(&mixed),
-            "Error response from daemon: 明文原因"
-        );
+        let t = extract_error_text(&mixed);
+        assert!(t.starts_with("Error response from daemon: 明文原因"), "{t}");
+        assert!(t.contains("json 里的原因"), "{t}");
 
         // 一条错误都没有时返回空串，classify 会退回「退出码 N」的说法
         let clean: Vec<String> = vec![r#"{"id":"a","text":"Pulling"}"#.into()];
         assert_eq!(extract_error_text(&clean), "");
+    }
+
+    /// **0.1.5 在用户 Mac 上那一行空白的「原话：」就是这里漏的**。
+    ///
+    /// 下面这三行是测试机上 `docker compose --progress json pull` 的实测原文
+    /// （`DOCKER_CONFIG` 里写了一个找不到的 credsStore，compose v5.5.1 / Docker 29.8.1）：
+    /// 错误在**顶层** `{"error":true,"message":"…"}` 里，既没有 `text` 也没有 `status`。
+    #[test]
+    fn compose_v5_的顶层错误必须挑得出来() {
+        let lines: Vec<String> = vec![
+            r#"{"id":"Image ghcr.io/agentpit-io/hunter-community-api:1.2.0","status":"Working","text":"Pulling"}"#.into(),
+            r#"{"error":true,"message":"error getting credentials - err: exec: \"docker-credential-osxkeychain\": executable file not found in $PATH, out: ``"}"#.into(),
+        ];
+        let t = extract_error_text(&lines);
+        assert!(!t.trim().is_empty(), "「原话」不许是空的");
+        assert!(t.contains("docker-credential-osxkeychain"), "{t}");
+        // 归类要落到 E_CRED_HELPER，而不是「拉取失败 → 换个源」
+        assert_eq!(pull_error_code(&t), Code::CredHelper);
+        let msg = classify_pull_error(&t, Some(1));
+        assert!(msg.contains("凭据助手"), "{msg}");
+        assert!(msg.contains("换源修不好"), "要点破这一条与源无关：{msg}");
+        assert!(
+            msg.contains("docker-credential-osxkeychain"),
+            "原话要带上：{msg}"
+        );
+    }
+
+    /// docker 原生流的两种错误形状（`errorDetail` / `error` 是字符串）也要认。
+    #[test]
+    fn docker_原生流的错误形状也认() {
+        let a: Vec<String> = vec![
+            r#"{"errorDetail":{"message":"manifest unknown"},"error":"manifest unknown"}"#.into(),
+        ];
+        assert!(extract_error_text(&a).contains("manifest unknown"));
+        let b: Vec<String> = vec![r#"{"error":"toomanyrequests: rate limited"}"#.into()];
+        assert!(extract_error_text(&b).contains("rate limited"));
+    }
+
+    /// 一个字的错误都没输出时，**不许**给用户留一句「原话：」的半截话。
+    #[test]
+    fn 两个流都没说话时也要说人话() {
+        let msg = classify_pull_error("", Some(1));
+        assert!(!msg.ends_with("原话："), "{msg}");
+        assert!(msg.contains("一个字的错误都没有"), "{msg}");
+        assert!(msg.contains('1'), "退出码要带上：{msg}");
+    }
+
+    /// 凭据助手的三条判据。
+    #[test]
+    fn 凭据助手的判据() {
+        assert!(is_cred_helper_error(
+            "error getting credentials - err: exec: \"docker-credential-desktop.exe\": executable file not found in %PATH%"
+        ));
+        assert!(is_cred_helper_error(
+            "docker-credential-secretservice not installed"
+        ));
+        assert!(!is_cred_helper_error(
+            "failed to resolve reference: dial tcp: i/o timeout"
+        ));
+        // 「找不到 docker-compose」是另一回事，别抢它的归类
+        assert!(!is_cred_helper_error(
+            "docker: 'compose' is not a docker command, executable file not found: docker-compose"
+        ));
+    }
+
+    /// `up` 的时候撞上同一件事，也要归到 `E_CRED_HELPER`。
+    #[test]
+    fn up_撞上凭据助手也归到_cred_helper() {
+        let e = classify_up_error(
+            "Error response from daemon: error getting credentials - err: exec: \"docker-credential-osxkeychain\": executable file not found in $PATH",
+            Some(1),
+        );
+        assert_eq!(e.code, Code::CredHelper);
+        assert!(e.msg.contains("下载源无关"), "{}", e.msg);
     }
 
     #[test]

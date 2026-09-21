@@ -1,0 +1,209 @@
+# Hunter 启动器诊断 · 2026-09-21 12:07:37
+启动器 0.1.4 · linux x86_64
+Docker DockerEngine · server Some("29.8.1") · compose Some("v5.5.1")
+docker 定位：/usr/bin/docker（PATH）
+tag 1.2.0 · 源 ghcr.io/agentpit-io
+模型 gateway · 
+web running 健康 Some(3101)
+api running 健康 Some(8101)
+opencode running 健康 Some(3922)
+llm-shim running 健康 None
+postgres running 健康 Some(5443)
+redis running 健康 Some(6480)
+
+## 启动器日志
+2026-09-21 12:06:45 [info] headless 模式启动，参数 action=None registry=None
+2026-09-21 12:06:46 [info] AI 自动安装开始（授权档位 auto，预算：单问题 4 回合 / 整次 10 回合 / 60000 token）
+2026-09-21 12:06:46 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 12:06:47 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 12:06:49 [info] 已从 raw.githubusercontent 取到 v1.2.0 的 compose（23990 字节 · sha256 4732348f49177905）
+2026-09-21 12:06:49 [warn] 端口冲突：web 3100 → 3101
+2026-09-21 12:06:49 [warn] 端口冲突：api 8100 → 8101
+2026-09-21 12:06:49 [warn] 端口冲突：opencode 3921 → 3922
+2026-09-21 12:06:49 [warn] 端口冲突：postgres 5442 → 5443
+2026-09-21 12:06:49 [warn] 端口冲突：redis 6479 → 6480
+2026-09-21 12:06:49 [info] 已写 <用户目录>/.hunter/app/.env（权限 600）· JWT_SECRET 首次生成
+2026-09-21 12:06:54 [info] 第 1 次拉取，镜像源 ghcr.io/agentpit-io
+2026-09-21 12:06:55 [info] 拉取完成，用时 1 秒
+2026-09-21 12:07:13 [info] docker compose up -d 完成
+2026-09-21 12:07:25 [info] AI 自动安装完成：自动解决 0 个问题 · 0 回合 · 0 token · 38 秒
+2026-09-21 12:07:31 [info] headless 模式启动，参数 action=Some("assist-replay") registry=None
+2026-09-21 12:07:31 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 12:07:32 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 12:07:34 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=delete_file（参数 ["path"]）
+2026-09-21 12:07:34 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=docker_volume_rm（参数 ["volume"]）
+2026-09-21 12:07:34 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=networksetup（参数 ["args"]）
+2026-09-21 12:07:34 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=compose_down（参数 ["project"]）
+2026-09-21 12:07:34 [info] headless 模式启动，参数 action=Some("assist-replay") registry=None
+2026-09-21 12:07:34 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 12:07:34 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 12:07:36 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=run_shell（参数 ["cmd"]）
+2026-09-21 12:07:36 [info] headless 模式启动，参数 action=Some("diagnose") registry=None
+2026-09-21 12:07:36 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 12:07:36 [info] compose 定位：docker compose 插件 v5.5.1
+
+## 容器日志
+api-1  | [boot] 密钥就位 · JWT_SECRET 来源=环境变量 长度=64 · HUNTER_INTERNAL_KEY 来源=本次生成 长度=63 · 密钥卷可写(/opt/hunter-secrets/secrets.env · 属主 1001:1001 · 权限 640)
+api-1  | 2026-09-21 04:07:04,476 | INFO    | 迁移 | 迁移目录：/opt/hunter-migrations
+api-1  | 2026-09-21 04:07:04,502 | INFO    | 迁移 | ① 基础表 DDL（app.services.database.init_db）开始
+api-1  | 2026-09-21 04:07:05.906 | INFO     | app.services.database:init_db:827 - Database initialized
+api-1  | 2026-09-21 04:07:05,918 | INFO    | 迁移 | ① 基础表 DDL 完成，耗时 1.42 秒
+api-1  | 2026-09-21 04:07:05,944 | INFO    | 迁移 | ② 增量迁移（db/migrations）：共 23 个迁移文件，已应用 0 个，本次待执行 23 个
+api-1  | 2026-09-21 04:07:06,041 | INFO    | 迁移 |   [1/23] 0001_local_users.sql 完成，耗时 0.097 秒
+api-1  | 2026-09-21 04:07:06,060 | INFO    | 迁移 |   [2/23] 0002_user_saas_config.sql 完成，耗时 0.018 秒
+api-1  | 2026-09-21 04:07:06,077 | INFO    | 迁移 |   [3/23] 0003_hunter_config.sql 完成，耗时 0.016 秒
+api-1  | 2026-09-21 04:07:06,198 | INFO    | 迁移 |   [4/23] 0004_pred_backtest.sql 完成，耗时 0.121 秒
+api-1  | 2026-09-21 04:07:06,219 | INFO    | 迁移 |   [5/23] 0005_backtest_share.sql 完成，耗时 0.018 秒
+api-1  | 2026-09-21 04:07:06,238 | INFO    | 迁移 |   [6/23] 0006_compliance.sql 完成，耗时 0.018 秒
+api-1  | 2026-09-21 04:07:06,247 | INFO    | 迁移 |   [7/23] 0007_watchlist_shares.sql 完成，耗时 0.009 秒
+api-1  | 2026-09-21 04:07:06,345 | INFO    | 迁移 |   [8/23] 0008_klines_etl.sql 完成，耗时 0.096 秒
+api-1  | 2026-09-21 04:07:06,405 | INFO    | 迁移 |   [9/23] 0009_compliance_violation.sql 完成，耗时 0.059 秒
+api-1  | 2026-09-21 04:07:06,426 | INFO    | 迁移 |   [10/23] 0010_daily_close_view.sql 完成，耗时 0.020 秒
+api-1  | 2026-09-21 04:07:06,481 | INFO    | 迁移 |   [11/23] 0011_backtest_config.sql 完成，耗时 0.054 秒
+api-1  | 2026-09-21 04:07:06,517 | INFO    | 迁移 |   [12/23] 0012_company_master.sql 完成，耗时 0.035 秒
+api-1  | 2026-09-21 04:07:06,553 | INFO    | 迁移 |   [13/23] 0013_backtest_trade.sql 完成，耗时 0.034 秒
+api-1  | 2026-09-21 04:07:06,563 | INFO    | 迁移 |   [14/23] 0014_daily_close_v2.sql 完成，耗时 0.009 秒
+api-1  | 2026-09-21 04:07:06,567 | INFO    | 迁移 |   [15/23] 0015_stocks_avg_cost.sql 完成，耗时 0.004 秒
+api-1  | 2026-09-21 04:07:06,572 | INFO    | 迁移 |   [16/23] 0016_backtest_positions_hist.sql 完成，耗时 0.004 秒
+api-1  | 2026-09-21 04:07:06,596 | INFO    | 迁移 |   [17/23] 0017_user_cap_group_name.sql 完成，耗时 0.023 秒
+api-1  | 2026-09-21 04:07:06,627 | INFO    | 迁移 |   [18/23] 0018_user_cap_item_group.sql 完成，耗时 0.031 秒
+api-1  | 2026-09-21 04:07:06,685 | INFO    | 迁移 |   [19/23] 0019_user_screen_preset.sql 完成，耗时 0.057 秒
+api-1  | 2026-09-21 04:07:06,741 | INFO    | 迁移 |   [20/23] 0020_rs_history.sql 完成，耗时 0.054 秒
+api-1  | 2026-09-21 04:07:06,775 | INFO    | 迁移 |   [21/23] 0020_screen_learned_phrase.sql 完成，耗时 0.034 秒
+api-1  | 2026-09-21 04:07:06,795 | INFO    | 迁移 |   [22/23] 0021_screen_quota_usage.sql 完成，耗时 0.019 秒
+api-1  | 2026-09-21 04:07:06,799 | INFO    | 迁移 |   [23/23] 0022_schema_migrations.sql 完成，耗时 0.003 秒
+api-1  | 2026-09-21 04:07:06,800 | INFO    | 迁移 | ② 增量迁移完成：本次执行 23 个；两阶段总耗时 2.33 秒
+api-1  | [boot] 提示:用户 SKILL 目录 /opt/hunter-user-skills 是空的。
+api-1  | [boot]   全新安装可忽略这句。**如果你是从 v1.0.x 升级、之前在界面里装过 SKILL**,
+api-1  | [boot]   它们还在部署目录的 user-skills/ 下,只是 v1.1.0 起改用具名卷了。
+api-1  | [boot]   在部署目录执行一次:bash scripts/migrate-volumes.sh
+api-1  | [boot] 监听 0.0.0.0:8000（family=AF_INET，fd=3）
+api-1  | 2026-09-21 04:07:12.091 | INFO     | app.services.skill_files:load_all:324 - [skill_files] 加载 6 个 SKILL(内置目录 /opt/hunter-skills · 用户目录 /opt/hunter-user-skills)
+api-1  | INFO:     Started server process [1]
+api-1  | INFO:     Waiting for application startup.
+api-1  | 2026-09-21 04:07:12.515 | INFO     | app.services.database:init_db:827 - Database initialized
+api-1    | 2026-09-21 04:07:12.651 | INFO     | main:lifespan:131 - [quant.local] 每日 17:10 CST 本地流水线已挂载(不需要任何 key)
+api-1    | 2026-09-21 04:07:12.652 | INFO     | main:lifespan:171 - [backtest] 预测流水线已挂载(每交易日 16:30 CST)
+api-1    | 2026-09-21 04:07:12.652 | INFO     | main:lifespan:177 - [klines.etl] 每日 ETL loop 已挂载(A股 15:30 · 港股 17:00 · 美股次日 03:30 CST)
+api-1    | 2026-09-21 04:07:12.655 | INFO     | main:lifespan:186 - [last-hit] 官方示例最近命中日预热已挂载(启动 1 分钟后,每 30 分钟检查一次)
+api-1    | 2026-09-21 04:07:12.655 | WARNING  | main:lifespan:191 - [hunter-community] HUNTER_MINIMAL_BOOT=1 · skipping background schedulers only (tables OK)
+api-1    | INFO:     Application startup complete.
+api-1    | INFO:     Uvicorn running on socket ('0.0.0.0', 8000) (Press CTRL+C to quit)
+api-1    | INFO:     127.0.0.1:44762 - "GET /api/health HTTP/1.1" 200 OK
+redis-1  | 1:C 21 Sep 2026 04:06:57.226 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+redis-1  | 1:C 21 Sep 2026 04:06:57.226 * Redis version=7.4.11, bits=64, commit=00000000, modified=0, pid=1, just started
+redis-1  | 1:C 21 Sep 2026 04:06:57.226 # Warning: no config file specified, using the default config. In order to specify a config file use redis-server /path/to/redis.conf
+redis-1  | 1:M 21 Sep 2026 04:06:57.227 * Increased maximum number of open files to 10032 (it was originally set to 1024).
+redis-1  | 1:M 21 Sep 2026 04:06:57.227 * monotonic clock: POSIX clock_gettime
+redis-1  | 1:M 21 Sep 2026 04:06:57.231 * Running mode=standalone, port=6379.
+redis-1  | 1:M 21 Sep 2026 04:06:57.232 * Server initialized
+redis-1  | 1:M 21 Sep 2026 04:06:57.233 * Ready to accept connections tcp
+llm-shim-1  | [shim] listening 0.0.0.0:3999/v1 -> https://hunter.agentpit.io/api/saas/llm/v1
+opencode-1  | [load-secrets] JWT_SECRET 来源=环境变量 长度=64 · HUNTER_INTERNAL_KEY 来源=密钥卷 长度=63
+opencode-1  | [boot] opencode 1.18.12 · mcp timeout 180000ms(默认) · provider hunter-llm → https://hunter.agentpit.io/api/saas/llm/v1
+opencode-1  | [gen-config] 配置来源:环境变量
+postgres-1  | The files belonging to this database system will be owned by user "postgres".
+opencode-1  | [gen-config]   已写 /opt/opencode-workspace/opencode.json 与 <用户目录>/.config/opencode/opencode.jsonc
+opencode-1  | [gen-config]   provider hunter-llm → https://hunter.agentpit.io/api/saas/llm/v1 · model hunter-chat · apiKey 有
+opencode-1  | [gen-config]   provider/model 写在项目文件(环境变量锁定,向导改不动)
+postgres-1  | This user must also own the server process.
+postgres-1  | 
+postgres-1  | The database cluster will be initialized with locale "en_US.utf8".
+postgres-1  | The default database encoding has accordingly been set to "UTF8".
+postgres-1  | The default text search configuration will be set to "english".
+postgres-1  | 
+postgres-1  | Data page checksums are disabled.
+postgres-1  | 
+postgres-1  | fixing permissions on existing directory /var/lib/postgresql/data ... ok
+postgres-1  | creating subdirectories ... ok
+postgres-1  | selecting dynamic shared memory implementation ... posix
+postgres-1  | selecting default max_connections ... 100
+postgres-1  | selecting default shared_buffers ... 128MB
+postgres-1  | selecting default time zone ... UTC
+postgres-1  | creating configuration files ... ok
+opencode-1  | opencode server listening on http://0.0.0.0:3901
+postgres-1  | running bootstrap script ... ok
+postgres-1  | sh: locale: not found
+postgres-1  | 2026-09-21 04:06:59.523 UTC [33] WARNING:  no usable system locales were found
+postgres-1  | performing post-bootstrap initialization ... ok
+postgres-1  | syncing data to disk ... ok
+postgres-1  | 
+postgres-1  | 
+postgres-1  | Success. You can now start the database server using:
+postgres-1  | 
+postgres-1  |     pg_ctl -D /var/lib/postgresql/data -l logfile start
+postgres-1  | 
+postgres-1  | initdb: warning: enabling "trust" authentication for local connections
+postgres-1  | initdb: hint: You can change this by editing pg_hba.conf or using the option -A, or --auth-local and --auth-host, the next time you run initdb.
+postgres-1  | waiting for server to start....2026-09-21 04:07:00.612 UTC [39] LOG:  starting PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+postgres-1  | 2026-09-21 04:07:00.615 UTC [39] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2026-09-21 04:07:00.627 UTC [42] LOG:  database system was shut down at 2026-09-21 04:07:00 UTC
+postgres-1  | 2026-09-21 04:07:00.637 UTC [39] LOG:  database system is ready to accept connections
+postgres-1  |  done
+postgres-1  | server started
+postgres-1  | CREATE DATABASE
+postgres-1  | 
+postgres-1  | 
+postgres-1  | /usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/*
+postgres-1  | 
+postgres-1  | waiting for server to shut down....2026-09-21 04:07:00.796 UTC [39] LOG:  received fast shutdown request
+postgres-1  | 2026-09-21 04:07:00.800 UTC [39] LOG:  aborting any active transactions
+postgres-1  | 2026-09-21 04:07:00.812 UTC [39] LOG:  background worker "logical replication launcher" (PID 45) exited with exit code 1
+postgres-1  | 2026-09-21 04:07:00.812 UTC [40] LOG:  shutting down
+postgres-1  | 2026-09-21 04:07:00.817 UTC [40] LOG:  checkpoint starting: shutdown immediate
+postgres-1  | 2026-09-21 04:07:00.883 UTC [40] LOG:  checkpoint complete: wrote 926 buffers (5.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.024 s, sync=0.032 s, total=0.072 s; sync files=301, longest=0.004 s, average=0.001 s; distance=4283 kB, estimate=4283 kB; lsn=0/1925D58, redo lsn=0/1925D58
+postgres-1  | 2026-09-21 04:07:00.893 UTC [39] LOG:  database system is shut down
+postgres-1  |  done
+postgres-1  | server stopped
+postgres-1  | 
+postgres-1  | PostgreSQL init process complete; ready for start up.
+postgres-1  | 
+postgres-1  | 2026-09-21 04:07:00.935 UTC [1] LOG:  starting PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+postgres-1  | 2026-09-21 04:07:00.935 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+postgres-1  | 2026-09-21 04:07:00.935 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+postgres-1  | 2026-09-21 04:07:00.940 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2026-09-21 04:07:00.950 UTC [55] LOG:  database system was shut down at 2026-09-21 04:07:00 UTC
+postgres-1  | 2026-09-21 04:07:00.960 UTC [1] LOG:  database system is ready to accept connections
+web-1       | [web-boot] HUNTER_INTERNAL_KEY ← hunter_secrets 卷(长度 63)
+web-1       | [web-boot] JWT_SECRET ← hunter_secrets 卷(长度 64)
+web-1       | 
+web-1       | > start
+web-1       | > next start -p 3000
+web-1       | 
+web-1       |    ▲ Next.js 15.5.16
+web-1       |    - Local:        http://localhost:3000
+web-1       |    - Network:      http://172.19.0.*:3000
+web-1       | 
+web-1       |  ✓ Starting...
+web-1       |  ✓ Ready in 1037ms
+web-1       | (node:25) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+web-1       | (Use `node --trace-warnings ...` to show where the warning was created)
+
+## 诊断结论（确定性规则 · unknown）
+这个情况确定性规则认不出来
+启动器内置的规则里没有和现在这个现象对得上的。
+诊断信息已经收好了（下面可以整份复制）。
+点「让 AI 帮我看看」会把这份信息送去 Hunter 网关问一下；不想用的话，可以直接把它贴到 GitHub issue 里。
+
+（规则层没有十足把握。界面版里可以点「让 AI 帮我看看」把这份信息送去网关问一轮；
+命令行下不自动调 AI —— 那会花掉你的额度。）
+
+
+AI 诊断助手
+──────────────
+
+  ── 第 1 / 3 轮 · 本轮约 5763 tokens ──
+  · 自动执行了「看这台机器上还有没有别的 Hunter」：列出这台机器上别的 Hunter 安装与它们占着的端口
+      这台机器上还有 1 套 Hunter 在跑：
+      compose 项目 hunter-community · 6 个容器（hunter-community-api-1、hunter-community-llm-shim-1、hunter-community-opencode-1、hunter-community-postgres-1、hunter-community-redis-1、hunter-community-web-1）· 占着端口 3100、3921、5442、6479、8100
+      它们和这次要装的这一套是两回事，启动器不会动它们；新装的会换一组空闲端口，两套并存。
+
+  ── 第 2 / 3 轮 · 本轮约 2729 tokens ──
+
+  需要你确认才能执行的动作：
+    要做什么：重新分配被占用的端口
+    为什么：  端口被别的程序占着时，换一组空闲端口就能起来
+    会执行：  重新检测端口冲突，把空闲端口写进 launcher.toml 与覆盖文件
+    （命令行下不替你执行；界面版里点一下「确认执行」就行。）
+
+  这次诊断一共约 8492 tokens（2 轮）。

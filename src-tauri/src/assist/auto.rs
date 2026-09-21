@@ -184,6 +184,15 @@ pub struct Orchestrator {
     /// 规则层每一回合都原样再提一次，三个回合白花 4 分 39 秒。
     /// 同一个动作失败过就不再提第二次 —— 该换路子，或者该让用户出手。
     failed_actions: std::collections::HashSet<String>,
+    /// **已经为「这条原话」换过一次源**的失败指纹（I6）。
+    ///
+    /// 0.1.5 在用户 Mac 上的现场：凭据助手找不到 → 归成「拉不动」→ 规则层换源 →
+    /// 还是同一句原话 → 再换回去……三个回合在 ghcr 与腾讯云之间来回兜圈，
+    /// 268 秒、0 token、一个问题都没解决。
+    ///
+    /// 规则：**同一条原话只换一次源**；换完原话一个字都没变，就判定「与源无关」，
+    /// 规则层让路，把现场连同原话交给诊断员（模型）。
+    switched_registry: std::collections::HashSet<String>,
     /// 有没有人能回答「需要你」卡片。
     ///
     /// 界面里是 true（用户看得见那两个按钮）；`--auto` 命令行里是 false ——
@@ -209,6 +218,7 @@ impl Orchestrator {
             prep: None,
             reported_others: Mutex::new(false),
             failed_actions: std::collections::HashSet::new(),
+            switched_registry: std::collections::HashSet::new(),
             interactive: true,
         }
     }
@@ -650,6 +660,9 @@ impl Orchestrator {
             others: crate::ports::other_hunter_installs(&survey.published),
             stale: compose::stale_own_containers(),
             port_lines,
+            cred_helpers: crate::dockercfg::helper_status(),
+            sub_env: crate::runtime::env::current().one_line(),
+            notes: Vec::new(),
         }
     }
 
@@ -678,13 +691,28 @@ impl Orchestrator {
         let an = self
             .bus
             .emit(EventDraft::new(Kind::Analyze, "分析中…").under(issue));
-        let ev = self.scout(step, e);
+        let mut ev = self.scout(step, e);
         self.bus.finish(
             an,
             Status::Ok,
             &ev.one_line(),
             Some(t_scout.elapsed().as_millis() as u64),
         );
+
+        // 换过一次源、原话一个字都没变 —— 那就不是源的问题（I6）。
+        // 说出来，并且把这句话一起交给诊断员，免得模型又提「再换个源」
+        let fp = error_fingerprint(&e.msg);
+        if self.switched_registry.contains(&fp) {
+            let note = "上一回合已经换过下载源了，失败的原话一个字都没变，说明这件事与下载源无关。";
+            ev.notes.push(note.to_string());
+            self.bus.emit(
+                EventDraft::new(Kind::Analyze, "这不是下载源的问题")
+                    .under(issue)
+                    .status(Status::Ok)
+                    .detail(note)
+                    .tech(format!("原话：{}", e.msg)),
+            );
+        }
 
         // 第一层：确定性规则
         let plan = self.rule_plan(step, e, &ev);
@@ -752,6 +780,11 @@ impl Orchestrator {
                         &first_line(&o.text),
                         Some(t.elapsed().as_millis() as u64),
                     );
+                    if call.id == "switch_registry" {
+                        // 这条原话的「换源」名额用掉了。下一回合还是同一条原话的话，
+                        // 规则层不会再提换源（I6 · 防来回兜圈）
+                        self.switched_registry.insert(fp.clone());
+                    }
                     did = true;
                 }
                 Err(err) => {
@@ -883,8 +916,48 @@ impl Orchestrator {
                     format!("{} 装着但没在运行，把它启动起来再等它就绪。", app.label),
                 ))
             }
+            // ④′ 本机凭据助手缺失（I6 的 P0）。**这一条必须排在「拉不动」前面** ——
+            //     0.1.5 就是把它当成「源不通」，来回换了三次源，一个问题都没解决。
+            Code::CredHelper => {
+                let missing: Vec<String> = ev
+                    .cred_helpers
+                    .iter()
+                    .filter(|(_, found)| found.is_none())
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                if missing.is_empty() {
+                    // 补全之后已经找得到了 —— 那就只是重试一次的事
+                    // （第一次失败发生在补全生效之前，或者用户刚把它装上）
+                    return Some((
+                        vec![Call::with("retry_pull", "delay_seconds", "0")],
+                        format!(
+                            "凭据助手其实在这台机器上，只是原来那份 PATH 里看不到它。{}，用补全后的 PATH 重来一次。",
+                            ev.sub_env
+                        ),
+                    ));
+                }
+                // 补全之后还是找不到：**不碰用户的 ~/.docker/config.json**，
+                // 另起一份不带 credsStore 的最小配置给我们自己用。公开镜像不需要凭据。
+                Some((
+                    vec![
+                        Call::new("use_isolated_docker_config"),
+                        Call::with("retry_pull", "delay_seconds", "0"),
+                    ],
+                    format!(
+                        "你的 docker 配置要用 {} 去取登录信息，但这台机器上哪儿都找不到它（{}）。\
+                         Hunter 的六个镜像都是公开的，本来就不需要登录 —— \
+                         启动器给自己另起一份不带凭据助手的配置，你的 ~/.docker/config.json 一个字节都不动。",
+                        missing.join("、"),
+                        ev.sub_env
+                    ),
+                ))
+            }
             // ④ 拉不动：换一个测得通的源再重试
             Code::PullFailed | Code::ComposeFetch => {
+                // 换过一次源、原话还是同一条 → 与源无关，规则层让路给诊断员（I6）
+                if self.switched_registry.contains(&error_fingerprint(&e.msg)) {
+                    return None;
+                }
                 let cfg = LauncherConfig::load();
                 let alt = crate::registry::CANDIDATES.iter().find(|c| {
                     c.prefix != cfg.hunter.registry_prefix
@@ -1243,6 +1316,12 @@ pub struct Evidence {
     pub others: Vec<crate::ports::OtherInstall>,
     pub stale: Vec<compose::StaleContainer>,
     pub port_lines: Vec<String>,
+    /// 本机 docker 凭据助手：`(助手名, 补全后的 PATH 上找到的绝对路径)`（I6）
+    pub cred_helpers: Vec<(String, Option<String>)>,
+    /// 子进程 PATH 补了哪些目录 —— 「找不到」这类错误里，这一行是最要紧的证据
+    pub sub_env: String,
+    /// 总指挥想额外告诉诊断员的事（例如「换过源了，原话一个字没变」）
+    pub notes: Vec<String>,
 }
 
 impl Evidence {
@@ -1300,8 +1379,49 @@ impl Evidence {
                     .join("、")
             ));
         }
+        // ── 本机凭据助手（I6）──
+        s.push_str(&format!("{}\n", self.sub_env));
+        if self.cred_helpers.is_empty() {
+            s.push_str(
+                "这台机器的 docker 配置里没有 credsStore / credHelpers，拉公开镜像不需要凭据。\n",
+            );
+        } else {
+            for (name, found) in &self.cred_helpers {
+                match found {
+                    Some(p) => s.push_str(&format!(
+                        "docker 凭据助手 {name}：找得到（{}）\n",
+                        crate::redact::mask_home(p)
+                    )),
+                    None => s.push_str(&format!(
+                        "docker 凭据助手 {name}：**补全 PATH 之后仍然找不到**\n"
+                    )),
+                }
+            }
+        }
+        for n in &self.notes {
+            s.push_str(&format!("总指挥补充：{n}\n"));
+        }
         s
     }
+}
+
+/// 一条失败原话的「指纹」：把随现场变动的部分（镜像源、主机名、数字）抹掉之后的样子。
+///
+/// 用来回答一个问题：**换过源之后，失败的还是不是同一件事**。
+/// 是同一件事 → 与源无关，再换一百次也没用（I6）。
+pub fn error_fingerprint(msg: &str) -> String {
+    let mut s = msg.to_lowercase();
+    for c in crate::registry::CANDIDATES.iter() {
+        s = s.replace(&c.prefix.to_lowercase(), "<registry>");
+        s = s.replace(&c.host.to_lowercase(), "<host>");
+        s = s.replace(&c.label.to_lowercase(), "<label>");
+    }
+    // 端口、耗时、字节数这些数字不该让两条本质相同的原话看起来不一样
+    let s: String = s
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '#' } else { c })
+        .collect();
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 const AUTO_SYSTEM_PROMPT: &str = "\
@@ -1331,6 +1451,7 @@ pub fn narrate_issue(e: &AppError) -> String {
         Code::DockerMissing => "发现问题：找不到 Docker".into(),
         Code::DaemonDown => "发现问题：Docker 装了但没在运行".into(),
         Code::PullFailed => "发现问题：组件下载失败".into(),
+        Code::CredHelper => "发现问题：Docker 取不到登录信息".into(),
         Code::ComposeFetch => "发现问题：取不到 Hunter 的配置文件".into(),
         Code::StartTimeout => "发现问题：服务没能全部启动".into(),
         Code::ProjectConflict => "发现问题：另一个位置的 Hunter 正占着同一个项目名".into(),
@@ -1361,6 +1482,12 @@ fn manual_step(e: &AppError) -> Option<(String, String)> {
         Code::DockerMissing if cfg!(target_os = "macos") => Some((
             "这台 Mac 上没有 Docker".to_string(),
             "brew install --cask orbstack（或者去 orbstack.dev 下载）".to_string(),
+        )),
+        // 自动这条路（补 PATH → 另起一份配置）都走不通时，剩下的只有用户自己动手。
+        // **给的是「去掉 credsStore」而不是「装个助手」** —— 前者一行就能做完
+        Code::CredHelper => Some((
+            "你的 ~/.docker/config.json 里配了一个这台机器上找不到的凭据助手".to_string(),
+            "把 config.json 里的 \"credsStore\" 那一行删掉（拉公开镜像不需要它）".to_string(),
         )),
         _ => None,
     }
@@ -1400,6 +1527,9 @@ mod tests {
             others: Vec::new(),
             stale: Vec::new(),
             port_lines: Vec::new(),
+            cred_helpers: Vec::new(),
+            sub_env: "子进程 PATH：原样继承（没有需要补的目录）".into(),
+            notes: Vec::new(),
         }
     }
 
@@ -1473,6 +1603,95 @@ mod tests {
         let i_remap = ids.iter().position(|x| *x == "remap_ports");
         assert!(i_rm.is_some(), "{ids:?}");
         assert!(i_rm < i_remap, "清残留要排在换端口前面：{ids:?}");
+    }
+
+    /// I6 的 P0：凭据助手找不到时，规则层给的是**补 PATH 重试 / 另起一份配置**，
+    /// 绝不能是「换个镜像源」。
+    #[test]
+    fn 凭据助手缺失时不换源而是另起一份配置() {
+        let o = orch(Mode::Auto);
+        let e = AppError::new(
+            Code::CredHelper,
+            "Docker 要用本机的凭据助手去取登录信息……原话：error getting credentials - err: exec: \"docker-credential-osxkeychain\": executable file not found in $PATH".to_string(),
+        );
+        let mut ev = ev_empty();
+        ev.cred_helpers = vec![("docker-credential-osxkeychain".to_string(), None)];
+        let (calls, why) = o
+            .rule_plan(Step::Pull, &e, &ev)
+            .expect("规则层必须认得出来");
+        let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["use_isolated_docker_config", "retry_pull"]);
+        assert!(
+            !ids.contains(&"switch_registry"),
+            "这是本机配置的问题，换源永远修不好"
+        );
+        assert!(why.contains("公开"), "要说清「公开镜像不需要登录」：{why}");
+        assert!(
+            why.contains("一个字节都不动"),
+            "要承诺不动用户的文件：{why}"
+        );
+    }
+
+    /// 补全 PATH 之后已经找得到了：那就只是重试一次的事，不必另起配置。
+    #[test]
+    fn 凭据助手补全后找得到就只重试() {
+        let o = orch(Mode::Auto);
+        let e = AppError::new(
+            Code::CredHelper,
+            "原话：error getting credentials".to_string(),
+        );
+        let mut ev = ev_empty();
+        ev.cred_helpers = vec![(
+            "docker-credential-osxkeychain".to_string(),
+            Some("/usr/local/bin/docker-credential-osxkeychain".to_string()),
+        )];
+        let (calls, _) = o.rule_plan(Step::Pull, &e, &ev).unwrap();
+        let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["retry_pull"]);
+    }
+
+    /// 同一条原话只换一次源。换过之后原话没变 → 规则层让路（交给诊断员）。
+    #[test]
+    fn 同一条原话最多换一次源() {
+        let mut o = orch(Mode::Auto);
+        let e = AppError::new(
+            Code::PullFailed,
+            "docker compose pull 退出码 1。原话：something odd".to_string(),
+        );
+        let ev = ev_empty();
+        // 第一次：规则层可以提换源（能不能提得出来取决于另一个源当时通不通，
+        // 所以这里只验「记过一次之后就不再提」这半边，不依赖网络）
+        o.switched_registry.insert(error_fingerprint(&e.msg));
+        assert!(
+            o.rule_plan(Step::Pull, &e, &ev).is_none(),
+            "换过一次之后规则层必须让路，否则就会来回兜圈"
+        );
+    }
+
+    /// 指纹要抹掉镜像源与数字 —— 「换了个源、原话本质没变」得认得出来。
+    #[test]
+    fn 指纹抹掉镜像源与数字() {
+        let a = error_fingerprint("从 ghcr.io/agentpit-io 拉 3 个镜像失败：i/o timeout");
+        let b =
+            error_fingerprint("从 hkccr.ccs.tencentyun.com/agentpit 拉 6 个镜像失败：i/o timeout");
+        assert_eq!(a, b, "换了源、换了数量，本质是同一条");
+        let c = error_fingerprint("磁盘满了");
+        assert_ne!(a, c);
+    }
+
+    /// 送给模型的证据里要有「凭据助手找不到」与「PATH 补了什么」这两件事 ——
+    /// 0.1.5 的模型什么都没被告知，只好去猜「源不通」。
+    #[test]
+    fn 证据里带着凭据助手与子进程_path() {
+        let mut ev = ev_empty();
+        ev.cred_helpers = vec![("docker-credential-osxkeychain".to_string(), None)];
+        ev.sub_env = "子进程 PATH 补了 1 个目录：/usr/local/bin".into();
+        ev.notes.push("上一回合已经换过下载源了".into());
+        let p = ev.to_prompt();
+        assert!(p.contains("docker-credential-osxkeychain"), "{p}");
+        assert!(p.contains("仍然找不到"), "{p}");
+        assert!(p.contains("/usr/local/bin"), "{p}");
+        assert!(p.contains("换过下载源"), "{p}");
     }
 
     #[test]

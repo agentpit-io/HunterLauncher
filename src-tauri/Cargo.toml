@@ -1,6 +1,6 @@
 [package]
 name = "hunter-launcher"
-version = "0.1.5"
+version = "0.1.6"
 description = "Hunter 启动器 · 把 hunter-community 的部署变成「下载 → 填一把 key → 等几分钟」"
 authors = ["agentpit.io"]
 edition = "2021"

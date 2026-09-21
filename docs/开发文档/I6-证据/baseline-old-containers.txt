@@ -1,0 +1,6 @@
+a2391309294b	hunter-community-opencode-1	ghcr.io/agentpit-io/hunter-community-opencode:1.2.0
+16595225ff83	hunter-community-web-1	ghcr.io/agentpit-io/hunter-community-web:1.2.0
+398f76d0a3b6	hunter-community-api-1	ghcr.io/agentpit-io/hunter-community-api:1.2.0
+b65aaa655f84	hunter-community-redis-1	redis:7-alpine
+fb422b602fdb	hunter-community-postgres-1	3c5c8892d184
+533ef00d032b	hunter-community-llm-shim-1	ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0

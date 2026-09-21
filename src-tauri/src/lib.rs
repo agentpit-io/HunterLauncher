@@ -35,6 +35,7 @@ pub mod backup;
 pub mod commands;
 pub mod compose;
 pub mod config;
+pub mod dockercfg;
 pub mod err;
 pub mod feedback;
 pub mod flow;

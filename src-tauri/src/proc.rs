@@ -108,18 +108,22 @@ pub fn exists(program: &str) -> bool {
         .is_ok()
 }
 
-/// 建 Command。Windows 上要加 `CREATE_NO_WINDOW`，否则每调一次 docker 都会闪一个黑框。
+/// 建 Command。**这是全项目唯一建子进程的地方**，两件事在这里统一做掉：
+///
+/// 1. Windows 上加 `CREATE_NO_WINDOW`，否则每调一次 docker 都会闪一个黑框；
+/// 2. 套上 [`crate::runtime::env`] 算出来的环境 —— PATH 补全 + 必要时的
+///    `DOCKER_CONFIG`。**I6 的 P0 就修在这一行**：I4 解决了「启动器找得到 docker」，
+///    但 docker 自己去 `$PATH` 上找 `docker-credential-osxkeychain` 时用的是
+///    子进程继承的那份受限 PATH，照样找不到（用户 Mac 上 0.1.5 的现场）。
 pub fn base_command(program: &str) -> Command {
-    let cmd = Command::new(program);
+    let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut cmd = cmd;
         cmd.creation_flags(CREATE_NO_WINDOW);
-        return cmd;
     }
-    #[cfg(not(windows))]
+    crate::runtime::env::apply(&mut cmd);
     cmd
 }
 

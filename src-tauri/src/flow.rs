@@ -488,6 +488,8 @@ pub fn pull(
     let mut label = prep.registry_label.clone();
     let mut prefix = prep.registry_prefix.clone();
     let mut last_err: Option<AppError> = None;
+    // 上一次「因为哪条原话」换的源。下一次还是同一条 → 与源无关，别再换了（I6）
+    let mut switched_from: Option<String> = None;
 
     // 离线包模式：镜像已经在本机了，一个字节都不用下（方案 §9）。
     // 但仍然要**复核一遍六个镜像真在**，不然「跳过拉取」就成了一句空话，
@@ -580,12 +582,28 @@ pub fn pull(
                 if state.cancel.load(Ordering::Relaxed) {
                     return Err(e);
                 }
+                // **与下载源无关的失败，立刻停**（I6）。
+                //
+                // 0.1.5 在用户 Mac 上：凭据助手找不到 → 这里照样换源重试，
+                // 外层的规则层再换一次，三个回合在两个源之间来回兜圈 268 秒。
+                // 本机配置的问题，换一百个源也是同一句原话。
+                if e.code == Code::CredHelper {
+                    lwarn!("这条失败与下载源无关（{}），不再换源重试", e.code.as_str());
+                    return Err(e);
+                }
+                // 换过一次源，原话一个字都没变 —— 同上，不再换第二次
+                let fp = crate::assist::auto::error_fingerprint(&e.msg);
+                if switched_from.as_deref() == Some(fp.as_str()) {
+                    lwarn!("换过源之后原话没变，判定与下载源无关，不再换源重试");
+                    return Err(e);
+                }
                 last_err = Some(e);
 
                 // 换源：只在「没有指定源」时才换，指定了就老实在同一个源上重试
                 if opts.registry.is_none() && attempt < compose::PULL_ATTEMPTS as u32 {
                     if let Some(next) = next_registry(&prefix, &opts.tag) {
                         linfo!("换到镜像源 {} 重试", next.label);
+                        switched_from = Some(fp.clone());
                         prefix = next.prefix.to_string();
                         label = next.label.to_string();
                         let mut cfg = state.config();
