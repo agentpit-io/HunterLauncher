@@ -1594,8 +1594,11 @@ mod tests {
 
     #[test]
     fn 端口冲突时自动往上挪且不撞车() {
-        // 真占住两个端口，再看解析结果
-        let a = TcpListener::bind("127.0.0.1:0").unwrap();
+        // 真占住一个端口，再看解析结果。
+        // **绑通配地址**：三个平台对「通配 + 具体地址共存」的态度不一样
+        // （Windows 的 SO_REUSEADDR 甚至允许抢占），绑 0.0.0.0 才是三平台一致的「真占住」。
+        // 这一条要考的是 resolve_ports 的逻辑，不是各家内核的绑定语义。
+        let a = TcpListener::bind("0.0.0.0:0").unwrap();
         let pa = a.local_addr().unwrap().port();
         let want = Ports {
             web: 3100,
@@ -1639,7 +1642,7 @@ mod tests {
     /// 要是把它也算成冲突，每开一次就往上挪一格，用户存的书签全失效（M2 用例 9 实测撞出来的）。
     #[test]
     fn 自己这一套占着的端口不算冲突() {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let l = TcpListener::bind("0.0.0.0:0").unwrap();
         let p = l.local_addr().unwrap().port();
         let want = Ports {
             web: 3100,
