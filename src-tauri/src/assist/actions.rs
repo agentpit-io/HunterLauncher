@@ -1315,8 +1315,7 @@ pub(crate) mod tests {
         // 三档都拦 —— 这一位和档位没关系
         for m in [Mode::Auto, Mode::Confirm, Mode::Off] {
             let mut c = Call::new("reuse_existing_hunter");
-            c.args
-                .insert("project".into(), "hunter-community".into());
+            c.args.insert("project".into(), "hunter-community".into());
             let e = execute_as(&c, m, false, guard::Proposer::Model)
                 .expect_err(&format!("{m:?} 档下不该执行"));
             assert!(e.msg.contains("方向该由用户自己定"), "{}", e.msg);

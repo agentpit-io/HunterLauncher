@@ -99,12 +99,10 @@ pub fn available() -> Result<(), String> {
         return if has_polkit_agent() {
             Ok(())
         } else {
-            Err(
-                "这是一个既没有图形界面、标准输入也不是终端的会话\
+            Err("这是一个既没有图形界面、标准输入也不是终端的会话\
                  （没有 DISPLAY / WAYLAND_DISPLAY，stdin 也不是 tty），\
                  polkit 没有地方问你要密码。"
-                    .to_string(),
-            )
+                .to_string())
         };
     }
     Err("这个平台上还没有做「弹系统授权框」这条路。".to_string())
