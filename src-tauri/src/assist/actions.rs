@@ -705,18 +705,48 @@ pub fn execute(call: &Call, confirmed: bool) -> AppResult<Outcome> {
 
 /// 真去执行（I5：带授权档位）。
 ///
-/// 三道门，缺一不可：
-/// 1. [`plan`] —— 动作在不在表里、参数合不合法、`argv` 过不过 [`guard::argv`]；
-/// 2. 授权档位 —— [`Mode::needs_confirm`] 说要问而调用方没给 `confirmed`，就**不执行**；
-/// 3. 各分支自己的守卫 —— 写文件过 [`guard::writable_path`]，动容器过 [`guard::own_container`]。
+/// 四道门，缺一不可：
+/// 1. **方向归谁定**（I8）—— [`Spec::user_only`] 的动作，用户没开口就不执行；
+/// 2. [`plan`] —— 动作在不在表里、参数合不合法、`argv` 过不过 [`guard::argv`]；
+/// 3. 授权档位 —— [`Mode::needs_confirm`] 说要问而调用方没给 `confirmed`，就**不执行**；
+/// 4. 各分支自己的守卫 —— 写文件过 [`guard::writable_path`]，动容器过 [`guard::own_container`]。
 ///
-/// 这三道都在**执行路径上**，不在界面里 —— 界面可以有 bug，这一层不能有。
+/// 这四道都在**执行路径上**，不在界面里 —— 界面可以有 bug，这一层不能有。
+///
+/// 第 1 道**排在 `plan` 前面**，两个理由：
+///
+/// * 语义上：「这件事不归我定」比「参数对不对」更早 —— 参数再对也不做；
+/// * 现实上：`plan` 会去看这台机器的现状（`reuse_existing_hunter` 要查本机还有哪几套
+///   Hunter），放在它后面的话，**同一条拒绝会因为跑在哪台机器上而给出两种原话**。
+///   CI 上就是这么红过一次：开发机与测试机上有另一套 Hunter，`plan` 过得去；
+///   GitHub 的 runner 上一套都没有，`plan` 先报「没有可以接管的东西」。
 pub fn execute_as(
     call: &Call,
     mode: Mode,
     confirmed: bool,
     by: guard::Proposer,
 ) -> AppResult<Outcome> {
+    // ① 方向归谁定。**只看动作表，不看这台机器的现状** —— 所以任何机器上都是同一句话
+    if let Some(s) = spec(&call.id) {
+        if s.user_only && !confirmed {
+            let e = AppError::new(
+                Code::NotImplemented,
+                format!(
+                    "「{}」这件事的方向该由用户自己定，他没开口，不执行。\
+                     （默认做法是两套并存、给新装的换一组空闲端口。）",
+                    s.title
+                ),
+            );
+            guard::audit(
+                &call.id,
+                &call.args,
+                by,
+                Some(s.level),
+                "拒绝：用户没要求过这件事",
+            );
+            return Err(e);
+        }
+    }
     let p = match plan(call) {
         Ok(p) => p,
         Err(e) => {
@@ -724,27 +754,6 @@ pub fn execute_as(
             return Err(e);
         }
     };
-    // **档位管不着的那一道**（I8）：方向该由用户定的动作，用户没开口就不执行。
-    // 放在档位判定**之前** —— 全自动档下 `needs_confirm` 恒为 false，
-    // 要是放在后面，这一道就永远走不到。
-    if p.user_only && !confirmed {
-        let e = AppError::new(
-            Code::NotImplemented,
-            format!(
-                "「{}」这件事的方向该由用户自己定，他没开口，不执行。\
-                 （默认做法是两套并存、给新装的换一组空闲端口。）",
-                p.title
-            ),
-        );
-        guard::audit(
-            &call.id,
-            &call.args,
-            by,
-            Some(p.level),
-            "拒绝：用户没要求过这件事",
-        );
-        return Err(e);
-    }
     if mode.needs_confirm(p.level) && !confirmed {
         let e = AppError::new(
             Code::NotImplemented,
@@ -1307,7 +1316,11 @@ pub(crate) mod tests {
     /// I8 · **取消「Sensitive 要用户点一下」之后补的那一道。**
     ///
     /// 全自动档下 `needs_confirm` 恒为 false，所以「方向该由用户定」的动作
-    /// 必须有一道自己的门，而且要在档位判定**之前**。
+    /// 必须有一道自己的门，而且要排在**档位判定与 `plan` 两者之前**。
+    ///
+    /// 这条断言**不依赖这台机器上有没有别的 Hunter** —— 第一版依赖了，
+    /// 于是它在开发机与测试机上绿、在 GitHub 的 runner 上红（那里一套都没有，
+    /// `plan` 会先报「这台机器上并没有别的 Hunter 安装」）。
     #[test]
     fn 方向该由用户定的动作_模型提了也不执行() {
         let sp = spec("reuse_existing_hunter").expect("表里有");
@@ -1321,6 +1334,15 @@ pub(crate) mod tests {
             assert!(e.msg.contains("方向该由用户自己定"), "{}", e.msg);
             assert!(e.msg.contains("并存"), "要说清默认做法是什么：{}", e.msg);
         }
+        // 连参数都不给时也是同一句话 —— 这一道在 plan 之前，不看这台机器的现状
+        let e = execute_as(
+            &Call::new("reuse_existing_hunter"),
+            Mode::Auto,
+            false,
+            guard::Proposer::Model,
+        )
+        .expect_err("不给参数也不该执行");
+        assert!(e.msg.contains("方向该由用户自己定"), "{}", e.msg);
     }
 
     /// 反过来：这张表里**只有**那一条是 `user_only`。
