@@ -238,10 +238,13 @@ jobs:
       # 需要联网的那两条（真下文件核对 sha256、八个文件的 HEAD）是 #[ignore] 的，
       # 这里不跑 —— CI 不该依赖上游的可用性。
       - name: 内置运行时的清单与纯逻辑（I7）
+        # `cargo test A B C` 是**过不了的**：cargo 只收一个位置参数当过滤串，
+        # 第二个就报 `unexpected argument`（I7 第一次推上 CI 当场红的两条之一）。
+        # 多个过滤串要整体放到 `--` 后面交给 libtest —— 它是支持多个的（取并集）。
         run: >
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
-          runtime::manifest::tests runtime::builtin::tests runtime::orbstack::tests
           -- --nocapture --test-threads=1
+          runtime::manifest::tests runtime::builtin::tests runtime::orbstack::tests
       # M4 起 PR 上也真编一次 release 二进制。
       # `cargo check` 编不出 `custom-protocol` 那条路径，而正是那条路径出过问题
       # （M1 §9：不带这个特性的产物会去连 devUrl，表现为白屏）。
