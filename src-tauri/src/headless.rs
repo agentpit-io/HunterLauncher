@@ -127,6 +127,12 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.auto = true;
                 a.headless = true;
             }
+            // `--assist-mode` 显式给了就听它的（下面那条分支），没给时 `--auto`
+            // **自己就是「全自动」的意思**（I8 · 任务书〇·五.5）。
+            // 这一条 I8 之前是「不给档位就用设置里存的那一档」—— 结果是
+            // 一台设置里存着 confirm 的机器上 `--auto` 跑出来的是逐步确认，
+            // 而 stdin 不是终端时所有确认都按「不」处理。名字叫 --auto 的开关
+            // 不该有这种结局。
             "--assist-mode" => {
                 a.assist_mode = v.get(i + 1).cloned();
                 i += 1;
@@ -239,7 +245,7 @@ pub const HELP: &str = "\
 Hunter 启动器 · 命令行模式
 
   hunter-launcher --headless [选项]     在没有桌面环境的机器上完成安装
-  hunter-launcher --auto [选项]         AI 自动驾驶安装：出问题自己查、自己修，过程实时打印
+  hunter-launcher --auto [选项]         全自动安装：出问题自己查、自己修、自己拿主意，过程实时打印
   hunter-launcher --status              看当前状态
   hunter-launcher --start | --stop | --restart | --down
   hunter-launcher --logs [服务名]       看容器日志（已脱敏）
@@ -256,7 +262,7 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --takeover release      不再管理它（它原地不动）
   hunter-launcher --feedback              生成脱敏诊断包 + 预填 issue 链接（**不发送**）
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
-  hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 只下载）
+  hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 走系统授权框装）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
   hunter-launcher --backups             列出 ~/.hunter/backups/ 里的备份
   hunter-launcher --import-images <tar> 从离线包导入镜像，之后安装不再联网拉
@@ -267,8 +273,8 @@ Hunter 启动器 · 命令行模式
   --registry <源>     固定镜像源：ghcr | tencent | 自定义前缀。不给就自动测速选
   --tag <版本>        Hunter 版本，默认 1.2.0
   --pull-only         只拉镜像不起容器（网速慢时可以先预下载）
-  --auto              AI 自动驾驶安装（等同界面上「授权 AI 自动安装」那一档）
-  --assist-mode <档>  auto | confirm | off，不给就用设置里存的那一档
+  --auto              全自动安装（默认档；等同界面上点「开始安装」）
+  --assist-mode <档>  auto（全自动，默认）| confirm（每一步都问我）| off（只用固定规则）
   --review-why <话>   跟着 --review 用：诊断员给的那句「为什么要这么做」
   -y, --yes           不要任何确认，一路走完
   -h, --help          这段说明
@@ -372,7 +378,8 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
 
     // 2) 授权档位。命令行给了就用命令行的，并**像界面一样把授权记下来**
     let mut cfg = st.config();
-    let mode = match args.assist_mode.as_deref() {
+    let asked = asked_mode(args.assist_mode.as_deref(), args.auto);
+    let mode = match asked.as_deref() {
         Some(m) => {
             let m = Mode::parse(m);
             cfg.assist.mode = m.as_str().to_string();
@@ -1537,6 +1544,20 @@ fn cmd_check_update(st: &AppState) -> AppResult<()> {
     Ok(())
 }
 
+/// 命令行这一次要的是哪一档：**`--assist-mode` > `--auto` > 设置里存的那一档**。
+///
+/// 返回 `None` = 命令行没表态，用配置里的。
+///
+/// I8 之前 `--auto` 只是「进自动驾驶那条代码路径」，档位仍然从配置里取 ——
+/// 于是一台设置里存着 `confirm` 的机器上，`--auto` 跑出来的是逐步确认；
+/// 而 stdin 不是终端时（CI、nohup、管道）所有确认都按「不」处理。
+/// 一个名字叫 `--auto` 的开关不该有这种结局，所以它现在自己就是「全自动」的意思。
+fn asked_mode(assist_mode: Option<&str>, auto: bool) -> Option<String> {
+    assist_mode
+        .map(str::to_string)
+        .or_else(|| auto.then(|| "auto".to_string()))
+}
+
 /// `--self-update`：更新启动器自己。
 ///
 /// 和界面上点「立即更新」是同一件事，只是**由用户显式敲出来** ——
@@ -1797,13 +1818,32 @@ mod tests {
         let x = a(&["--auto"]);
         assert!(x.auto);
         assert!(x.headless, "--auto 单独给也要能跑起来");
-        assert!(x.assist_mode.is_none(), "不给档位就用设置里存的那一档");
+        // I8：`--auto` 单给时**不**解析成一个档位字符串 —— 档位在 run() 里定
+        // （`--assist-mode` > `--auto` > 设置里那一档），这里只记下「给了 --auto」
+        assert!(x.assist_mode.is_none());
 
         let y = a(&["--auto", "--assist-mode", "auto"]);
         assert_eq!(y.assist_mode.as_deref(), Some("auto"));
 
         let z = a(&["--auto", "--assist-mode", "off", "--registry", "tencent"]);
         assert_eq!(z.assist_mode.as_deref(), Some("off"));
+    }
+
+    /// I8 · 档位的优先级：`--assist-mode` > `--auto` > 设置里存的那一档。
+    ///
+    /// 这一条是实测撞出来的：测试机上 `launcher.toml` 里存着 `confirm`，
+    /// `--auto` 跑出来打印的是「授权档位：confirm（逐步确认）」，
+    /// 紧接着一句「stdin 不是终端，凡是要你点头的动作都会按『不』处理」。
+    #[test]
+    fn auto_单给就是全自动_assist_mode_显式给了才压过它() {
+        // 什么都没给 → 交给配置
+        assert_eq!(asked_mode(None, false), None);
+        // 只给 --auto → 全自动（不看配置里存的是什么）
+        assert_eq!(asked_mode(None, true).as_deref(), Some("auto"));
+        // --assist-mode 显式给了就听它的，哪怕同时给了 --auto
+        assert_eq!(asked_mode(Some("off"), true).as_deref(), Some("off"));
+        assert_eq!(asked_mode(Some("confirm"), true).as_deref(), Some("confirm"));
+        assert_eq!(asked_mode(Some("auto"), false).as_deref(), Some("auto"));
         assert_eq!(z.registry.as_deref(), Some("tencent"));
 
         // 不给 --auto 时走老的 cmd_install，不该被误判
