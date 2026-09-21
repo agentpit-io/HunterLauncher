@@ -322,6 +322,14 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         None => cfg.assist.mode(),
     };
     println!("  授权档位：{}（{}）", mode.as_str(), mode.cn());
+    if mode == Mode::Confirm {
+        // 命令行下没有人能点确认。不说清楚的话，用户会看着它在第一个改动动作上
+        // 「莫名其妙地失败」——其实是它在等一个永远不会来的回答
+        println!(
+            "  ⚠ 「逐步确认」档在命令行下等不到回答：凡是要你点头的动作都会按「不」处理。\n\
+               要全自动请用 --assist-mode auto。"
+        );
+    }
     println!(
         "  预算：单问题 {} 回合 · 整次 {} 回合 · {} token · 单次模型 45 秒",
         crate::assist::auto::MAX_ROUNDS_PER_ISSUE,

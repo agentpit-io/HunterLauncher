@@ -167,6 +167,12 @@ impl Sink for Stdout {
         if !e.detail.is_empty() {
             line.push_str(&format!("　{}", e.detail));
         }
+        // 「需要你」卡片上的按钮也要打出来 —— 命令行下点不了，
+        // 但用户至少得知道界面上此刻会问他什么（不然只看到一行标题，像卡住了）
+        if !e.choices.is_empty() {
+            let labels: Vec<&str> = e.choices.iter().map(|c| c.label.as_str()).collect();
+            line.push_str(&format!("　[{}]", labels.join(" / ")));
+        }
         println!("{line}");
     }
     fn summary(&self, s: &Summary) {
