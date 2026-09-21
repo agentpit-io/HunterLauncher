@@ -294,7 +294,9 @@ pub fn for_target(os: &str, arch: &str) -> Vec<&'static Item> {
 
 /// 这台机器要的**虚拟机系统镜像**那一条（I8）。认不出平台就是 `None`。
 pub fn disk_image_for_host() -> Option<&'static Item> {
-    for_host().into_iter().find(|i| i.component == "colima-core")
+    for_host()
+        .into_iter()
+        .find(|i| i.component == "colima-core")
 }
 
 /// 清单里全部条目（同步流水线与单测用）。
@@ -353,7 +355,13 @@ mod tests {
             names.sort_unstable();
             assert_eq!(
                 names,
-                vec!["colima", "colima-core", "docker-cli", "docker-compose", "lima"]
+                vec![
+                    "colima",
+                    "colima-core",
+                    "docker-cli",
+                    "docker-compose",
+                    "lima"
+                ]
             );
             assert!(
                 total_bytes(&v) > 400 * 1024 * 1024,
@@ -402,7 +410,13 @@ mod tests {
     /// 同一个组件的两个架构必须是**同一个版本**（否则 Intel 与 M 芯片装到的东西不一样）。
     #[test]
     fn 同组件两架构版本一致() {
-        for c in ["colima", "colima-core", "lima", "docker-cli", "docker-compose"] {
+        for c in [
+            "colima",
+            "colima-core",
+            "lima",
+            "docker-cli",
+            "docker-compose",
+        ] {
             let vs: Vec<&str> = all()
                 .iter()
                 .filter(|i| i.component == c)

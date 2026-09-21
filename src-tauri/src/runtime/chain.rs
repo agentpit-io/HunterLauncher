@@ -75,18 +75,14 @@ impl Route {
                     )
                 }
             }
-            Route::OrbStack => {
-                "内置运行时这条路没走通，改试第 2 条：从官方地址下 OrbStack 安装包\
+            Route::OrbStack => "内置运行时这条路没走通，改试第 2 条：从官方地址下 OrbStack 安装包\
                  （约 200 MB，会先验苹果的签名与公证），装好之后由启动器替你打开"
-                    .to_string()
-            }
-            Route::Homebrew => {
-                "前两条路都没走通，改试第 3 条：用 Homebrew 装 OrbStack。\
+                .to_string(),
+            Route::Homebrew => "前两条路都没走通，改试第 3 条：用 Homebrew 装 OrbStack。\
                  这台电脑上没有 Homebrew 的话，启动器会先替你把它装上 —— \
                  那一步要往系统目录里写文件，macOS 会弹出它自己的密码框，\
                  输一次开机密码就行（密码交给系统，启动器看不到也不会保存）"
-                    .to_string()
-            }
+                .to_string(),
         }
     }
 }
@@ -369,7 +365,10 @@ mod tests {
             let s = r.intro();
             assert!(!s.is_empty());
             assert!(
-                s.contains("MB") || s.contains("下好了") || s.contains("密码") || s.contains("正在装"),
+                s.contains("MB")
+                    || s.contains("下好了")
+                    || s.contains("密码")
+                    || s.contains("正在装"),
                 "{}：{s}",
                 r.label()
             );

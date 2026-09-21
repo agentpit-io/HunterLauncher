@@ -1038,17 +1038,16 @@ pub async fn check_launcher_update(
     Ok(u)
 }
 
-/// 装启动器的新版本。
+/// 装启动器的新版本。**两条路都由启动器自己装完**（I8）。
 ///
-/// * 能就地装（AppImage / Windows / macOS）→ 装完**自动重启进程**，这个调用不会返回。
-/// * 装不了（`.deb`）→ 把包下到 `~/.hunter/updates/` 并返回一条要用户自己敲的命令。
+/// * AppImage / Windows / macOS → Tauri 的 updater 就地换掉
+/// * `.deb` → 下好包，走 polkit 的原生授权框 `pkexec dpkg -i`
+///
+/// 成功时装完**自动重启进程**，这个调用不会返回。
 #[tauri::command]
-pub async fn install_launcher_update(
-    app: tauri::AppHandle,
-) -> Result<Option<crate::selfupdate::ManualInstall>> {
+pub async fn install_launcher_update(app: tauri::AppHandle) -> Result<()> {
     match crate::selfupdate::install(&app).await {
-        Ok(Some(m)) => Ok(Some(m)),
-        Ok(None) => {
+        Ok(()) => {
             crate::linfo!("自更新完成，重启启动器");
             // 重启前把容器留着 —— 用户更新的是启动器，不是 Hunter
             app.restart();

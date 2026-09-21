@@ -412,8 +412,8 @@ fn read_scutil() -> Option<String> {
         crate::lwarn!("读系统代理被守卫拦下了：{}", e.msg);
         return None;
     }
-    let r = crate::proc::run_timeout("/usr/sbin/scutil", &["--proxy"], Duration::from_secs(10))
-        .ok()?;
+    let r =
+        crate::proc::run_timeout("/usr/sbin/scutil", &["--proxy"], Duration::from_secs(10)).ok()?;
     r.ok().then_some(r.stdout)
 }
 
@@ -663,13 +663,12 @@ mod tests {
             })
         );
         // 没有协议前缀时用默认的
-        assert_eq!(
-            parse_uri("proxy.corp:3128", "http").unwrap().scheme,
-            "http"
-        );
+        assert_eq!(parse_uri("proxy.corp:3128", "http").unwrap().scheme, "http");
         // 认证信息不进 host
         assert_eq!(
-            parse_uri("http://u:p@proxy.corp:3128", "http").unwrap().host,
+            parse_uri("http://u:p@proxy.corp:3128", "http")
+                .unwrap()
+                .host,
             "proxy.corp"
         );
         // 没有端口时按协议给默认端口
@@ -695,7 +694,11 @@ mod tests {
     #[test]
     fn 例外清单里的主机不走代理() {
         let mut s = parse_scutil(REAL_MAC);
-        s.no_proxy = vec!["*.local".into(), ".corp.example.com".into(), "foo.io".into()];
+        s.no_proxy = vec![
+            "*.local".into(),
+            ".corp.example.com".into(),
+            "foo.io".into(),
+        ];
         assert_eq!(s.for_url("https://a.corp.example.com/x"), None);
         assert_eq!(s.for_url("https://foo.io/x"), None);
         assert_eq!(s.for_url("https://sub.foo.io/x"), None);

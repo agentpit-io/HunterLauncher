@@ -160,9 +160,11 @@ pub fn disk_image_path() -> Option<PathBuf> {
 /// 清单里这一条落地之后应该在哪儿。
 fn dest_path(item: &Item) -> PathBuf {
     match item.unpack {
-        Unpack::Binary if item.component == "docker-compose" => crate::paths::runtime_docker_config()
-            .join("cli-plugins")
-            .join(exe(item.dest)),
+        Unpack::Binary if item.component == "docker-compose" => {
+            crate::paths::runtime_docker_config()
+                .join("cli-plugins")
+                .join(exe(item.dest))
+        }
         Unpack::Binary | Unpack::TarGzPick(_) => crate::paths::runtime_bin().join(exe(item.dest)),
         Unpack::TarGz => crate::paths::runtime_dist().join(item.dest),
         Unpack::Keep => crate::paths::runtime_dist().join(item.dest).join(item.file),
@@ -479,30 +481,28 @@ pub fn install(p: &mut Progress) -> AppResult<Installed> {
                     &mut |got, _| (p.bytes)(base + got, total),
                 );
                 match r {
-                    Ok(n) => {
-                        match verify_file(&cached, item) {
-                            Ok(which) => {
-                                (p.say)(&format!(
-                                    "{} 校验通过（{} 对上了，{} 字节）",
-                                    item.label(),
-                                    which,
-                                    n
-                                ));
-                                source_id = s.id.to_string();
-                                ok = true;
-                                break;
-                            }
-                            Err(msg) => {
-                                let _ = std::fs::remove_file(&cached);
-                                let msg = format!(
-                                    "{} 从「{}」下回来的内容{}。已删掉，不会使用。",
-                                    item.file, s.label, msg
-                                );
-                                crate::lwarn!("{msg}");
-                                last = Some(AppError::new(Code::Unknown, msg));
-                            }
+                    Ok(n) => match verify_file(&cached, item) {
+                        Ok(which) => {
+                            (p.say)(&format!(
+                                "{} 校验通过（{} 对上了，{} 字节）",
+                                item.label(),
+                                which,
+                                n
+                            ));
+                            source_id = s.id.to_string();
+                            ok = true;
+                            break;
                         }
-                    }
+                        Err(msg) => {
+                            let _ = std::fs::remove_file(&cached);
+                            let msg = format!(
+                                "{} 从「{}」下回来的内容{}。已删掉，不会使用。",
+                                item.file, s.label, msg
+                            );
+                            crate::lwarn!("{msg}");
+                            last = Some(AppError::new(Code::Unknown, msg));
+                        }
+                    },
                     Err(e) => {
                         crate::lwarn!("下 {} 失败（{}）：{}", item.file, s.label, e.msg);
                         last = Some(e);

@@ -57,7 +57,8 @@ impl Level {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Mode {
-    /// 自动驾驶：动作表内的 Safe 动作直接执行；Sensitive 仍然要问
+    /// 全自动：动作表内的动作（含 `Sensitive`）由「守卫 + 复核员」两道门把关之后
+    /// **直接执行**，安装过程里一次都不问用户（I8 · 任务书〇·五）
     Auto,
     /// 逐步确认：和 0.1.4 一样，改动类动作逐条弹确认
     Confirm,
@@ -83,20 +84,36 @@ impl Mode {
     }
     pub fn cn(self) -> &'static str {
         match self {
-            Mode::Auto => "自动驾驶",
+            Mode::Auto => "全自动",
             Mode::Confirm => "逐步确认",
             Mode::Off => "关闭",
         }
     }
     /// 这个级别的动作，在这一档下要不要先问用户。
+    ///
+    /// I8 之前 `Sensitive` 在任何档位下都要问。用户 2026-09-21 22:35 把那一条否了：
+    ///
+    /// > 需要支持全自动的安装、问题修改，不要让用户参与决策和点击确认和执行，
+    /// > 出现问题，自主分析，按最佳方案执行。
+    ///
+    /// 所以**全自动档下 `Sensitive` 不再问**——但把关的门一道没少，只是换了把关的人：
+    ///
+    /// | 门 | 谁 | 全自动档下 |
+    /// |---|---|---|
+    /// | ① 动作表 | 代码 | 表外的一律不执行（不变） |
+    /// | ② 守卫 | 代码 | 路径 / 删除 / 网络 / 他人容器的禁止项一条不放松（不变） |
+    /// | ③ 复核员 | 另一个模型 | 含 `Sensitive` 的计划必过，否决就退回诊断员换方案（不变） |
+    /// | ④ 用户点一下 | 用户 | **取消**（`Confirm` 档仍保留，在设置页给高级用户） |
+    ///
+    /// 换句话说：**放松的是「问不问用户」，不是「拦不拦得住」**。
+    /// 守卫是代码写死的硬校验，它不看档位 —— 见 [`writable_path`] / [`deletable_files`]。
     pub fn needs_confirm(self, level: Level) -> bool {
         match (self, level) {
             (_, Level::ReadOnly) => false,
-            // Sensitive 在**任何**档位下都要问 —— 包括自动驾驶
-            (_, Level::Sensitive) => true,
-            (Mode::Auto, Level::Safe) => false,
-            (Mode::Confirm, Level::Safe) => true,
-            (Mode::Off, Level::Safe) => true,
+            // 全自动：守卫 + 复核员两道门过了就执行，不再等用户
+            (Mode::Auto, _) => false,
+            (Mode::Confirm, _) => true,
+            (Mode::Off, _) => true,
         }
     }
 }
@@ -769,16 +786,40 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    /// I8：全自动档下一个都不问（包括 `Sensitive`）；另外两档照旧。
+    ///
+    /// 这条断言的反面 —— 「放松的只是问不问，不是拦不拦得住」——
+    /// 由本文件里那一堆守卫测试保证：它们**一条都没改**，而且不看档位。
     #[test]
-    fn 三档授权里_sensitive_永远要问() {
-        for m in [Mode::Auto, Mode::Confirm, Mode::Off] {
-            assert!(m.needs_confirm(Level::Sensitive), "{m:?}");
-            assert!(!m.needs_confirm(Level::ReadOnly), "{m:?}");
+    fn 全自动档下一个都不问_另外两档照旧() {
+        for lv in [Level::ReadOnly, Level::Safe, Level::Sensitive] {
+            assert!(!Mode::Auto.needs_confirm(lv), "全自动档不该问 {lv:?}");
         }
-        // Safe 只有自动驾驶档不问
-        assert!(!Mode::Auto.needs_confirm(Level::Safe));
-        assert!(Mode::Confirm.needs_confirm(Level::Safe));
-        assert!(Mode::Off.needs_confirm(Level::Safe));
+        for m in [Mode::Confirm, Mode::Off] {
+            assert!(!m.needs_confirm(Level::ReadOnly), "{m:?} 不该问只读动作");
+            assert!(m.needs_confirm(Level::Safe), "{m:?}");
+            assert!(m.needs_confirm(Level::Sensitive), "{m:?}");
+        }
+    }
+
+    /// 全自动档**不放松任何禁止项**：档位一改，最容易忘的就是这件事。
+    /// 这里把四条红线各挑一个代表，确认它们和档位毫无关系。
+    #[test]
+    fn 全自动档下四条禁止项一条不放松() {
+        // ① 不删用户文件：动作表外的删除请求连计划都过不了
+        assert!(
+            super::super::actions::plan(&super::super::actions::Call::new("rm_user_documents"))
+                .is_err()
+        );
+        // ② 不改网络与安全设置
+        assert!(super::super::actions::spec("set_system_proxy").is_none());
+        assert!(super::super::actions::spec("disable_gatekeeper").is_none());
+        // ③ 不动别人的容器：只有 hunter 自己项目名的 compose 动作在表里
+        assert!(super::super::actions::spec("compose_down_other").is_none());
+        // ④ 不执行模型自编的命令
+        assert!(super::super::actions::spec("run_shell").is_none());
+        // ⑤ 路径守卫不看档位：~/.hunter 外的路径永远拒绝
+        assert!(writable_path(Path::new("/etc/hosts")).is_err());
     }
 
     #[test]
@@ -1152,7 +1193,11 @@ mod tests {
             vec!["/usr/sbin/scutil", "--dns"],
             vec!["/usr/sbin/scutil", "--proxy", "--set"],
             vec!["networksetup", "-setwebproxy", "Wi-Fi", "127.0.0.1", "7897"],
-            vec!["reg", "add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"],
+            vec![
+                "reg",
+                "add",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            ],
             vec!["reg", "query", r"HKLM\SYSTEM"],
         ] {
             assert!(

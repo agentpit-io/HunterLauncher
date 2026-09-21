@@ -733,17 +733,6 @@ impl Orchestrator {
 
     // ── 侦察员 ────────────────────────────────────────────────────────────
 
-    /// 本机上别的 Hunter —— 一次安装里只报一次，并给出那两个结论式按钮（I7）。
-    ///
-    /// ## 这张卡片**不阻塞**
-    ///
-    /// 默认处置一直是「换一组空闲端口，两套并存」，那是推荐做法，也是不点任何
-    /// 按钮时会发生的事 —— 所以没有理由把安装停在这里等一次点击
-    /// （「授权之后零点击」是这一整套的底线）。卡片上把这句话**写出来**：
-    /// 不点也行，下面已经在跑了。
-    ///
-    /// 用户如果确实想「直接用它」，点了之后 [`Handle::answer`] 把项目名记下来，
-    /// 总指挥在下一个步骤开始前读到就改道（[`Orchestrator::maybe_takeover`]）。
     /// 「直连不通、改走你自己配的系统代理之后成功了」——**这也是一次自动修复**，
     /// 如实报一张卡片并计进「已自动解决 N 个问题」（I8 一.4）。
     ///
@@ -774,6 +763,22 @@ impl Orchestrator {
         );
     }
 
+    /// 本机上别的 Hunter —— 一次安装里只报一次。
+    ///
+    /// ## I8：这里不再问用户，自己拿主意
+    ///
+    /// I7 的做法是一张**不阻塞**的卡片，上面两个按钮：「和它并存」与「直接用它」。
+    /// 用户 2026-09-21 22:35 把「让用户参与决策」整类做法否了，于是这里改成：
+    ///
+    /// > **自动选「并存、换端口」** —— 它是风险最小的那个方案：
+    /// > 不停用户已有的那套、不删它的数据、不改它的配置，只给新装的这一套
+    /// > 挑一组空闲端口。
+    ///
+    /// 卡片还在，但它现在是一句**告知**：做了什么决定、为什么这么定、
+    /// 想改的话去哪儿改（设置页）。没有按钮，也不等任何人。
+    ///
+    /// 「直接用已有那套」这条路并没有消失 —— [`Handle::answer`] 仍然认
+    /// [`TAKEOVER_PREFIX`]，设置页与命令行 `--takeover` 走的就是它。
     fn report_other_installs(&self, parent: u64) {
         if self.reported_others.lock().map(|g| *g).unwrap_or(true) {
             return;
@@ -786,51 +791,38 @@ impl Orchestrator {
             return;
         }
         let who: Vec<String> = cands.iter().map(|o| o.one_line()).collect();
-        let mut choices = vec![Choice {
-            value: "coexist".into(),
-            label: "和它并存（推荐，不动它）".into(),
-            primary: true,
-        }];
-        // 只给**管得起来**的那几个「直接用它」的按钮。读不到 compose 文件的那种
-        // 接管过来也只能看，不如不给按钮、把原因说出来
-        for c in &cands {
-            choices.push(Choice {
-                value: format!("{TAKEOVER_PREFIX}{}", c.project),
-                label: format!("直接用「{}」，不再装一套", c.project),
-                primary: false,
-            });
-        }
-        let mut d = EventDraft::new(Kind::NeedUser, "你电脑上已经在运行另一套 Hunter")
+        let mut d = EventDraft::new(Kind::Resolved, "你电脑上已经在运行另一套 Hunter")
             .under(parent)
-            .status(Status::Waiting)
+            .status(Status::Ok)
             .detail(format!(
-                "{}。不点也行 —— 默认就是「和它并存」，下面这一步已经在跑了。",
+                "{}。已自动选择「和它并存」：新装的这一套换一组空闲端口，\
+                 你原来那套一点都不动 —— 这是风险最小的做法。\
+                 想改成直接使用已有那套，到「设置 → 已有的 Hunter」里切换。",
                 who.join("；")
             ))
-            .tech("并存的做法：新装的这一套换一组空闲端口。启动器不会停它、不会删它、不会改它的配置。")
-            .choices(choices);
+            .tech(
+                "并存的做法：新装的这一套换一组空闲端口。\
+                 启动器不会停它、不会删它、不会改它的配置。",
+            );
         for c in &cands {
             if c.manageable() {
                 d = d.tech(format!(
-                    "「{}」的 compose 文件在 {}，所以接管之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）",
+                    "「{}」的 compose 文件在 {}，所以在设置里切过去之后能看状态、看日志，\
+                     也能停 / 重启（每次都要再确认一遍）",
                     c.project,
                     crate::redact::mask_home(&c.working_dir)
                 ));
             } else {
                 d = d.tech(format!(
                     "「{}」的容器上没有 working_dir 标签，读不到它的 compose 文件 —— \
-                     接管之后只能看状态与日志，停 / 重启做不了",
+                     切过去之后只能看状态与日志，停 / 重启做不了",
                     c.project
                 ));
             }
         }
-        let id = self.bus.emit(d);
-        if let Ok(mut g) = self.offer.lock() {
-            *g = Some(id);
-        }
+        self.bus.emit(d);
     }
 
-    /// 用户点过「直接用它」了吗。点过就**改道**：记进设置，不再往下装。
     fn maybe_takeover(&mut self) -> Option<Outcome> {
         let want = self.takeover.lock().ok().and_then(|mut g| g.take())?;
         let ev = self.bus.emit(
@@ -2053,7 +2045,7 @@ pub const AUTO_SYSTEM_PROMPT: &str = "\
 - 国内直连 ghcr.io 经常超时，腾讯云香港的源（id 是 tencent）一般能通。
 - Hunter 要 5 个端口：web 3100、api 8100、opencode 3921、postgres 5442、redis 6479，被占时可以往上挪。
 - 启动器会**只读地**沿用用户在系统里配好的网络代理（直连失败时自动走一次代理重试，子进程与虚拟机也会带上）。所以「直连超时」这件事已经自动兜过一层了；不要提议去改代理、DNS、hosts —— 那些动作不存在，提了也只会被拒绝。
-- 这台电脑上没有 Docker 时，启动器会自动依次试三条路把它装好（内置运行时 → OrbStack 官方安装包 → Homebrew），**全部由启动器执行**。你不要让用户去终端里敲任何命令，也没有这样的工具可调。
+- 这台电脑上没有 Docker 时，启动器会自动依次试三条路把它装好（内置运行时 → OrbStack 官方安装包 → Homebrew），**全部由启动器执行**。把这件事推给用户是不允许的，也没有这样的工具可调。
 ";
 
 // ── 讲解员（模板，不调模型） ──────────────────────────────────────────────

@@ -43,7 +43,8 @@ use std::time::Duration;
 use crate::err::{AppError, AppResult, Code};
 
 /// Homebrew 官方安装脚本。**只有这一个地址**。
-pub const INSTALLER_URL: &str = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
+pub const INSTALLER_URL: &str =
+    "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
 
 /// 装 Homebrew 最多等多久。它可能要先装 Xcode 命令行工具（几百兆），给足 30 分钟。
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(1800);
@@ -70,10 +71,7 @@ pub fn brew_bin() -> Option<String> {
 /// 别执行它」的一道下限（代理插页、404 的 HTML、被截断的文件都会被它挡住）。
 pub fn looks_like_installer(text: &str) -> Result<(), String> {
     if text.len() < 2000 {
-        return Err(format!(
-            "只有 {} 字节，官方安装脚本没有这么短",
-            text.len()
-        ));
+        return Err(format!("只有 {} 字节，官方安装脚本没有这么短", text.len()));
     }
     if !text.starts_with("#!/bin/bash") {
         return Err("开头不是 `#!/bin/bash`".to_string());
@@ -90,10 +88,7 @@ pub fn looks_like_installer(text: &str) -> Result<(), String> {
 }
 
 /// 替用户装 Homebrew。**这一步可能会弹系统密码框**，调用方要先说一句人话。
-pub fn install_homebrew(
-    say: &mut dyn FnMut(&str),
-    cancel: &dyn Fn() -> bool,
-) -> AppResult<String> {
+pub fn install_homebrew(say: &mut dyn FnMut(&str), cancel: &dyn Fn() -> bool) -> AppResult<String> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::new(
             Code::NotImplemented,
@@ -120,12 +115,8 @@ pub fn install_homebrew(
         cancel,
         &mut noop,
     )?;
-    let text = std::fs::read_to_string(&script).map_err(|e| {
-        AppError::new(
-            Code::Unknown,
-            format!("读下回来的安装脚本失败：{e}"),
-        )
-    })?;
+    let text = std::fs::read_to_string(&script)
+        .map_err(|e| AppError::new(Code::Unknown, format!("读下回来的安装脚本失败：{e}")))?;
     if let Err(why) = looks_like_installer(&text) {
         let _ = std::fs::remove_file(&script);
         return Err(AppError::new(
@@ -147,7 +138,10 @@ pub fn install_homebrew(
          密码只交给系统的 sudo，启动器看不到，也不会保存。",
     )?;
 
-    let argv = vec!["/bin/bash".to_string(), script.to_string_lossy().into_owned()];
+    let argv = vec![
+        "/bin/bash".to_string(),
+        script.to_string_lossy().into_owned(),
+    ];
     // **窄门**：只允许「/bin/bash + 一个落在 ~/.hunter/runtime 里的脚本」
     crate::assist::guard::argv_install_script(&argv)?;
     crate::assist::guard::audit(

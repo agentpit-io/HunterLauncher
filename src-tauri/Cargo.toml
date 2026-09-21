@@ -1,11 +1,11 @@
 [package]
 name = "hunter-launcher"
-version = "0.1.7"
+version = "0.1.8"
 description = "Hunter 启动器 · 把 hunter-community 的部署变成「下载 → 填一把 key → 等几分钟」"
 authors = ["agentpit.io"]
 edition = "2021"
 rust-version = "1.77"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/agentpit-io/HunterLauncher"
 
 # Rust 侧的库名，Tauri 的移动端入口要求它以 _lib 结尾

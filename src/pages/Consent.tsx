@@ -6,33 +6,40 @@ import * as ipc from '../lib/ipc'
 import type { AssistMode } from '../lib/types'
 
 /**
- * 一次授权页（I5 · AI 自动驾驶安装方案 §三）。
+ * 一次授权页（I5 · AI 自动驾驶安装方案 §三；I8 改成全自动）。
  *
  * 这一页是整轮改动的**承诺书**：上面写的每一条「绝不会做」，在 Rust 侧
  * `assist/guard.rs` 里都有一条对应的硬校验，并且各有一条「模型真的提出来了、
  * 被拒绝了」的单元测试。文案与守卫必须一起改 —— 这里写了却没拦住，就是骗人。
  *
- * 两个按钮的文案是**结论**不是问句（方案 §七）：用户点的是「我要什么」，
- * 不是在回答「你要不要」。
+ * ## I8：这一页只剩一个按钮
+ *
+ * I5–I7 这里有三个出口：「授权 AI 自动安装」「我想每一步自己确认」「不用 AI」。
+ * 用户 2026-09-21 22:35 的决定是**不要让用户参与决策**，于是档位选择整个挪到了
+ * 设置页，这一页回到它本来的职责：**说清楚会做什么、绝不做什么，然后开始**。
+ *
+ * 用户在整条主路径上的点击次数因此变成：输 key 一次 + 这里一次 = **两次**，
+ * 此后到六个服务健康为止一次都不用点（验收口径见 I8 迭代报告）。
  */
 export function Consent() {
   const { t, send } = useStore()
-  const [busy, setBusy] = useState<AssistMode | null>(null)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // I7：默认勾着。勾了之后「装一套运行时」这件事不再单独弹「需要你」——
-  // 用户在这一页就已经对它明确说过「可以」了，再问一遍不叫谨慎，叫啰嗦。
+  // I7：默认勾着。I8 起它覆盖整条兜底链（内置运行时 / OrbStack / Homebrew）。
   const [allowInstall, setAllowInstall] = useState(true)
 
-  async function choose(mode: AssistMode) {
-    setBusy(mode)
+  // 档位写死成 `auto`：这一页不再让用户选档（要改去设置页）
+  const MODE: AssistMode = 'auto'
+
+  async function start() {
+    setBusy(true)
     setError(null)
     try {
-      await ipc.assistConsent(mode, allowInstall)
+      await ipc.assistConsent(MODE, allowInstall)
       send({ type: 'CONSENT_GIVEN' })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
@@ -41,50 +48,32 @@ export function Consent() {
       title={t.consent.title}
       intro={t.consent.intro}
       footerLeft={
-        <>
-          <button
-            type="button"
-            className="text-sm text-muted underline-offset-4 hover:text-body hover:underline"
-            onClick={() => void choose('off')}
-            disabled={busy !== null}
-            data-testid="consent-off"
-          >
-            {t.consent.off}
-          </button>
-          {/* 选模型是支线：默认走 Hunter 网关，点了这一条才去那一页。
-              主路径上「授权 → 自动安装」中间不再有任何一次点击。 */}
-          <button
-            type="button"
-            className="text-sm text-muted underline-offset-4 hover:text-body hover:underline"
-            onClick={() => send({ type: 'CHOOSE_MODEL' })}
-            disabled={busy !== null}
-            data-testid="consent-own-model"
-          >
-            {t.consent.ownModel}
-          </button>
-        </>
+        /* 选模型是支线：默认走 Hunter 网关，点了这一条才去那一页。
+           主路径上「授权 → 自动安装」中间不再有任何一次点击。
+           I8：「不用 AI」那一档跟着别的档位一起挪去了设置页 —— 这一页不再让用户选档。 */
+        <button
+          type="button"
+          className="text-sm text-muted underline-offset-4 hover:text-body hover:underline"
+          onClick={() => send({ type: 'CHOOSE_MODEL' })}
+          disabled={busy}
+          data-testid="consent-own-model"
+        >
+          {t.consent.ownModel}
+        </button>
       }
       footerRight={
         <>
-          <Button onClick={() => send({ type: 'BACK' })} disabled={busy !== null}>
+          <Button onClick={() => send({ type: 'BACK' })} disabled={busy}>
             {t.common.back}
-          </Button>
-          <Button
-            variant="secondary"
-            data-testid="consent-confirm"
-            disabled={busy !== null}
-            onClick={() => void choose('confirm')}
-          >
-            {busy === 'confirm' ? t.common.working : t.consent.confirmBtn}
           </Button>
           <Button
             variant="primary"
             trailing={<ChevronRight />}
-            data-testid="consent-auto"
-            disabled={busy !== null}
-            onClick={() => void choose('auto')}
+            data-testid="consent-start"
+            disabled={busy}
+            onClick={() => void start()}
           >
-            {busy === 'auto' ? t.common.working : t.consent.autoBtn}
+            {busy ? t.common.working : t.consent.startBtn}
           </Button>
         </>
       }
@@ -116,7 +105,7 @@ export function Consent() {
           type="checkbox"
           className="mt-[3px] size-[15px] shrink-0 accent-amber"
           checked={allowInstall}
-          disabled={busy !== null}
+          disabled={busy}
           onChange={(e) => setAllowInstall(e.target.checked)}
         />
         <span className="min-w-0">

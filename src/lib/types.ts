@@ -512,13 +512,6 @@ export interface LauncherUpdate {
   reason: string | null
 }
 
-/** `.deb` 这类装不了自己的格式：包下好了，给一条要用户自己敲的命令。 */
-export interface ManualInstall {
-  path: string
-  bytes: number
-  command: string
-  message: string
-}
 
 /** Hunter 有没有新版本 + Release Notes 摘要。 */
 export interface UpgradeCheck {
