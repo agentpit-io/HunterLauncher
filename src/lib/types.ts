@@ -273,6 +273,10 @@ export interface LauncherSettings {
   webLocalOnly: boolean
   /** AI 诊断助手。默认开；关掉之后只用确定性规则，一个 token 也不花（I4） */
   assist: boolean
+  /** I5 授权档位：auto 自动驾驶 / confirm 逐步确认 / off 关闭 */
+  assistMode: AssistMode
+  /** 用户是哪一刻做的授权（上海时间）。空 = 还没授权过 */
+  assistConsentedAt: string
   /** 现在实际用的 docker 路径。只读，拿不到就是 null（界面显示「—」） */
   dockerPath: string | null
 }
@@ -492,4 +496,75 @@ export class IpcError extends Error {
     this.name = 'IpcError'
     this.code = code
   }
+}
+
+// ── I5 · AI 自动驾驶安装（设计文档 §七） ─────────────────────────────────
+
+/** 授权档位。存 `launcher.toml [assist] mode`。 */
+export type AssistMode = 'auto' | 'confirm' | 'off'
+
+export type AssistEventKind =
+  | 'step'
+  | 'issue'
+  | 'analyze'
+  | 'action'
+  | 'verify'
+  | 'resolved'
+  | 'needUser'
+  | 'failed'
+  | 'summary'
+
+export type AssistEventStatus = 'running' | 'ok' | 'warn' | 'failed' | 'waiting' | 'skipped'
+
+export interface AssistChoice {
+  /** 回传给 assist_auto_answer 的值 */
+  value: string
+  /** 按钮文案。**是结论不是问句** */
+  label: string
+  primary: boolean
+}
+
+/** 过程流里的一条。按 `parent` 组成一棵树。 */
+export interface AssistEvent {
+  id: number
+  parent: number | null
+  kind: AssistEventKind
+  status: AssistEventStatus
+  title: string
+  detail: string
+  /** 「详情」折叠里的技术细节（已脱敏） */
+  tech?: string[]
+  tokens?: number
+  elapsedMs?: number
+  choices?: AssistChoice[]
+  at: string
+}
+
+/** 顶上那一行常驻摘要。 */
+export interface AssistSummary {
+  solved: number
+  open: number
+  tokens: number
+  rounds: number
+  maxRounds: number
+  elapsedMs: number
+  phase: string
+}
+
+export interface AssistAutoSnapshot {
+  running: boolean
+  events: AssistEvent[]
+  summary: AssistSummary
+}
+
+/** 一次自动安装的结果（`assist://done` 带的那一份）。 */
+export interface AssistOutcome {
+  ok: boolean
+  code: string | null
+  message: string | null
+  solved: number
+  rounds: number
+  tokens: number
+  elapsedMs: number
+  url: string | null
 }

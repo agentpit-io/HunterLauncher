@@ -15,7 +15,12 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { IpcError } from './types'
 import type {
   AppInfo,
+  AssistAutoSnapshot,
+  AssistEvent,
+  AssistMode,
+  AssistOutcome,
   AssistState,
+  AssistSummary,
   BackupMeta,
   BootState,
   DiagSection,
@@ -473,4 +478,55 @@ export function onUpgradeStep(cb: (line: string) => void): Promise<UnlistenFn> {
 /** 后台每 24 小时查一次，查到启动器有新版本就发这个（方案 §10）。 */
 export function onLauncherUpdate(cb: (u: LauncherUpdate) => void): Promise<UnlistenFn> {
   return on<LauncherUpdate>(EV_LAUNCHER_UPDATE, cb)
+}
+
+// ── I5 · AI 自动驾驶安装（设计文档 §二～八） ─────────────────────────────
+
+export const EV_ASSIST = 'assist://event'
+export const EV_ASSIST_SUMMARY = 'assist://summary'
+export const EV_ASSIST_DONE = 'assist://done'
+
+/** 用户在一次授权页上做的选择。Rust 侧会写配置、写日志、写审计。 */
+export async function assistConsent(mode: AssistMode): Promise<LauncherSettings> {
+  if (DEMO) return demo.demoSettings
+  return call<LauncherSettings>('assist_consent', { mode })
+}
+
+/** 开始一次全自动安装。立刻返回，过程走 `assist://event`。 */
+export async function assistAutoStart(registryId?: string): Promise<void> {
+  if (DEMO) return
+  await call<void>('assist_auto_start', { registryId: registryId ?? null })
+}
+
+/** 回答「需要你」卡片。返回 false 表示这会儿并没有在等谁回答。 */
+export async function assistAutoAnswer(value: string): Promise<boolean> {
+  if (DEMO) return true
+  return call<boolean>('assist_auto_answer', { value })
+}
+
+/** 页面刚挂载时先拉一份整棵树（事件可能在挂载之前就发过了）。 */
+export async function assistAutoSnapshot(): Promise<AssistAutoSnapshot> {
+  // 演示模式下按 __HUNTER_DEMO_PAGE__ 给两份不同的快照：
+  // 正常直播 与「需要你」那张卡片各一张图
+  if (DEMO)
+    return demoPage() === 'auto-need-user' ? demo.demoAutoNeedUser : demo.demoAutoSnapshot
+  return call<AssistAutoSnapshot>('assist_auto_snapshot')
+}
+
+/** 审计日志末尾若干条（设置页「AI 都做过什么」）。 */
+export async function assistAuditTail(lines: number): Promise<string[]> {
+  if (DEMO) return demo.demoAudit
+  return call<string[]>('assist_audit_tail', { lines })
+}
+
+export function onAssistEvent(cb: (e: AssistEvent) => void): Promise<UnlistenFn> {
+  return on<AssistEvent>(EV_ASSIST, cb)
+}
+
+export function onAssistSummary(cb: (s: AssistSummary) => void): Promise<UnlistenFn> {
+  return on<AssistSummary>(EV_ASSIST_SUMMARY, cb)
+}
+
+export function onAssistDone(cb: (o: AssistOutcome) => void): Promise<UnlistenFn> {
+  return on<AssistOutcome>(EV_ASSIST_DONE, cb)
 }

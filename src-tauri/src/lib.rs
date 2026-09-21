@@ -44,6 +44,7 @@ pub mod http;
 pub mod log;
 pub mod offline;
 pub mod paths;
+pub mod ports;
 pub mod proc;
 pub mod redact;
 pub mod registry;
@@ -178,6 +179,12 @@ pub fn run() {
             commands::assist_confirm,
             commands::assist_rule_action,
             commands::assist_reset,
+            // I5 · AI 自动驾驶安装
+            commands::assist_consent,
+            commands::assist_auto_start,
+            commands::assist_auto_answer,
+            commands::assist_auto_snapshot,
+            commands::assist_audit_tail,
         ])
         .setup(|app| {
             let handle = app.handle();

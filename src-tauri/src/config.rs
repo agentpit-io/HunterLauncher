@@ -12,7 +12,6 @@
 //! 自带 key 模式只把 BASE_URL 与模型名记在 toml 里，key 本身同样只落 `.env`。
 
 use std::collections::BTreeMap;
-use std::net::TcpListener;
 use std::path::Path;
 use std::time::Duration;
 
@@ -119,6 +118,15 @@ pub struct HunterSection {
     /// 等用户决定。
     #[serde(default = "default_web_bind")]
     pub web_bind: String,
+    /// 健康检查的等待上限（秒）。方案 §18 的 180 秒是默认值；
+    /// 慢机器上 AI 的 `raise_timeouts` 动作会把它调长（I5 动作表 v2）
+    #[serde(default = "default_start_timeout")]
+    pub start_timeout_secs: u64,
+}
+
+/// 方案 §18 的 `E_START_TIMEOUT` 就是这个数。
+fn default_start_timeout() -> u64 {
+    180
 }
 
 fn default_web_bind() -> String {
@@ -137,6 +145,11 @@ impl HunterSection {
     pub fn web_local_only(&self) -> bool {
         self.web_bind == WEB_BIND_LOCAL
     }
+
+    /// 健康检查等多久。手改成离谱的值时夹回 [180, 900]，**不照单全收**。
+    pub fn start_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.start_timeout_secs.clamp(180, 900))
+    }
 }
 
 impl Default for HunterSection {
@@ -148,6 +161,7 @@ impl Default for HunterSection {
             base_prefix: "docker.io/library".into(),
             ports: Ports::default(),
             web_bind: default_web_bind(),
+            start_timeout_secs: default_start_timeout(),
         }
     }
 }
@@ -272,11 +286,43 @@ pub struct AssistSection {
     /// 默认**开**。关掉之后只用第一层的确定性规则，一个 token 也不花
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// 授权档位（I5 · 设计文档 §3.2）：`auto` 自动驾驶 / `confirm` 逐步确认 / `off` 关闭。
+    ///
+    /// **默认是 `confirm`，不是 `auto`** —— 自动驾驶要用户在一次授权页上亲自选，
+    /// 不能靠一个默认值替他同意。授权页上 `auto` 是推荐项、预先选中，
+    /// 但只有他点了那个按钮，这里才会写成 `auto`。
+    #[serde(default = "default_assist_mode")]
+    pub mode: String,
+    /// 用户是哪一刻做的授权（上海时间）。没授权过就是空
+    #[serde(default)]
+    pub consented_at: String,
+}
+
+fn default_assist_mode() -> String {
+    "confirm".into()
+}
+
+impl AssistSection {
+    /// 解析成档位。`enabled = false` 一律按 `off` 处理 —— 老配置里只有这个开关。
+    pub fn mode(&self) -> crate::assist::guard::Mode {
+        if !self.enabled {
+            return crate::assist::guard::Mode::Off;
+        }
+        crate::assist::guard::Mode::parse(&self.mode)
+    }
+    /// 用户做过一次授权了吗（向导要据此决定跳不跳授权页）。
+    pub fn consented(&self) -> bool {
+        !self.consented_at.is_empty()
+    }
 }
 
 impl Default for AssistSection {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            mode: default_assist_mode(),
+            consented_at: String::new(),
+        }
     }
 }
 
@@ -347,26 +393,49 @@ pub struct PortChange {
     pub service: String,
     pub wanted: u16,
     pub actual: u16,
+    /// 原来那个端口被谁占着（I5）。0.1.4 只说「被占用」，AI 因此把用户
+    /// 另一套 Hunter 猜成了「残留容器」—— 这一条就是为了让证据跟着结论走。
+    /// 一行人话，读不到占用者时是空串（**不猜**）
+    #[serde(default)]
+    pub occupied_by: String,
 }
 
-/// 端口是不是能用。web 要对外监听，所以按 `0.0.0.0` 试；其余按 `127.0.0.1` 试
-/// （红线 4：除 web 外都只绑本机）。绑不上就算被占。
-pub fn port_free(port: u16, all_interfaces: bool) -> bool {
-    let addr = if all_interfaces {
-        ("0.0.0.0", port)
-    } else {
-        ("127.0.0.1", port)
-    };
-    TcpListener::bind(addr).is_ok()
+/// 端口是不是能用。
+///
+/// **I5 起不再用 `std::net::TcpListener`**：它在 Unix 上默认开 `SO_REUSEADDR`，
+/// macOS 上会把被 `*:P` 占死的端口判成空闲（0.1.4 在用户 Mac 上装不起来的根因）。
+/// 现在走 [`crate::ports`] 的三重确认：不带 `SO_REUSEADDR` 的通配绑定 + `docker ps`
+/// + 系统监听表，任一说占用即占用。
+///
+/// `all_interfaces` 这个参数**留着只为兼容老调用点**：探测一律按通配地址来，
+/// 比 `127.0.0.1` 更保守，所以两种取值的结果相同。
+pub fn port_free(port: u16, _all_interfaces: bool) -> bool {
+    crate::ports::verdict_now(port, &[PROJECT]).free
 }
 
 /// 从 `want` 开始往上找一个没被占的端口，最多找 200 个。
 /// `taken` 里的一律跳过；`own` 里的（现在正被**我们自己这一套**占着的）一律当成可用。
-fn next_free(want: u16, all_interfaces: bool, taken: &[u16], own: &[u16]) -> AppResult<u16> {
+fn next_free(
+    sv: &crate::ports::Survey,
+    want: u16,
+    taken: &[u16],
+    own: &[u16],
+) -> AppResult<(u16, Vec<crate::ports::Occupant>)> {
     let mut p = want;
-    for _ in 0..200 {
-        if !taken.contains(&p) && (own.contains(&p) || port_free(p, all_interfaces)) {
-            return Ok(p);
+    let mut first_occ: Vec<crate::ports::Occupant> = Vec::new();
+    for i in 0..200 {
+        if !taken.contains(&p) {
+            if own.contains(&p) {
+                return Ok((p, Vec::new()));
+            }
+            let v = sv.verdict(p, &[PROJECT]);
+            if v.free {
+                return Ok((p, first_occ));
+            }
+            // 只记**原本想要的那个端口**被谁占着 —— 用户关心的是这一条
+            if i == 0 {
+                first_occ = v.occupants;
+            }
         }
         p = p
             .checked_add(1)
@@ -383,26 +452,41 @@ fn next_free(want: u16, all_interfaces: bool, taken: &[u16], own: &[u16]) -> App
 /// `own` 是**当前 `hunter` 项目自己已经在用**的端口。第二次打开启动器时，
 /// 3101 正被我们自己的 web 容器占着 —— 要是把它也算成「被占用」，
 /// 每开一次启动器端口就往上挪一格，用户存的书签全会失效（M2 用例 9 实测撞出来的）。
+///
+/// I5：`docker ps` 与 `lsof` 在这里**只跑一次**（[`crate::ports::Survey`]），
+/// 五个端口共用同一份现场，不是每个端口各起两个子进程。
 pub fn resolve_ports(
     want: &Ports,
     own: &[u16],
     web_local_only: bool,
+) -> AppResult<(Ports, Vec<PortChange>)> {
+    resolve_ports_with(&crate::ports::Survey::collect(), want, own, web_local_only)
+}
+
+/// 同上，但由调用方给现场。总指挥要在一次修复回合里反复算端口，采一次就够。
+pub fn resolve_ports_with(
+    sv: &crate::ports::Survey,
+    want: &Ports,
+    own: &[u16],
+    _web_local_only: bool,
 ) -> AppResult<(Ports, Vec<PortChange>)> {
     let mut taken: Vec<u16> = Vec::new();
     let mut changes = Vec::new();
     let mut out = want.clone();
 
     for (name, wanted) in want.as_pairs() {
-        // web 默认要对外监听，所以按 0.0.0.0 试；设置里收紧成「只有本机」之后
-        // 它和别的服务一样只要 127.0.0.1 占得住就行（I2 加的开关）
-        let all_if = name == "web" && !web_local_only;
-        let actual = next_free(wanted, all_if, &taken, own)?;
+        let (actual, occ) = next_free(sv, wanted, &taken, own)?;
         taken.push(actual);
         if actual != wanted {
             changes.push(PortChange {
                 service: name.to_string(),
                 wanted,
                 actual,
+                occupied_by: occ
+                    .iter()
+                    .map(crate::ports::Occupant::human)
+                    .collect::<Vec<_>>()
+                    .join("；"),
             });
         }
         match name {
@@ -1081,6 +1165,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     const FAKE_KEY: &str = "hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2";
 
@@ -1519,7 +1604,8 @@ mod tests {
             postgres: 5442,
             redis: 6479,
         };
-        let (got, changes) = resolve_ports(&want, &[], false).unwrap();
+        let sv = crate::ports::Survey::empty();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[], false).unwrap();
         assert_ne!(got.api, pa, "被占的端口必须换掉");
         assert!(changes.iter().any(|c| c.service == "api" && c.wanted == pa));
         // 五个端口互不相同
@@ -1542,7 +1628,8 @@ mod tests {
             postgres: free + 3,
             redis: free + 4,
         };
-        let (got, changes) = resolve_ports(&want, &[], false).unwrap();
+        let sv = crate::ports::Survey::empty();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[], false).unwrap();
         if changes.is_empty() {
             assert_eq!(got, want);
         }
@@ -1563,12 +1650,13 @@ mod tests {
         };
 
         // 不告诉它这是自己的 → 换端口
-        let (got, changes) = resolve_ports(&want, &[], false).unwrap();
+        let sv = crate::ports::Survey::empty();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[], false).unwrap();
         assert_ne!(got.api, p);
         assert!(!changes.is_empty());
 
         // 告诉它这是自己的 → 原样保留，也不产生「端口已改」的提示
-        let (got, changes) = resolve_ports(&want, &[p], false).unwrap();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[p], false).unwrap();
         assert_eq!(got.api, p, "自己占着的端口应当原样保留");
         assert!(
             changes.iter().all(|c| c.service != "api"),

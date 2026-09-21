@@ -741,8 +741,12 @@ pub fn start(
     mut on_tick: impl FnMut(&[ServiceStatus]),
 ) -> AppResult<Vec<ServiceStatus>> {
     let t0 = std::time::Instant::now();
+    // I5 §六.2 预检闸门：合并后的端口表再对一遍现场，冲突就现在说，
+    // 不要等 Docker 把容器建到一半再报 `port is already allocated`
+    compose::preflight_gate()?;
     compose::up()?;
-    let r = compose::wait_healthy(compose::START_TIMEOUT, |v| {
+    // I5：等待上限可以被 AI 的 `raise_timeouts` 动作调长（慢机器上 180 秒确实不够）
+    let r = compose::wait_healthy(state.config().hunter.start_timeout(), |v| {
         if let Ok(mut g) = state.services.lock() {
             *g = v.to_vec();
         }

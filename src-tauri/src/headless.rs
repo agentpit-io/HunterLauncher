@@ -58,6 +58,10 @@ pub struct Args {
     /// `--diagnose` 是一条独立的路径，不给的话规则层只能看当下的现场 ——
     /// 而「拉取失败」这种事跑完就没痕迹了。
     pub code: Option<String>,
+    /// I5：`--auto` 走 AI 自动驾驶安装（总指挥 + 侦察 + 诊断 + 守卫 + 执行 + 验证）
+    pub auto: bool,
+    /// I5：`--assist-mode auto|confirm|off`，不给就用 `launcher.toml` 里存的那一档
+    pub assist_mode: Option<String>,
 }
 
 /// 手写参数解析。为这几个开关拖一个 clap 进来不划算，而且 Tauri 的可执行文件
@@ -79,6 +83,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         ai: false,
         assist_replay: None,
         code: None,
+        auto: false,
+        assist_mode: None,
     };
     let v: Vec<String> = argv.into_iter().collect();
     let mut i = 0;
@@ -98,6 +104,14 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 i += 1;
             }
             "-y" | "--yes" => a.yes = true,
+            "--auto" => {
+                a.auto = true;
+                a.headless = true;
+            }
+            "--assist-mode" => {
+                a.assist_mode = v.get(i + 1).cloned();
+                i += 1;
+            }
             "--pull-only" => {
                 a.pull_only = true;
                 a.headless = true;
@@ -174,6 +188,7 @@ pub const HELP: &str = "\
 Hunter 启动器 · 命令行模式
 
   hunter-launcher --headless [选项]     在没有桌面环境的机器上完成安装
+  hunter-launcher --auto [选项]         AI 自动驾驶安装：出问题自己查、自己修，过程实时打印
   hunter-launcher --status              看当前状态
   hunter-launcher --start | --stop | --restart | --down
   hunter-launcher --logs [服务名]       看容器日志（已脱敏）
@@ -193,6 +208,8 @@ Hunter 启动器 · 命令行模式
   --registry <源>     固定镜像源：ghcr | tencent | 自定义前缀。不给就自动测速选
   --tag <版本>        Hunter 版本，默认 1.2.0
   --pull-only         只拉镜像不起容器（网速慢时可以先预下载）
+  --auto              AI 自动驾驶安装（等同界面上「授权 AI 自动安装」那一档）
+  --assist-mode <档>  auto | confirm | off，不给就用设置里存的那一档
   -y, --yes           不要任何确认，一路走完
   -h, --help          这段说明
   -V, --version       版本号
@@ -244,6 +261,7 @@ pub fn run(args: &Args) -> i32 {
         Some("backups") => cmd_backups(),
         Some("import-images") => cmd_import_images(&st, args),
         Some("export-images") => cmd_export_images(&st, args),
+        _ if args.auto => cmd_auto(&st, args),
         _ => cmd_install(&st, args),
     };
     match r {
@@ -255,6 +273,122 @@ pub fn run(args: &Args) -> i32 {
             1
         }
     }
+}
+
+// ── I5 · AI 自动驾驶安装 ──────────────────────────────────────────────────
+
+/// `--auto`：把界面上那条「授权之后零点击」的路径原样跑一遍。
+///
+/// 这条路和界面版走的是**同一个** [`crate::assist::auto::Orchestrator`]、
+/// 同一张动作表、同一套守卫 —— 区别只有事件往哪儿发（这里发到 stdout 与
+/// `~/.hunter/logs/assist-events.jsonl`，界面版发到窗口）。
+/// 测试机上的七个场景验收就靠它。
+fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
+    use crate::assist::auto::Orchestrator;
+    use crate::assist::events::{Bus, Stdout};
+    use crate::assist::guard::Mode;
+
+    title("Hunter 启动器 · AI 自动驾驶安装");
+    println!("工作目录 {}", paths::root().display());
+
+    // 1) key：模型那一层要用它；没有 key 也能装，只是退回确定性规则
+    let key = read_key(args)?;
+    let check = gateway::check_key(&key, Duration::from_secs(25));
+    if !check.valid {
+        println!("  ✗ {}", check.message.clone().unwrap_or_default());
+        let code = match check.reason {
+            gateway::KeyReason::Exhausted => Code::QuotaExhausted,
+            gateway::KeyReason::RateLimited => Code::RateLimited,
+            gateway::KeyReason::Network => Code::ProxyBlock,
+            _ => Code::KeyInvalid,
+        };
+        return Err(AppError::new(code, "key 没通过校验。".to_string()));
+    }
+    st.set_hunter_key(&key);
+    println!("  ✓ key 有效");
+
+    // 2) 授权档位。命令行给了就用命令行的，并**像界面一样把授权记下来**
+    let mut cfg = st.config();
+    let mode = match args.assist_mode.as_deref() {
+        Some(m) => {
+            let m = Mode::parse(m);
+            cfg.assist.mode = m.as_str().to_string();
+            cfg.assist.enabled = m != Mode::Off;
+            cfg.assist.consented_at = crate::timefmt::now_shanghai();
+            cfg.save()?;
+            st.set_config(cfg.clone());
+            m
+        }
+        None => cfg.assist.mode(),
+    };
+    println!("  授权档位：{}（{}）", mode.as_str(), mode.cn());
+    println!(
+        "  预算：单问题 {} 回合 · 整次 {} 回合 · {} token · 单次模型 45 秒",
+        crate::assist::auto::MAX_ROUNDS_PER_ISSUE,
+        crate::assist::auto::MAX_ROUNDS_TOTAL,
+        crate::assist::auto::MAX_TOKENS
+    );
+    println!();
+
+    let opts = InstallOptions {
+        registry: args.registry.clone(),
+        tag: args.tag.clone().unwrap_or_else(|| cfg.hunter.tag.clone()),
+    };
+    let bus = std::sync::Arc::new(Bus::new(Box::new(Stdout::new()), true));
+    let mut orch = Orchestrator::new(bus, mode, Some(key), st.cancel.clone());
+    // 命令行下没有人能点「需要你」卡片上的按钮 —— 如实告诉总指挥，
+    // 别让它在那儿等一个永远不会来的回答
+    orch.set_interactive(false);
+    let out = orch.run(st, &opts);
+
+    println!();
+    println!(
+        "事件流：{}",
+        paths::logs_dir().join("assist-events.jsonl").display()
+    );
+    println!("审计日志：{}", crate::assist::guard::audit_path().display());
+    println!(
+        "统计：自动解决 {} 个问题 · {} 个修复回合 · {} token · 用时 {} 秒",
+        out.solved,
+        out.rounds,
+        out.tokens,
+        out.elapsed_ms / 1000
+    );
+    if out.ok {
+        println!("\n✓ 装好了。打开 {}", out.url.unwrap_or_default());
+        Ok(())
+    } else {
+        Err(AppError::new(
+            out.code
+                .as_deref()
+                .and_then(code_from_str)
+                .unwrap_or(Code::Unknown),
+            out.message.unwrap_or_else(|| "没能自动装好".into()),
+        ))
+    }
+}
+
+fn code_from_str(s: &str) -> Option<Code> {
+    [
+        Code::DockerMissing,
+        Code::DaemonDown,
+        Code::WslMissing,
+        Code::KeyInvalid,
+        Code::QuotaExhausted,
+        Code::PullFailed,
+        Code::PortInUse,
+        Code::PortConflict,
+        Code::StartTimeout,
+        Code::ProxyBlock,
+        Code::UpdateFailed,
+        Code::ComposeFetch,
+        Code::ConfigWrite,
+        Code::ProjectConflict,
+        Code::RateLimited,
+        Code::NotImplemented,
+    ]
+    .into_iter()
+    .find(|c| c.as_str() == s)
 }
 
 // ── 安装 ──────────────────────────────────────────────────────────────────
@@ -887,6 +1021,15 @@ fn cmd_assist_replay(path: &str) -> AppResult<()> {
     if turn.rejected.is_empty() {
         println!("\n  这份响应里没有白名单之外的动作。");
     }
+    // I5：拒绝要能**事后查证**，所以再把审计日志的末尾打出来
+    println!(
+        "\n  审计日志 {}（末尾 {} 条）：",
+        crate::assist::guard::audit_path().display(),
+        turn.rejected.len().max(1)
+    );
+    for l in crate::assist::guard::audit_tail(turn.rejected.len().max(1)) {
+        println!("  {l}");
+    }
     Ok(())
 }
 
@@ -1221,6 +1364,41 @@ mod tests {
     fn 光_diagnose_不会去问_ai() {
         assert!(!a(&["--diagnose"]).ai);
         assert!(a(&["--diagnose", "--ai"]).ai);
+    }
+
+    /// I5：`--auto` 与 `--assist-mode`。
+    #[test]
+    fn 解析_auto_与授权档位() {
+        let x = a(&["--auto"]);
+        assert!(x.auto);
+        assert!(x.headless, "--auto 单独给也要能跑起来");
+        assert!(x.assist_mode.is_none(), "不给档位就用设置里存的那一档");
+
+        let y = a(&["--auto", "--assist-mode", "auto"]);
+        assert_eq!(y.assist_mode.as_deref(), Some("auto"));
+
+        let z = a(&["--auto", "--assist-mode", "off", "--registry", "tencent"]);
+        assert_eq!(z.assist_mode.as_deref(), Some("off"));
+        assert_eq!(z.registry.as_deref(), Some("tencent"));
+
+        // 不给 --auto 时走老的 cmd_install，不该被误判
+        assert!(!a(&["--headless"]).auto);
+    }
+
+    #[test]
+    fn 错误码字符串能还原成错误码() {
+        assert_eq!(code_from_str("E_PORT_CONFLICT"), Some(Code::PortConflict));
+        assert_eq!(code_from_str("E_PULL_FAILED"), Some(Code::PullFailed));
+        // 认不得的不猜，返回 None（调用方会落到 E_UNKNOWN）
+        assert_eq!(code_from_str("E_SOMETHING_ELSE"), None);
+        assert_eq!(code_from_str(""), None);
+    }
+
+    /// 帮助里要写到这两个新开关 —— 不然没人知道它们存在。
+    #[test]
+    fn 帮助里写了_auto() {
+        assert!(HELP.contains("--auto"), "{HELP}");
+        assert!(HELP.contains("--assist-mode"), "{HELP}");
     }
 
     #[test]

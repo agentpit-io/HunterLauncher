@@ -24,6 +24,9 @@
 
 pub mod actions;
 pub mod ai;
+pub mod auto;
+pub mod events;
+pub mod guard;
 pub mod probe;
 pub mod rules;
 

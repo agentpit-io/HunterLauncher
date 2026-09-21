@@ -8,6 +8,75 @@
 
 ---
 
+## [0.1.5] - 2026-09-21
+
+迭代轮 I5。用户在自己的 Mac 上装 0.1.4，启动那一步报「端口已被占用」——
+根因是端口探测在 macOS 上把**被占死的端口判成了空闲**。本轮先把这个确定性缺陷修掉，
+再把整个安装改成「一次授权，AI 自动干完，过程实时给你看」。
+
+### 修复
+
+**macOS 上把被占用的端口判成空闲（P0）** —— 用户电脑上早有一套 Hunter 占着
+3100 / 8100 / 3921 / 5442 / 6479，启动器只把 web 3100 改成了 3101，其余四个照原样用，
+`docker compose up` 随后报 `Bind for 0.0.0.0:8100 failed: port is already allocated`。
+
+根因：`std::net::TcpListener::bind` 在 Unix 上**默认给监听套接字开 `SO_REUSEADDR`**，
+macOS 的 BSD 语义下这个选项会让「绑 `127.0.0.1:P`」在「`*:P` 已被别人占着」时照样成功。
+web 探的是 `0.0.0.0` 所以查对了，其余四个探的是 `127.0.0.1` 所以全错。
+Linux 内核的行为不同，所以 I4 在测试机上四个场景全过、一上真机就炸。
+
+现在端口探测走**三重确认**，任何一路说「占用」就算占用，并记下**占用者是谁**：
+
+1. 用 `socket2` 显式构造套接字、**不设 `SO_REUSEADDR`**，`0.0.0.0` 与 `[::]` 各绑一次；
+2. `docker ps` 的全部已发布端口 + 所属 compose 项目名（Docker 是端口这件事的最终裁判）；
+3. `lsof -nP -iTCP -sTCP:LISTEN`（Windows 用 `netstat -ano`）补充占用进程名。
+
+**起容器前的预检闸门** —— `docker compose up` 之前拿合并后的端口表再对一遍现场，
+有冲突就先换端口，不等 Docker 报错。
+
+**端口冲突有了自己的错误码 `E_PORT_CONFLICT`** —— 0.1.4 把
+`port is already allocated` 归成了「启动超时」，于是规则层认不出来、AI 拿到的前提就是错的。
+顺带补齐了 `no space left` / `pull access denied` / `TLS handshake timeout` / `i/o timeout`
+的归类。
+
+**认得出你电脑上已有的其他 Hunter** —— 镜像名含 `hunter-community-` 的其他 compose 项目
+会被报出来（连同它用官方镜像的 postgres / redis），默认**并存换端口**，
+界面上写清楚「启动器不会停它、不会删它」。
+
+**重试前清掉本项目的 `Created` 残留容器** —— 不带 `-v`，删之前逐个核对 compose 项目标签。
+
+### 新增
+
+**一次授权 + AI 自动驾驶安装** —— 向导变成
+「欢迎 → 输入 key → 一次授权 → 自动安装 → 完成」。
+授权那一下之后**不需要再点任何按钮**（测试机实测 54–94 秒到 6 / 6 健康），
+除非撞上三种必问情况：要装新软件、要动你已有的 Hunter、要超本次额度上限。
+
+三档授权（设置页随时可改）：`auto` 自动驾驶（推荐）/ `confirm` 逐步确认 / `off` 关闭。
+
+**实时过程流** —— 每一件事一张卡片，写人话；右侧「详情」里是命令、原始输出、耗时、token。
+顶上一行常驻：现在在干什么、自动解决了几个问题、花了多少 token、第几个修复回合。
+
+**AI 绝不会做的事，写在代码里** —— 路径 `canonicalize` 之后必须落在 `~/.hunter/` 内、
+删除只限启动器自己生成的文件、docker 操作强制 `--project-name hunter` 并在执行前核对
+容器的 compose 项目标签、没有任何需要 `sudo` 的动作、`volume rm` / `prune` / `down -v` /
+改代理 DNS hosts 防火墙 / 任意 shell 一律不在动作表里。
+每一次动作（**包括被拒绝的**）都写 `~/.hunter/logs/assist-audit.log`，设置页里能直接看。
+
+**要管理员权限的事会请你出手** —— Linux 上 `systemctl start docker` 需要 root 时，
+界面给一张卡片写明「请在终端里执行 `sudo systemctl start docker`」，
+**不替你提权、也不假装做过了**。
+
+### 其他
+
+- `hunter-launcher --auto [--assist-mode auto|confirm|off]`：命令行下跑同一套自动安装，
+  事件流同时落到 `~/.hunter/logs/assist-events.jsonl`。
+- 慢机器上健康检查的等待上限可以调长（`[hunter] start_timeout_secs`，180–900 秒）。
+- 下载那一步现在区分「真的下载了多少」与「本机已有多少」——
+  镜像已在本机时如实写「这次一个字节都没下载」，不再拿 manifest 大小冒充下载量。
+
+---
+
 ## [0.1.4] - 2026-09-20
 
 迭代轮 I4。用户在自己的 Mac 上第一次真机跑 0.1.3，当场撞出一个 P0；

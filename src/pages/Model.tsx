@@ -38,10 +38,9 @@ export function Model() {
         mode === 'own' ? { mode, baseUrl, model, apiKey } : { mode: 'gateway' },
       )
       setResult({ ok: r.ok, message: r.message, sanitize: r.schemaSanitize })
-      if (r.ok) {
-        send({ type: 'MODEL_CHOSEN' })
-        send({ type: 'REGISTRY_CHOSEN' })
-      }
+      // I5：选完模型直接进「自动安装」那一页 —— 选源、写配置、拉镜像、起容器
+      // 现在由 Rust 侧的总指挥连着跑完，中间不再有让用户点「下一步」的断点
+      if (r.ok) send({ type: 'MODEL_CHOSEN' })
     } catch (e) {
       setResult({ ok: false, message: e instanceof Error ? e.message : String(e), sanitize: false })
     } finally {

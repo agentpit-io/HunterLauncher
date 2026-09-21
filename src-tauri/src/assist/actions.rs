@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::assist::guard::{self, Level, Mode};
 use crate::err::{AppError, AppResult, Code};
 use crate::runtime::which;
 
@@ -42,7 +43,9 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy)]
 pub struct Spec {
     pub id: &'static str,
-    pub kind: Kind,
+    /// 风险级别（I5 动作表 v2）。`auto` 档下 `Safe` 直接执行、`Sensitive` 仍然要问，
+    /// 判定在 [`Mode::needs_confirm`]，**不在界面里**
+    pub level: Level,
     /// 要做什么（给用户看的一句话）
     pub title: &'static str,
     /// 为什么要做（给用户看的一句话）
@@ -58,7 +61,7 @@ pub const ACTIONS: &[Spec] = &[
     // ── 只读 ──────────────────────────────────────────────────────────
     Spec {
         id: "probe_docker_path",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "重新按已知位置找一遍 docker",
         why: "macOS 的 GUI 程序拿不到终端里的 PATH，得按已知安装位置挨个探",
         desc: "重新探测 docker 可执行文件，返回按顺序探过的每一个位置与结果（存在 / 不存在 / 没有可执行位），以及最终用的是哪一条。",
@@ -66,7 +69,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "docker_version",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "跑一次 docker version",
         why: "客户端与服务端版本能同时判断「装没装」和「daemon 起没起」",
         desc: "执行 `docker version`，返回原始输出与退出码。",
@@ -74,7 +77,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "compose_config",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "校验 compose 配置",
         why: "配置里有语法错或变量没展开时，up 会在很后面才失败",
         desc: "执行 `docker compose config --quiet`，返回原始输出与退出码。",
@@ -82,7 +85,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "read_log_tail",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "读启动器日志的末尾",
         why: "失败的原话通常就在日志最后几行",
         desc: "读 ~/.hunter/logs/launcher.log 的最后 N 行（已脱敏）。参数 lines：1–200。",
@@ -90,7 +93,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "check_ports",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "查端口占用",
         why: "3100 / 8100 这些端口被别的程序占着时，容器起不来",
         desc: "检查 Hunter 要用的 5 个端口现在空不空，返回每个端口的状态。",
@@ -98,7 +101,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "check_disk",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "查磁盘余量",
         why: "六个镜像解压后要几个 GB，盘满了拉取会在半路失败",
         desc: "检查工作目录所在分区的剩余空间。",
@@ -106,7 +109,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "list_runtime_apps",
-        kind: Kind::ReadOnly,
+        level: Level::ReadOnly,
         title: "看容器运行时装没装、起没起",
         why: "「装了但没启动」和「根本没装」要给完全不同的建议",
         desc: "检查 OrbStack / Docker Desktop / Colima / systemd 的 docker 服务，分别报「装没装」与「进程起没起」。",
@@ -115,7 +118,7 @@ pub const ACTIONS: &[Spec] = &[
     // ── 改动系统（必须用户确认） ──────────────────────────────────────
     Spec {
         id: "start_runtime",
-        kind: Kind::Mutating,
+        level: Level::Safe,
         title: "启动容器运行时",
         why: "Docker 客户端在、只是后台服务没起来时，把它拉起来就好了",
         desc: "启动指定的容器运行时。参数 app 只能是：orbstack / docker-desktop / colima / systemd。",
@@ -123,7 +126,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "set_docker_path",
-        kind: Kind::Mutating,
+        level: Level::Safe,
         title: "把 docker 的路径写进设置",
         why: "docker 装在不常见的位置时，指一次以后就不用再探了",
         desc: "把 docker 可执行文件的绝对路径写进 ~/.hunter/launcher.toml 的 [runtime] docker_path。路径必须真实存在且可执行，否则拒绝。参数 path。",
@@ -131,7 +134,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "switch_registry",
-        kind: Kind::Mutating,
+        level: Level::Safe,
         title: "换一个镜像源",
         why: "国内直连 ghcr.io 经常超时，换成腾讯云香港的镜像一般就通了",
         desc: "切换镜像源并写进设置。参数 registry 只能是候选源的 id（用 list 里给出的那些）。",
@@ -139,7 +142,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "restart_stack",
-        kind: Kind::Mutating,
+        level: Level::Safe,
         title: "重启 Hunter 的容器",
         why: "配置改过之后要重新 up 一次才生效",
         desc: "执行 `docker compose up -d`，让改过的配置生效。",
@@ -147,7 +150,7 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "remap_ports",
-        kind: Kind::Mutating,
+        level: Level::Safe,
         title: "重新分配被占用的端口",
         why: "端口被别的程序占着时，换一组空闲端口就能起来",
         desc: "重新检测端口冲突并把空闲端口写进配置与覆盖文件。",
@@ -155,13 +158,107 @@ pub const ACTIONS: &[Spec] = &[
     },
     Spec {
         id: "brew_install",
-        kind: Kind::Mutating,
+        level: Level::Sensitive,
         title: "用 Homebrew 装一个东西",
         why: "mac 上缺的组件多数能一条 brew 命令补上",
         desc: "执行 `brew install <formula>`。formula 只能是：docker / docker-compose / colima / docker-buildx。只在 macOS 上可用。",
         params: &[("formula", "docker | docker-compose | colima | docker-buildx")],
     },
+    // ── I5 动作表 v2 新增（设计文档 §五） ─────────────────────────────────
+    Spec {
+        id: "probe_network",
+        level: Level::ReadOnly,
+        title: "测一遍各个下载源的连通与快慢",
+        why: "拉不动的时候要先知道是哪个源不通，而不是一直重试同一个",
+        desc: "对每个候选镜像源发一次 manifest 请求，返回可用与否和耗时（毫秒）。",
+        params: &[],
+    },
+    Spec {
+        id: "read_container_logs",
+        level: Level::ReadOnly,
+        title: "读某个服务的容器日志",
+        why: "容器起来又退出时，退出的原因只在它自己的日志里",
+        desc: "读**本项目**某个服务最后 N 行日志（已脱敏）。service 只能是 api / llm-shim / opencode / postgres / redis / web；lines 1–200。",
+        params: &[
+            ("service", "api | llm-shim | opencode | postgres | redis | web"),
+            ("lines", "行数，1–200"),
+        ],
+    },
+    Spec {
+        id: "list_other_hunter_installs",
+        level: Level::ReadOnly,
+        title: "看这台机器上还有没有别的 Hunter",
+        why: "端口被占常常是因为用户自己早就装过一套，不查清楚就会把原因猜错",
+        desc: "列出本机上镜像名含 hunter-community- 、但 compose 项目名不是 hunter 的其他安装，以及它们占着的端口。",
+        params: &[],
+    },
+    Spec {
+        id: "wait_daemon",
+        level: Level::ReadOnly,
+        title: "等 Docker 起来",
+        why: "点开 OrbStack / Docker Desktop 之后守护进程要几十秒才就绪",
+        desc: "轮询 docker version 直到服务端可用或超时。参数 seconds：5–120。",
+        params: &[("seconds", "最多等多少秒，5–120")],
+    },
+    Spec {
+        id: "retry_pull",
+        level: Level::Safe,
+        title: "退避之后重新拉镜像",
+        why: "网络抖一下就失败的拉取，等几秒再来通常就过了",
+        desc: "等待若干秒后重新执行 docker compose pull。参数 delay_seconds：0–60。",
+        params: &[("delay_seconds", "先等多少秒，0–60")],
+    },
+    Spec {
+        id: "compose_down_own",
+        level: Level::Safe,
+        title: "把 Hunter 自己的容器停掉并移除",
+        why: "配置换过之后，旧容器带着旧端口，必须先拆掉再重建",
+        desc: "对**本项目** hunter 执行 docker compose down（**不带 -v**，数据卷一律保留）。不会碰这台机器上别的容器。",
+        params: &[],
+    },
+    Spec {
+        id: "remove_own_stale_containers",
+        level: Level::Safe,
+        title: "清掉 Hunter 自己的残留容器",
+        why: "上一次起到一半失败会留下「已创建未启动」的容器，它们带着旧端口",
+        desc: "删除**本项目** hunter 中状态为 created 的容器（删之前逐个核对 compose 项目标签）。不带 -v，数据卷保留。",
+        params: &[],
+    },
+    Spec {
+        id: "restart_own_service",
+        level: Level::Safe,
+        title: "重启 Hunter 的某一个服务",
+        why: "单个服务卡住时，重建它比把整套推倒重来快得多",
+        desc: "重新创建**本项目**的某一个服务。service 只能是 api / llm-shim / opencode / postgres / redis / web。",
+        params: &[("service", "api | llm-shim | opencode | postgres | redis | web")],
+    },
+    Spec {
+        id: "raise_timeouts",
+        level: Level::Safe,
+        title: "把等待时间调长",
+        why: "机器慢的时候 180 秒不够，调长比反复重试有用",
+        desc: "把健康检查的等待上限写进 launcher.toml。参数 seconds：180–900。",
+        params: &[("seconds", "健康检查等待上限，180–900 秒")],
+    },
+    Spec {
+        id: "export_feedback_bundle",
+        level: Level::Safe,
+        title: "生成一份脱敏诊断包",
+        why: "实在修不好时，把现场打包好，用户一键就能发给开发者",
+        desc: "把日志与配置脱敏后打成 zip，放到 ~/.hunter/diagnostics/，返回文件路径。",
+        params: &[],
+    },
 ];
+
+impl Spec {
+    /// I4 的两分法（只读 / 改动系统）。界面还在用，由 `level` 推出，不再单独存一份。
+    pub fn kind(&self) -> Kind {
+        match self.level {
+            Level::ReadOnly => Kind::ReadOnly,
+            Level::Safe | Level::Sensitive => Kind::Mutating,
+        }
+    }
+}
 
 pub fn spec(id: &str) -> Option<&'static Spec> {
     ACTIONS.iter().find(|a| a.id == id)
@@ -197,6 +294,8 @@ impl Call {
 pub struct Plan {
     pub id: String,
     pub kind: Kind,
+    /// I5 的三级风险。界面按它决定要不要出「需要你」卡片
+    pub level: Level,
     pub title: String,
     pub why: String,
     /// 将要执行的完整命令（参数数组）。不是子进程的动作（写配置文件之类）时为空，
@@ -254,7 +353,8 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
 
     let mut p = Plan {
         id: s.id.to_string(),
-        kind: s.kind,
+        kind: s.kind(),
+        level: s.level,
         title: s.title.to_string(),
         why: s.why.to_string(),
         argv: Vec::new(),
@@ -337,6 +437,64 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             })?;
             p.argv = vec![brew, "install".into(), f];
         }
+        // ── I5 动作表 v2 ────────────────────────────────────────────────
+        "probe_network" => {
+            p.summary = Some("对每个候选镜像源发一次 manifest 请求，测连通与耗时".into())
+        }
+        "read_container_logs" => {
+            let svc = enum_arg(call, "service", guard::OWN_SERVICES)?;
+            let n = num_arg(call, "lines", 1, 200)?;
+            p.summary = Some(format!("读本项目 {svc} 服务的最后 {n} 行日志"));
+        }
+        "list_other_hunter_installs" => {
+            p.summary = Some("列出这台机器上别的 Hunter 安装与它们占着的端口".into())
+        }
+        "wait_daemon" => {
+            let n = num_arg(call, "seconds", 5, 120)?;
+            p.summary = Some(format!("轮询 docker version，最多等 {n} 秒"));
+        }
+        "retry_pull" => {
+            let n = num_arg(call, "delay_seconds", 0, 60)?;
+            p.summary = Some(format!("等 {n} 秒后重新执行 docker compose pull"));
+        }
+        "compose_down_own" => {
+            // **不带 -v**。守卫那边也拦，这里是第一道
+            let (prog, mut args) = crate::compose::argv(&["down", "--remove-orphans"]);
+            p.argv = vec![prog];
+            p.argv.append(&mut args);
+        }
+        "remove_own_stale_containers" => {
+            let stale = crate::compose::stale_own_containers();
+            p.summary = Some(if stale.is_empty() {
+                "本项目没有「已创建未启动」的残留容器".to_string()
+            } else {
+                format!(
+                    "删掉本项目 {} 个残留容器：{}（不带 -v，数据卷保留）",
+                    stale.len(),
+                    stale
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("、")
+                )
+            });
+        }
+        "restart_own_service" => {
+            let svc = enum_arg(call, "service", guard::OWN_SERVICES)?;
+            let (prog, mut args) = crate::compose::argv(&["up", "-d", "--force-recreate", &svc]);
+            p.argv = vec![prog];
+            p.argv.append(&mut args);
+            p.title = format!("重建 {svc} 这个服务");
+        }
+        "raise_timeouts" => {
+            let n = num_arg(call, "seconds", 180, 900)?;
+            p.summary = Some(format!(
+                "往 ~/.hunter/launcher.toml 的 [hunter] 段写 start_timeout_secs = {n}"
+            ));
+        }
+        "export_feedback_bundle" => {
+            p.summary = Some("把日志与配置脱敏后打包到 ~/.hunter/diagnostics/".into())
+        }
         other => {
             // 上面的 match 与 ACTIONS 表必须同步；漏了一条就走到这里，如实报错
             return Err(AppError::new(
@@ -345,25 +503,64 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             ));
         }
     }
+    // **最后一道**：真要 spawn 的参数数组过一遍守卫。
+    // 不管这条动作是谁提出来的、表里怎么写的，越界的命令到不了 `proc::run`
+    if !p.argv.is_empty() {
+        guard::argv(&p.argv)?;
+    }
     Ok(p)
 }
 
-/// 真去执行。
-///
-/// `confirmed` 只对 [`Kind::Mutating`] 有意义：没确认就**不执行**，
-/// 这一道拦在这里而不是在界面里 —— 界面可以有 bug，这一层不能有。
+/// 真去执行（I4 的调用点：`confirm` 语义，改动类一律要用户点过确认）。
 pub fn execute(call: &Call, confirmed: bool) -> AppResult<Outcome> {
-    let p = plan(call)?;
-    if p.kind == Kind::Mutating && !confirmed {
-        return Err(AppError::new(
+    execute_as(call, Mode::Confirm, confirmed, guard::Proposer::User)
+}
+
+/// 真去执行（I5：带授权档位）。
+///
+/// 三道门，缺一不可：
+/// 1. [`plan`] —— 动作在不在表里、参数合不合法、`argv` 过不过 [`guard::argv`]；
+/// 2. 授权档位 —— [`Mode::needs_confirm`] 说要问而调用方没给 `confirmed`，就**不执行**；
+/// 3. 各分支自己的守卫 —— 写文件过 [`guard::writable_path`]，动容器过 [`guard::own_container`]。
+///
+/// 这三道都在**执行路径上**，不在界面里 —— 界面可以有 bug，这一层不能有。
+pub fn execute_as(
+    call: &Call,
+    mode: Mode,
+    confirmed: bool,
+    by: guard::Proposer,
+) -> AppResult<Outcome> {
+    let p = match plan(call) {
+        Ok(p) => p,
+        Err(e) => {
+            guard::audit(&call.id, &call.args, by, None, &format!("拒绝：{}", e.msg));
+            return Err(e);
+        }
+    };
+    if mode.needs_confirm(p.level) && !confirmed {
+        let e = AppError::new(
             Code::NotImplemented,
-            format!("「{}」会改动这台机器，要用户确认之后才能执行。", p.title),
-        ));
+            format!(
+                "「{}」是「{}」级别的动作，在「{}」档下要你点过确认才执行。",
+                p.title,
+                p.level.cn(),
+                mode.cn()
+            ),
+        );
+        guard::audit(
+            &call.id,
+            &call.args,
+            by,
+            Some(p.level),
+            "拒绝：还没得到确认",
+        );
+        return Err(e);
     }
     crate::linfo!(
-        "诊断助手执行动作 {}（{:?}）：{}",
+        "诊断助手执行动作 {}（{:?} · {}）：{}",
         p.id,
-        p.kind,
+        p.level,
+        mode.as_str(),
         p.command_line()
     );
     let text = match p.id.as_str() {
@@ -439,14 +636,117 @@ pub fn execute(call: &Call, confirmed: bool) -> AppResult<Outcome> {
                 s
             }
         }
+        // ── I5 动作表 v2 ────────────────────────────────────────────────
+        "probe_network" => network_report(),
+        "read_container_logs" => {
+            let svc = enum_arg(call, "service", guard::OWN_SERVICES)?;
+            let n = num_arg(call, "lines", 1, 200)? as usize;
+            // compose::logs 内部已经走过脱敏
+            crate::compose::logs(Some(&svc), n)?.join("\n")
+        }
+        "list_other_hunter_installs" => super::probe::other_installs_text(),
+        "wait_daemon" => {
+            let n = num_arg(call, "seconds", 5, 120)? as u64;
+            wait_daemon(Duration::from_secs(n))
+        }
+        "retry_pull" => {
+            let n = num_arg(call, "delay_seconds", 0, 60)? as u64;
+            if n > 0 {
+                std::thread::sleep(Duration::from_secs(n));
+            }
+            let r = crate::compose::run(&["pull"], Duration::from_secs(1800))?;
+            if r.ok() {
+                "重新拉取完成。".to_string()
+            } else {
+                // 这里跑的是 `pull` 不是 `up`，要用拉取那张归类表
+                return Err(AppError::new(
+                    Code::PullFailed,
+                    crate::compose::classify_pull_error(&r.stderr, r.status),
+                ));
+            }
+        }
+        "remove_own_stale_containers" => {
+            let removed = crate::compose::remove_own_stale_containers()?;
+            if removed.is_empty() {
+                "本项目没有需要清理的残留容器。".to_string()
+            } else {
+                format!(
+                    "清掉了 {} 个残留容器：{}",
+                    removed.len(),
+                    removed.join("、")
+                )
+            }
+        }
+        "raise_timeouts" => {
+            let n = num_arg(call, "seconds", 180, 900)? as u64;
+            let mut cfg = crate::config::LauncherConfig::load();
+            cfg.hunter.start_timeout_secs = n;
+            cfg.save()?;
+            format!("健康检查的等待上限改成 {n} 秒，写进了 launcher.toml。")
+        }
+        "export_feedback_bundle" => {
+            let path = crate::feedback::export_bundle()?;
+            // 这份包要能发出去，路径给全（它本来就在用户自己机器上）
+            format!("诊断包已生成：{}", path.display())
+        }
         // 剩下的都是「跑一个子进程」
         _ => run_argv(&p)?,
     };
+    let text = crate::redact::mask_home(&crate::redact::redact(text.trim()));
+    guard::audit(
+        &p.id,
+        &call.args,
+        by,
+        Some(p.level),
+        &format!("成功：{}", first_line(&text)),
+    );
     Ok(Outcome {
         id: p.id,
         ok: true,
-        text: crate::redact::mask_home(&crate::redact::redact(text.trim())),
+        text,
     })
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").chars().take(200).collect()
+}
+
+/// 轮询 `docker version` 直到服务端起来。**不是 sleep 一个固定时长然后宣布成功**。
+fn wait_daemon(max: Duration) -> String {
+    let t0 = std::time::Instant::now();
+    loop {
+        let d = crate::runtime::docker::detect();
+        if d.daemon_running {
+            return format!(
+                "Docker 守护进程已就绪（等了 {} 秒，服务端 {}）。",
+                t0.elapsed().as_secs(),
+                d.server_version.as_deref().unwrap_or("版本读不到")
+            );
+        }
+        if t0.elapsed() >= max {
+            return format!(
+                "等了 {} 秒，Docker 守护进程还是没起来。",
+                t0.elapsed().as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn network_report() -> String {
+    let tag = crate::config::LauncherConfig::load().hunter.tag;
+    let mut s = String::new();
+    for c in &crate::registry::CANDIDATES {
+        let p = crate::registry::probe(c, &tag, Duration::from_secs(8));
+        s.push_str(&format!(
+            "{} {} · {} ms{}\n",
+            if p.available { "可用" } else { "不可用" },
+            p.label,
+            p.elapsed_ms,
+            p.detail.map(|d| format!(" · {d}")).unwrap_or_default()
+        ));
+    }
+    s
 }
 
 fn run_argv(p: &Plan) -> AppResult<String> {
@@ -456,6 +756,7 @@ fn run_argv(p: &Plan) -> AppResult<String> {
             format!("动作 {} 没有可执行的命令", p.id),
         ));
     };
+    guard::argv(&p.argv)?;
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let timeout = if p.id == "brew_install" || p.id == "restart_stack" {
         Duration::from_secs(600)
@@ -472,6 +773,23 @@ fn run_argv(p: &Plan) -> AppResult<String> {
         s.push_str("stderr: ");
         s.push_str(r.stderr.trim());
         s.push('\n');
+    }
+    // **退出码不是 0 就是失败**（I5）。
+    //
+    // 原先这里一律 `Ok(...)`，于是 `systemctl start docker` 因为没有权限退出码 1，
+    // 界面上照样显示「✓ 已处理」，总指挥也以为修好了 —— 接着白等 90 秒 `wait_daemon`、
+    // 再原样重试三个回合（场景 2 首轮实测：4 分 39 秒全花在这上面）。
+    // 只读动作例外：`docker version` 在 daemon 没起时退出码就是 1，那本身就是答案。
+    if p.level != Level::ReadOnly && r.status != Some(0) {
+        return Err(AppError::new(
+            Code::Unknown,
+            format!(
+                "「{}」没成功（{}）：{}",
+                p.title,
+                s.lines().next().unwrap_or(""),
+                r.err_line()
+            ),
+        ));
     }
     Ok(s)
 }
@@ -610,16 +928,17 @@ fn safe_id(s: &str) -> String {
 
 // ── 只读动作的具体实现 ────────────────────────────────────────────────────
 
+/// I5：不只说「占了」，还要说**被谁占了**。
+///
+/// 0.1.4 给模型的诊断里只有「被占用」三个字，模型于是把用户自己另一套 Hunter
+/// 猜成了「残留容器」—— 证据不全的时候，模型只会把空白填满，不会说「我不知道」。
 fn port_report() -> String {
     let cfg = crate::config::LauncherConfig::load();
-    let all = !cfg.hunter.web_local_only();
+    let sv = crate::ports::Survey::collect();
     let mut s = String::new();
     for (name, port) in cfg.hunter.ports.as_pairs() {
-        let free = crate::config::port_free(port, name == "web" && all);
-        s.push_str(&format!(
-            "{name} {port} {}\n",
-            if free { "空闲" } else { "被占用" }
-        ));
+        let v = sv.verdict(port, &[crate::config::PROJECT]);
+        s.push_str(&format!("{name} {}\n", v.human()));
     }
     s
 }
@@ -779,6 +1098,7 @@ pub(crate) mod tests {
         let p = Plan {
             id: "x".into(),
             kind: Kind::ReadOnly,
+            level: Level::ReadOnly,
             title: "t".into(),
             why: "w".into(),
             argv: vec!["/usr/bin/open".into(), "-a".into(), "Docker Desktop".into()],

@@ -401,6 +401,33 @@ pub fn runtime_apps() -> Vec<AppPresence> {
     out
 }
 
+/// 本机上别的 Hunter 安装，一行一条人话（I5 动作表 v2 的 `list_other_hunter_installs`）。
+pub fn other_installs_text() -> String {
+    let pubs = crate::ports::docker_published();
+    let v = crate::ports::other_hunter_installs(&pubs);
+    if v.is_empty() {
+        return "这台机器上没有别的 Hunter 在跑。".to_string();
+    }
+    let mut s = format!("这台机器上还有 {} 套 Hunter 在跑：\n", v.len());
+    for i in &v {
+        s.push_str(&format!(
+            "compose 项目 {} · {} 个容器（{}）· 占着端口 {}\n",
+            i.project,
+            i.containers.len(),
+            i.containers.join("、"),
+            i.ports
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join("、")
+        ));
+    }
+    s.push_str(
+        "它们和这次要装的这一套是两回事，启动器不会动它们；新装的会换一组空闲端口，两套并存。\n",
+    );
+    s
+}
+
 pub fn runtime_apps_text() -> String {
     let apps = runtime_apps();
     if apps.is_empty() {

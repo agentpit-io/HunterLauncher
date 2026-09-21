@@ -202,6 +202,19 @@ jobs:
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked
       - name: cargo test（三平台共用的纯逻辑部分在这里也要过）
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      # I5 · 这一条是为「只有 macOS 才炸」的缺陷准备的。
+      #
+      # 0.1.4 在用户的 Mac 上把四个被占死的端口判成了空闲，而测试机（Linux）四个场景全过 ——
+      # 根因是 `std::net::TcpListener` 在 Unix 上默认开 SO_REUSEADDR，BSD 语义下它允许
+      # 「绑 127.0.0.1:P」在「*:P 已被占」时照样成功，Linux 内核则不允许。
+      # 这一步在真的 macOS runner 上起一个带 SO_REUSEADDR 的 *:port 监听（模拟 OrbStack 的端口转发），
+      # 断言 crate::ports 判它为「占用」。上面那条 `cargo test` 已经包含它了，
+      # 这里单独再跑一次并 `--nocapture`，是为了让它红的时候一眼能看出是**这一条**红了。
+      - name: 端口探测在 macOS 上的回归（I5 · P0）
+        if: runner.os == 'macOS'
+        run: >
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+          ports::tests -- --nocapture --test-threads=1
       # M4 起 PR 上也真编一次 release 二进制。
       # `cargo check` 编不出 `custom-protocol` 那条路径，而正是那条路径出过问题
       # （M1 §9：不带这个特性的产物会去连 devUrl，表现为白屏）。

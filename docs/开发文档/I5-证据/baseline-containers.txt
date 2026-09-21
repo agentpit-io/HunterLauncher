@@ -1,0 +1,6 @@
+16595225ff83	hunter-community-web-1	running	2026-09-19 09:51:08 +0000 UTC
+398f76d0a3b6	hunter-community-api-1	running	2026-09-19 09:51:08 +0000 UTC
+533ef00d032b	hunter-community-llm-shim-1	running	2026-09-19 09:51:04 +0000 UTC
+a2391309294b	hunter-community-opencode-1	running	2026-09-19 09:51:08 +0000 UTC
+b65aaa655f84	hunter-community-redis-1	running	2026-09-19 09:51:04 +0000 UTC
+fb422b602fdb	hunter-community-postgres-1	running	2026-09-19 09:51:04 +0000 UTC

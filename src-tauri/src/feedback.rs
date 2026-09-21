@@ -375,6 +375,25 @@ fn first_full_ipv4(line: &str) -> Option<String> {
     None
 }
 
+/// AI 自己导一份**全量**诊断包（I5 动作表 v2 的 `export_feedback_bundle`）。
+///
+/// 和用户在反馈页导的是同一条路 —— 同一套 [`collect`] + 同一套脱敏，
+/// 区别只是「勾选哪几节」由代码给（全勾）而不是由用户点。
+/// **不上传**，只落到 `~/.hunter/diagnostics/`。
+pub fn export_bundle() -> AppResult<std::path::PathBuf> {
+    let cfg = LauncherConfig::load();
+    let sections = collect(&cfg, env!("CARGO_PKG_VERSION"));
+    let include: Vec<String> = sections.iter().map(|s| s.id.clone()).collect();
+    let form = Form {
+        kind: "deploy".into(),
+        description: "AI 自动安装没能解决问题，由启动器自动导出的现场".into(),
+        contact: String::new(),
+        error_code: String::new(),
+    };
+    let (path, _bytes) = export_zip(&sections, &include, &form, env!("CARGO_PKG_VERSION"))?;
+    Ok(std::path::PathBuf::from(path))
+}
+
 /// 把选中的几节 + 表单打成一个 zip，返回 (落地路径, 字节数)。
 ///
 /// `include` 是要带上的节 id；空数组表示一节都不带（只带表单）。

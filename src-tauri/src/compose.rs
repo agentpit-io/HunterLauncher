@@ -148,6 +148,13 @@ pub struct PullProgress {
     pub images: Vec<ImagePull>,
     pub total_bytes: u64,
     pub downloaded_bytes: u64,
+    /// 这一次**真的走了网络**的字节数（I5）。
+    ///
+    /// `downloaded_bytes` 把「本机已有的层」也算进去了 —— 它是进度条的分子，
+    /// 用户关心的是整体完成度。但拿它去说「下载了 849 MB，用时 1 秒」就是在骗人：
+    /// 那 849 MB 一个字节都没过网。这一项只累计 `Already exists` 之外的层。
+    #[serde(default)]
+    pub net_bytes: u64,
     pub percent: u32,
     /// 字节/秒，最近若干秒的滑动平均；还没有样本时为 null
     pub speed_bps: Option<u64>,
@@ -175,6 +182,7 @@ impl PullProgress {
             images: Vec::new(),
             total_bytes: 0,
             downloaded_bytes: 0,
+            net_bytes: 0,
             percent: 0,
             speed_bps: None,
             eta_seconds: None,
@@ -454,6 +462,7 @@ impl PullAggregator {
             images: self.images.clone(),
             total_bytes: total,
             downloaded_bytes: done,
+            net_bytes: transferred,
             percent: if total > 0 {
                 ((done as f64 / total as f64) * 100.0).round().min(100.0) as u32
             } else {
@@ -670,6 +679,11 @@ pub fn classify_pull_error(stderr: &str, code: Option<i32>) -> String {
         || s.contains("i/o timeout")
     {
         return format!("连镜像源超时。网络不通或者被墙。原话：{tail}");
+    }
+    if s.contains("pull access denied") {
+        return format!(
+            "镜像源说这个仓库不让拉（pull access denied）。多半是 tag 写错了或者仓库不是公开的。原话：{tail}"
+        );
     }
     if s.contains("unauthorized") || s.contains("denied") {
         return format!("镜像源拒绝访问（仓库可能不是公开的）。原话：{tail}");
@@ -955,6 +969,333 @@ pub fn guard_project_owner() -> AppResult<()> {
 
 // ── up / down / logs ──────────────────────────────────────────────────────
 
+/// Docker 在起容器时报的端口冲突，从原话里抠出来的一条。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindFailure {
+    pub port: u16,
+    /// `0.0.0.0` / `127.0.0.1` / `[::]`，读不到就是空
+    pub addr: String,
+}
+
+/// 从 `docker compose up` 的输出里找出「端口已被占用」的那几条。
+///
+/// 真实原话（用户 Mac 上 0.1.4 的现场，以及测试机复现）：
+/// ```text
+/// Error response from daemon: Ports are not available: exposing port TCP 0.0.0.0:8100 -> …
+/// Error response from daemon: driver failed programming external connectivity on endpoint
+///   hunter-api-1 (…): Bind for 0.0.0.0:8100 failed: port is already allocated
+/// listen tcp 0.0.0.0:6479: bind: address already in use
+/// ```
+pub fn parse_bind_failures(text: &str) -> Vec<BindFailure> {
+    let mut out: Vec<BindFailure> = Vec::new();
+    let low = text.to_lowercase();
+    if !(low.contains("port is already allocated")
+        || low.contains("address already in use")
+        || low.contains("ports are not available"))
+    {
+        return out;
+    }
+    // 在整段文本里扫 `<地址>:<端口>` 形状。只认真的像地址的那些，不硬凑
+    for line in text.lines() {
+        let l = line.to_lowercase();
+        if !(l.contains("already allocated")
+            || l.contains("already in use")
+            || l.contains("not available"))
+        {
+            continue;
+        }
+        for tok in line.split(|c: char| c.is_whitespace() || c == '(' || c == ')') {
+            let tok = tok.trim_end_matches(&[',', ':', '.'][..]);
+            let Some((addr, port)) = tok.rsplit_once(':') else {
+                continue;
+            };
+            let Ok(port) = port.parse::<u16>() else {
+                continue;
+            };
+            let addr_ok = addr == "0.0.0.0"
+                || addr == "[::]"
+                || addr == "::"
+                || addr.starts_with("127.")
+                || addr.chars().all(|c| c.is_ascii_digit() || c == '.');
+            if !addr_ok || addr.is_empty() {
+                continue;
+            }
+            if !out.iter().any(|b| b.port == port) {
+                out.push(BindFailure {
+                    port,
+                    addr: addr.to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 把 `docker compose up` 的失败归成一个错误码。
+///
+/// **0.1.4 把所有 up 失败都归成了 `E_START_TIMEOUT`**，包括那条写得清清楚楚的
+/// `port is already allocated` —— 于是规则层的 ports-taken 没被匹配、AI 拿到的
+/// 错误码是「启动超时」，给出的解释自然也是错的（用户 Mac 上那次失败的第 2、3 条根因）。
+pub fn classify_up_error(text: &str, code: Option<i32>) -> AppError {
+    let binds = parse_bind_failures(text);
+    if !binds.is_empty() {
+        // 端口 → 服务名：从我们自己写下去的端口表反查，查不到就不写服务名（不猜）
+        let cfg = crate::config::LauncherConfig::load();
+        let mut named: Vec<String> = Vec::new();
+        for b in &binds {
+            match cfg
+                .hunter
+                .ports
+                .as_pairs()
+                .iter()
+                .find(|(_, p)| *p == b.port)
+            {
+                Some((svc, _)) => named.push(format!("{}（{svc}）", b.port)),
+                None => named.push(b.port.to_string()),
+            }
+        }
+        return AppError::new(
+            Code::PortConflict,
+            format!(
+                "Docker 拒绝发布端口 {}：已经被这台机器上别的东西占着了。原话：{}",
+                named.join("、"),
+                last_line(text)
+            ),
+        );
+    }
+    let low = text.to_lowercase();
+    if low.contains("no space left") {
+        return AppError::new(
+            Code::PullFailed,
+            format!(
+                "磁盘满了，容器起不来。腾出空间后重试。原话：{}",
+                last_line(text)
+            ),
+        );
+    }
+    if low.contains("pull access denied") {
+        return AppError::new(
+            Code::PullFailed,
+            format!(
+                "起容器时要拉的镜像不让拉（pull access denied），多半是 tag 写错了。原话：{}",
+                last_line(text)
+            ),
+        );
+    }
+    if low.contains("tls handshake timeout") {
+        return AppError::new(
+            Code::PullFailed,
+            format!("连镜像源时 TLS 握手超时。原话：{}", last_line(text)),
+        );
+    }
+    if low.contains("i/o timeout") || low.contains("context deadline exceeded") {
+        return AppError::new(
+            Code::PullFailed,
+            format!("连镜像源超时。原话：{}", last_line(text)),
+        );
+    }
+    if low.contains("cannot connect to the docker daemon")
+        || low.contains("is the docker daemon running")
+    {
+        return AppError::new(
+            Code::DaemonDown,
+            format!("连不上 Docker 守护进程。原话：{}", last_line(text)),
+        );
+    }
+    AppError::new(
+        Code::StartTimeout,
+        format!(
+            "docker compose up -d 失败（退出码 {}）：{}",
+            code.map(|c| c.to_string()).unwrap_or_else(|| "未知".into()),
+            last_line(text)
+        ),
+    )
+}
+
+fn last_line(text: &str) -> String {
+    text.lines()
+        .rfind(|l| !l.trim().is_empty())
+        .unwrap_or("（没有输出）")
+        .trim()
+        .to_string()
+}
+
+// ── 预检闸门（I5 §六.2） ──────────────────────────────────────────────────
+
+/// 起容器**之前**查出来的一条端口冲突。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreflightConflict {
+    pub service: String,
+    pub port: u16,
+    /// 占用者，一行人话
+    pub occupied_by: String,
+}
+
+/// `docker compose up` 之前，拿**合并后**的端口表再对一遍现场。
+///
+/// 为什么不能只信 `prepare` 那一步算好的端口：中间隔着几分钟的镜像拉取，
+/// 用户完全可能在这期间起了别的东西；更要紧的是 0.1.4 那种探测本身漏判的情况 ——
+/// 与其等 Docker 报错再去猜，不如在这里用同一套三重确认再判一次。
+///
+/// 端口表从 `docker compose config --format json` 取（**渲染后**的真实意图），
+/// 不是从 `launcher.toml` 取 —— 后者只是我们以为写下去的东西。
+pub fn preflight_ports() -> AppResult<Vec<PreflightConflict>> {
+    let rendered = config_check_json()?;
+    let v: serde_json::Value = serde_json::from_str(&rendered).map_err(|e| {
+        AppError::new(
+            Code::Unknown,
+            format!("compose config 的 JSON 解析不了：{e}"),
+        )
+    })?;
+    let mut want: Vec<(String, u16)> = Vec::new();
+    if let Some(svcs) = v.get("services").and_then(|s| s.as_object()) {
+        for (name, body) in svcs {
+            let Some(ports) = body.get("ports").and_then(|p| p.as_array()) else {
+                continue;
+            };
+            for p in ports {
+                // 渲染后的 compose 里 published 可能是字符串也可能是数字
+                let published = p.get("published").and_then(|x| {
+                    x.as_u64()
+                        .or_else(|| x.as_str().and_then(|s| s.parse::<u64>().ok()))
+                });
+                if let Some(n) = published {
+                    if let Ok(n) = u16::try_from(n) {
+                        want.push((name.clone(), n));
+                    }
+                }
+            }
+        }
+    }
+    if want.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sv = crate::ports::Survey::collect();
+    let mut out = Vec::new();
+    for (svc, port) in want {
+        // 我们自己那一套正占着的不算冲突
+        let vd = sv.verdict(port, &[PROJECT]);
+        if vd.free {
+            continue;
+        }
+        out.push(PreflightConflict {
+            service: svc,
+            port,
+            occupied_by: vd
+                .occupants
+                .iter()
+                .map(crate::ports::Occupant::human)
+                .collect::<Vec<_>>()
+                .join("；"),
+        });
+    }
+    Ok(out)
+}
+
+/// 预检不过就返回 `E_PORT_CONFLICT`。总指挥接到它去 remap 再来一次。
+pub fn preflight_gate() -> AppResult<()> {
+    let c = preflight_ports()?;
+    if c.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = c
+        .iter()
+        .map(|x| format!("{}（{}）被 {} 占着", x.port, x.service, x.occupied_by))
+        .collect();
+    Err(AppError::new(
+        Code::PortConflict,
+        format!(
+            "起容器前的预检发现 {} 个端口冲突：{}。先换端口再起，不等 Docker 报错。",
+            c.len(),
+            lines.join("；")
+        ),
+    ))
+}
+
+// ── 本项目的残留容器（I5 §六.5） ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaleContainer {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+}
+
+/// 列出**本项目** `hunter` 里状态为 `created` 的残留容器。
+///
+/// 用户 Mac 上那次失败留下了 3 个（api / web / opencode）：`up` 起到一半被端口
+/// 冲突打断，容器建出来了但没起来，还带着**旧的端口配置**。不清掉就重来的话，
+/// compose 可能直接复用它们，换过的端口不生效。
+pub fn stale_own_containers() -> Vec<StaleContainer> {
+    let bin = which::docker_bin();
+    let filter = format!("label=com.docker.compose.project={PROJECT}");
+    let r = proc::run_timeout(
+        &bin,
+        &[
+            "ps",
+            "-a",
+            "--filter",
+            &filter,
+            "--filter",
+            "status=created",
+            "--format",
+            "{{.ID}}\t{{.Names}}\t{{.State}}",
+        ],
+        Duration::from_secs(20),
+    );
+    let Ok(r) = r else { return Vec::new() };
+    if !r.ok() {
+        return Vec::new();
+    }
+    r.stdout
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.trim().split('\t').collect();
+            if f.len() < 3 || f[0].is_empty() {
+                return None;
+            }
+            Some(StaleContainer {
+                id: f[0].to_string(),
+                name: f[1].to_string(),
+                state: f[2].to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 删掉本项目的 `Created` 残留容器。**不带 `-v`，也绝不碰别的项目**。
+///
+/// 每一个都在删之前再查一遍 `com.docker.compose.project` 标签 ——
+/// `--filter` 已经筛过一次，这里再核一次是因为「删容器」这个动作没有后悔药，
+/// 而守卫的成本只有一次 `docker inspect`。
+pub fn remove_own_stale_containers() -> AppResult<Vec<String>> {
+    let bin = which::docker_bin();
+    let mut removed = Vec::new();
+    for c in stale_own_containers() {
+        // 守卫：删之前再查一遍这个容器的 compose 项目标签（`--filter` 已经筛过一次，
+        // 但删容器没有后悔药，多一次 `docker inspect` 换一个确定性很划算）
+        if let Err(e) = crate::assist::guard::own_container(&c.id) {
+            crate::lwarn!("不删容器 {}：{}", c.name, e.msg);
+            continue;
+        }
+        let argv: Vec<String> = vec![bin.clone(), "rm".into(), "-f".into(), c.id.clone()];
+        // 按 ID 删带不了 `--project-name`，范围保证来自上面那次 own_container
+        crate::assist::guard::argv_scoped(&argv, true)?;
+        match proc::run_timeout(&bin, &["rm", "-f", &c.id], Duration::from_secs(60)) {
+            Ok(r) if r.ok() => {
+                crate::linfo!("清掉本项目的残留容器 {}（{}）", c.name, c.state);
+                removed.push(c.name);
+            }
+            Ok(r) => crate::lwarn!("删残留容器 {} 失败：{}", c.name, r.err_line()),
+            Err(e) => crate::lwarn!("删残留容器 {} 起不来：{}", c.name, e.msg),
+        }
+    }
+    Ok(removed)
+}
+
 pub fn up() -> AppResult<()> {
     guard_project_owner()?;
     let r = run(&["up", "-d", "--remove-orphans"], Duration::from_secs(300))?;
@@ -962,10 +1303,14 @@ pub fn up() -> AppResult<()> {
         crate::linfo!("docker compose up -d 完成");
         Ok(())
     } else {
-        Err(AppError::new(
-            Code::StartTimeout,
-            format!("docker compose up -d 失败：{}", r.err_line()),
-        ))
+        // I5：**不再一律归成 E_START_TIMEOUT**。端口冲突有自己的错误码，
+        // 否则规则层与 AI 拿到的前提就是错的（用户 Mac 上那次失败的第 2、3 条根因）
+        let mut text = r.stderr.clone();
+        if !r.stdout.trim().is_empty() {
+            text.push('\n');
+            text.push_str(&r.stdout);
+        }
+        Err(classify_up_error(&text, r.status))
     }
 }
 
@@ -1398,6 +1743,90 @@ mod tests {
             "{:?}",
             s.images
         );
+    }
+
+    /// 用户 Mac 上 0.1.4 的真实原话（用户抄给我们的那两行）。
+    #[test]
+    fn 端口冲突要归成_e_port_conflict_而不是启动超时() {
+        let real = "Error response from daemon: driver failed programming external connectivity \
+                    on endpoint hunter-api-1 (8f3a…): Bind for 0.0.0.0:8100 failed: port is already allocated";
+        let e = classify_up_error(real, Some(1));
+        assert_eq!(e.code, Code::PortConflict, "{}", e.msg);
+        assert!(e.msg.contains("8100"), "{}", e.msg);
+
+        let real2 =
+            "Error response from daemon: Bind for 0.0.0.0:6479 failed: port is already allocated";
+        assert_eq!(classify_up_error(real2, Some(1)).code, Code::PortConflict);
+    }
+
+    #[test]
+    fn address_already_in_use_也算端口冲突() {
+        let s =
+            "Error starting userland proxy: listen tcp4 0.0.0.0:3921: bind: address already in use";
+        let e = classify_up_error(s, Some(1));
+        assert_eq!(e.code, Code::PortConflict, "{}", e.msg);
+        assert!(e.msg.contains("3921"), "{}", e.msg);
+    }
+
+    #[test]
+    fn 抠端口只抠报错那几行_不把别处的冒号数字当端口() {
+        let s = "Creating hunter-web-1 ... done\n\
+                 image sha256:abc123 pulled in 12:34\n\
+                 Error response from daemon: Bind for 0.0.0.0:8100 failed: port is already allocated";
+        let b = parse_bind_failures(s);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert_eq!(b[0].port, 8100);
+        assert_eq!(b[0].addr, "0.0.0.0");
+    }
+
+    #[test]
+    fn up_的其他错误各归各位() {
+        assert_eq!(
+            classify_up_error(
+                "write /var/lib/docker/tmp: no space left on device",
+                Some(1)
+            )
+            .code,
+            Code::PullFailed
+        );
+        assert_eq!(
+            classify_up_error(
+                "Error response from daemon: pull access denied for x",
+                Some(1)
+            )
+            .code,
+            Code::PullFailed
+        );
+        assert_eq!(
+            classify_up_error("net/http: TLS handshake timeout", Some(1)).code,
+            Code::PullFailed
+        );
+        assert_eq!(
+            classify_up_error("dial tcp 1.2.3.4:443: i/o timeout", Some(1)).code,
+            Code::PullFailed
+        );
+        assert_eq!(
+            classify_up_error(
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
+                Some(1)
+            )
+            .code,
+            Code::DaemonDown
+        );
+        // 认不出来的仍然是启动失败，但**要带上原话**，不能只说「超时」
+        let e = classify_up_error("something weird", Some(17));
+        assert_eq!(e.code, Code::StartTimeout);
+        assert!(e.msg.contains("something weird"), "{}", e.msg);
+        assert!(e.msg.contains("17"), "{}", e.msg);
+    }
+
+    #[test]
+    fn pull_归类里_pull_access_denied_有自己的一句话() {
+        let s = classify_pull_error(
+            "Error response from daemon: pull access denied for ghcr.io/x/y, repository does not exist",
+            Some(1),
+        );
+        assert!(s.contains("不让拉"), "{s}");
     }
 
     #[test]

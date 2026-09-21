@@ -15,6 +15,7 @@
  */
 
 import type {
+  AssistAutoSnapshot,
   AppInfo,
   BackupMeta,
   BootState,
@@ -297,6 +298,9 @@ export const demoSettings: LauncherSettings = {
   registryPrefix: DEMO_REGISTRY,
   // AI 诊断助手默认开（I4）
   assist: true,
+  // I5：授权档位。演示里显示「已授权自动驾驶」的样子
+  assistMode: 'auto',
+  assistConsentedAt: '2026-09-21 10:30:00',
   dockerPath: '/usr/bin/docker',
 }
 
@@ -518,4 +522,182 @@ export const demoAssist: AssistState = {
     '系统: linux x86_64 Ubuntu 24.04.3 LTS\n启动器: ' +
     DEMO_LAUNCHER_VERSION +
     '\n错误码: E_DOCKER_MISSING\n（演示数据，不是这台机器的真实现场）\n',
+}
+
+
+// ── I5 · AI 自动驾驶安装的演示数据（只在 VITE_DEMO=1 的开发构建里存在） ──
+//
+// 这一份是**给截图脚本用的静态样例**，形状与真实事件流一致。
+// 发布构建里 DEMO 是编译期常量 false，整个文件被摇掉，不可能进产物（红线 1）。
+
+export const demoAutoSnapshot: AssistAutoSnapshot = {
+  running: true,
+  summary: {
+    solved: 1,
+    open: 0,
+    tokens: 0,
+    rounds: 1,
+    maxRounds: 10,
+    elapsedMs: 214_000,
+    phase: '启动服务',
+  },
+  events: [
+    {
+      id: 0,
+      parent: null,
+      kind: 'step',
+      status: 'ok',
+      title: '检查 Docker',
+      detail: 'OrbStack 29.4.0 正在运行',
+      elapsedMs: 254,
+      at: '2026-09-21 10:30:02',
+    },
+    {
+      id: 2,
+      parent: null,
+      kind: 'step',
+      status: 'ok',
+      title: '挑下载源、算端口、写配置',
+      detail: '下载源 腾讯云 · 香港 · 端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480',
+      elapsedMs: 6_100,
+      at: '2026-09-21 10:30:08',
+    },
+    {
+      id: 3,
+      parent: 2,
+      kind: 'issue',
+      status: 'warn',
+      title: '你电脑上已经在运行另一套 Hunter',
+      detail: 'hunter-fresh（6 个容器，占着端口 3100、3921、5442、6479、8100）',
+      tech: ['处置：新装的这一套换一组空闲端口，两套并存。启动器不会停它、不会删它。'],
+      at: '2026-09-21 10:30:03',
+    },
+    {
+      id: 4,
+      parent: 2,
+      kind: 'resolved',
+      status: 'ok',
+      title: '为这次安装换了一组空闲端口',
+      detail: 'web 3100 → 3101 · api 8100 → 8101 · opencode 3921 → 3922 · postgres 5442 → 5443 · redis 6479 → 6480',
+      at: '2026-09-21 10:30:07',
+    },
+    {
+      id: 5,
+      parent: 4,
+      kind: 'analyze',
+      status: 'ok',
+      title: '8100 原来被占着',
+      detail: 'Docker 容器 hunter-fresh-api-1（compose 项目 hunter-fresh · 0.0.0.0:8100->8000/tcp）',
+      tech: [
+        'Docker 容器 hunter-fresh-api-1（compose 项目 hunter-fresh · 0.0.0.0:8100->8000/tcp）',
+        '绑 0.0.0.0 时被系统拒绝（Address already in use (os error 48)）',
+      ],
+      at: '2026-09-21 10:30:07',
+    },
+    {
+      id: 6,
+      parent: null,
+      kind: 'step',
+      status: 'ok',
+      title: '下载组件',
+      detail: '849 MB · 用时 3 分 27 秒',
+      elapsedMs: 207_000,
+      at: '2026-09-21 10:33:35',
+    },
+    {
+      id: 7,
+      parent: null,
+      kind: 'step',
+      status: 'running',
+      title: '启动服务',
+      detail: '5 / 6 健康',
+      at: '2026-09-21 10:33:40',
+    },
+  ],
+}
+
+export const demoAudit: string[] = [
+  '{"at":"2026-09-21 10:30:00","action":"consent","args":{},"by":"user","level":null,"result":"授权档位 auto（自动驾驶）"}',
+  '{"at":"2026-09-21 10:30:01","action":"autopilot_start","args":{},"by":"user","level":null,"result":"授权档位 auto"}',
+  '{"at":"2026-09-21 10:30:07","action":"remap_ports","args":{},"by":"rule","level":"Safe","result":"成功：web：3100 → 3101"}',
+]
+
+
+/** 「需要你」那张卡片长什么样（三种必问情况之一）。给截图脚本用。 */
+export const demoAutoNeedUser: AssistAutoSnapshot = {
+  running: true,
+  summary: {
+    solved: 0,
+    open: 1,
+    tokens: 3_880,
+    rounds: 1,
+    maxRounds: 10,
+    elapsedMs: 21_000,
+    phase: '正在解决：Docker 装了，但没在运行',
+  },
+  events: [
+    {
+      id: 1,
+      parent: null,
+      kind: 'step',
+      status: 'failed',
+      title: '检查 Docker',
+      detail: 'docker 命令在，但连不上后台服务（daemon 没起）。',
+      elapsedMs: 320,
+      at: '2026-09-21 10:30:02',
+    },
+    {
+      id: 2,
+      parent: null,
+      kind: 'issue',
+      status: 'warn',
+      title: '发现问题：Docker 装了但没在运行',
+      detail: 'docker 命令在，但连不上后台服务（daemon 没起）。',
+      tech: ['错误码 E_DAEMON_DOWN｜docker 命令在，但连不上后台服务（daemon 没起）。'],
+      at: '2026-09-21 10:30:02',
+    },
+    {
+      id: 3,
+      parent: 2,
+      kind: 'analyze',
+      status: 'ok',
+      title: '分析中…',
+      detail: '查了 5 个端口',
+      elapsedMs: 1_100,
+      at: '2026-09-21 10:30:03',
+    },
+    {
+      id: 4,
+      parent: 2,
+      kind: 'analyze',
+      status: 'ok',
+      title: '找到原因',
+      detail: 'systemd 的 docker 服务 装着但没在运行，把它启动起来再等它就绪。',
+      at: '2026-09-21 10:30:03',
+    },
+    {
+      id: 5,
+      parent: 2,
+      kind: 'action',
+      status: 'failed',
+      title: '正在处理：启动 systemd 的 docker 服务',
+      detail: '「启动 systemd 的 docker 服务」没成功（退出码 Some(1)）',
+      elapsedMs: 180,
+      at: '2026-09-21 10:30:04',
+    },
+    {
+      id: 6,
+      parent: 2,
+      kind: 'needUser',
+      status: 'waiting',
+      title: 'Docker 后台服务要用管理员权限才能启动',
+      detail: '请在终端里执行：sudo systemctl start docker',
+      tech: ['这一条要管理员权限。启动器不会替你提权，也不会把它塞进动作表。'],
+      choices: [
+        { value: 'yes', label: '我执行完了，继续', primary: true },
+        { value: 'no', label: '先不弄了', primary: false },
+      ],
+      at: '2026-09-21 10:30:04',
+    },
+  ],
 }
