@@ -250,6 +250,13 @@ pub struct RuntimeSection {
     /// 要不要走 PATH。默认 true
     #[serde(default = "yes")]
     pub use_env_path: bool,
+    /// 用 `~/.hunter/docker-config/` 里那份**不带凭据助手**的 docker 配置
+    /// （通过 `DOCKER_CONFIG` 指过去）。默认 false = 用用户自己的 `~/.docker`。
+    ///
+    /// 只有在「PATH 补全之后仍然找不到 `docker-credential-*`」时才由
+    /// `use_isolated_docker_config` 这个动作打开（I6）。**用户那份配置一个字节都不动。**
+    #[serde(default)]
+    pub isolated_docker_config: bool,
 }
 
 fn yes() -> bool {
@@ -264,6 +271,7 @@ impl Default for RuntimeSection {
             search_paths: Vec::new(),
             use_builtin_paths: true,
             use_env_path: true,
+            isolated_docker_config: false,
         }
     }
 }

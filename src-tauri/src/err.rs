@@ -38,6 +38,15 @@ pub enum Code {
     /// 方案没有这一条：它假设一台机器上只有一个 `~/.hunter`，而 M2 实测换过
     /// `HUNTER_HOME` 之后 `up -d` 会把先装好的那一套连配置带端口一起顶掉。
     ProjectConflict,
+    /// 本机的 docker 凭据助手不在子进程看得到的 PATH 上（I6）。原话形如
+    /// `error getting credentials - err: exec: "docker-credential-osxkeychain":
+    /// executable file not found in $PATH`。
+    ///
+    /// 为什么要单独一个码：0.1.5 把它归成了 `E_PULL_FAILED`，规则层于是照着
+    /// 「拉不动 = 源不通」去换源，在 ghcr 与腾讯云之间来回换了三次 ——
+    /// **这是本机配置的问题，换源永远修不好**。单独一个码，规则层才能给出
+    /// 对症的动作（补 PATH 重试 / 另起一份不带 credsStore 的 docker 配置）。
+    CredHelper,
     /// 网关限流（HTTP 429）。I2 实测的真实响应：
     /// `{"error":{"message":"请求太频繁了：每分钟最多 20 次…","type":"rate_limit_error",
     /// "code":"rate_limited","retry_after":60}}`，响应头 `retry-after: 60`。
@@ -63,6 +72,7 @@ impl Code {
             Code::PullFailed => "E_PULL_FAILED",
             Code::PortInUse => "E_PORT_IN_USE",
             Code::PortConflict => "E_PORT_CONFLICT",
+            Code::CredHelper => "E_CRED_HELPER",
             Code::StartTimeout => "E_START_TIMEOUT",
             Code::ProxyBlock => "E_PROXY_BLOCK",
             Code::UpdateFailed => "E_UPDATE_FAILED",
@@ -86,6 +96,7 @@ impl Code {
             Code::PullFailed => "镜像拉取失败",
             Code::PortInUse => "端口被占用",
             Code::PortConflict => "Docker 说端口已经被占了",
+            Code::CredHelper => "Docker 找不到它自己的凭据助手",
             Code::StartTimeout => "服务在 180 秒内没有全部就绪",
             Code::ProxyBlock => "代理挡住了容器的网络",
             Code::UpdateFailed => "升级失败，已回滚",
@@ -172,6 +183,7 @@ mod tests {
             Code::PullFailed,
             Code::PortInUse,
             Code::PortConflict,
+            Code::CredHelper,
             Code::StartTimeout,
             Code::ProxyBlock,
             Code::UpdateFailed,

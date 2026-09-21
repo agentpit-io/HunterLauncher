@@ -54,6 +54,10 @@ export type ErrorCode =
   // I5：**起容器时** Docker 自己报的端口冲突（`port is already allocated`）。
   // 0.1.4 把它归成了 E_START_TIMEOUT，规则层于是认不出来 —— 用户 Mac 上那次失败的第 2 条根因
   | 'E_PORT_CONFLICT'
+  // I6：本机的 docker 凭据助手（docker-credential-*）不在子进程看得到的 PATH 上。
+  // 0.1.5 把它归成了 E_PULL_FAILED，规则层照着「拉不动 = 源不通」在两个镜像源之间
+  // 来回换了三次 —— 这是**本机配置**的问题，换源永远修不好
+  | 'E_CRED_HELPER'
   | 'E_START_TIMEOUT'
   | 'E_PROXY_BLOCK'
   | 'E_UPDATE_FAILED'
@@ -79,6 +83,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_PULL_FAILED',
   'E_PORT_IN_USE',
   'E_PORT_CONFLICT',
+  'E_CRED_HELPER',
   'E_START_TIMEOUT',
   'E_PROXY_BLOCK',
   'E_UPDATE_FAILED',
@@ -159,6 +164,7 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   E_PULL_FAILED: 'AutoInstalling',
   E_PORT_IN_USE: 'AutoInstalling',
   E_PORT_CONFLICT: 'AutoInstalling',
+  E_CRED_HELPER: 'AutoInstalling',
   E_START_TIMEOUT: 'AutoInstalling',
   E_COMPOSE_FETCH: 'AutoInstalling',
   E_CONFIG_WRITE: 'AutoInstalling',

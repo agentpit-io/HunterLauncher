@@ -692,6 +692,24 @@ mod tests {
         );
     }
 
+    /// I6：凭据助手找不到时，**不许**去改用户的 `~/.docker/config.json`。
+    /// 这一条不是靠「代码里我们没写那一行」保证的，是守卫真的拦得住。
+    #[test]
+    fn 用户的_docker_配置写不进去() {
+        let user_cfg = crate::paths::home().join(".docker").join("config.json");
+        assert!(
+            writable_path(&user_cfg).is_err(),
+            "{} 是用户的文件，必须拒绝",
+            user_cfg.display()
+        );
+        // 我们自己那一份在 ~/.hunter 里，允许
+        let ours = crate::dockercfg::isolated_dir().join("config.json");
+        std::fs::create_dir_all(crate::dockercfg::isolated_dir()).unwrap();
+        assert!(writable_path(&ours).is_ok(), "{} 应当允许", ours.display());
+        // 而且它也不在「可删清单」里 —— 我们只写不删
+        assert!(deletable_path(&ours).is_err());
+    }
+
     #[test]
     fn 删除只限启动器自己生成的文件() {
         let root = crate::paths::root();

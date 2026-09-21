@@ -54,6 +54,9 @@ pub fn diagnose(r: &Report) -> Suggestion {
     if let Some(s) = project_conflict(r) {
         return s;
     }
+    if let Some(s) = cred_helper(r) {
+        return s;
+    }
     if let Some(s) = pull_failed(r) {
         return s;
     }
@@ -150,6 +153,57 @@ fn docker_missing(r: &Report) -> Option<Suggestion> {
             .collect(),
         // 真没装还是装在别处，规则层分不清 —— 这一条要留给 AI 接着问
         confident: false,
+    })
+}
+
+/// 本机 docker 凭据助手找不到（I6 的 P0）。
+///
+/// **必须排在「拉不动 → 换源」前面**：0.1.5 在用户 Mac 上就是把它当成源不通，
+/// 来回换了三次源、268 秒、一个问题都没解决。换源修不好本机配置。
+fn cred_helper(r: &Report) -> Option<Suggestion> {
+    if r.error_code.as_deref() != Some("E_CRED_HELPER") {
+        return None;
+    }
+    let status = crate::dockercfg::helper_status();
+    let missing: Vec<String> = status
+        .iter()
+        .filter(|(_, f)| f.is_none())
+        .map(|(n, _)| n.clone())
+        .collect();
+    let sub = crate::runtime::env::current().one_line();
+    let (calls, detail) = if missing.is_empty() {
+        (
+            vec![Call::with("retry_pull", "delay_seconds", "0")],
+            format!(
+                "Docker 要用本机的凭据助手去取登录信息，刚才那一次没找到它。\n\
+                 现在按已知位置补全之后是找得到的（{sub}），再拉一次就行。"
+            ),
+        )
+    } else {
+        (
+            vec![
+                Call::new("use_isolated_docker_config"),
+                Call::with("retry_pull", "delay_seconds", "0"),
+            ],
+            format!(
+                "你的 docker 配置里写着要用 {} 去取登录信息，但这台机器上补全 PATH 之后仍然找不到它。\n\
+                 （{sub}）\n\
+                 Hunter 的六个镜像都是**公开**的，本来就不需要登录。\n\
+                 启动器可以给自己另起一份不带凭据助手的 docker 配置（放在 ~/.hunter/docker-config/），\n\
+                 **你的 ~/.docker/config.json 一个字节都不会动**。",
+                missing.join("、")
+            ),
+        )
+    };
+    let actions: Vec<actions::Plan> = calls.iter().filter_map(|c| actions::plan(c).ok()).collect();
+    Some(Suggestion {
+        rule: "cred-helper-missing".into(),
+        code: Some("E_CRED_HELPER".into()),
+        title: "Docker 找不到它自己的凭据助手".into(),
+        detail,
+        actions,
+        // 判据是确定的：配置里写了谁、那个文件在不在，两个都查得清清楚楚
+        confident: true,
     })
 }
 

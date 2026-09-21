@@ -215,6 +215,19 @@ jobs:
         run: >
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
           ports::tests -- --nocapture --test-threads=1
+      # I6 · 同样是「只有 macOS 才炸」的那一类，只是深了一层：
+      #
+      # I4 修好了「启动器找得到 docker」，0.1.5 真机上卡在「**docker 自己**找不到
+      # docker-credential-osxkeychain」—— 子进程继承的还是 GUI 那份受限 PATH。
+      # 这一步在真的 macOS runner 上测 PATH 构造函数：受限 PATH + 助手在已知位置 → 必须找得到，
+      # 而受限 PATH 本身必须找不到（两边都断言，否则这条测试可能什么都没测）。
+      #
+      # **runner 上有没有装 docker 都能跑**：测的是 runtime::env 的纯函数，造的是临时目录。
+      - name: 子进程 PATH 补全在 macOS 上的回归（I6 · P0）
+        if: runner.os == 'macOS'
+        run: >
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+          runtime::env::tests -- --nocapture --test-threads=1
       # M4 起 PR 上也真编一次 release 二进制。
       # `cargo check` 编不出 `custom-protocol` 那条路径，而正是那条路径出过问题
       # （M1 §9：不带这个特性的产物会去连 devUrl，表现为白屏）。

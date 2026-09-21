@@ -541,6 +541,7 @@ const en: Dict = {
       E_PULL_FAILED: { title: 'Image pull failed', hint: 'Retried 3 times without success. Switch registry, or import an offline bundle.' },
       E_PORT_IN_USE: { title: 'Port already in use', hint: 'The launcher already remapped to a free port — nothing for you to do.' },
       E_PORT_CONFLICT: { title: 'Docker refused the port', hint: 'The launcher re-probed and moved to a free port. If it still collides, another program on this machine is grabbing the same port — it is named below.' },
+      E_CRED_HELPER: { title: 'Docker cannot find its own credential helper', hint: 'Your ~/.docker/config.json sets credsStore, but that docker-credential-* binary is not on the PATH the launcher can see. Hunter pulls public images, which need no login — the launcher writes its own config without a credential helper; **your ~/.docker/config.json is left untouched**.' },
       E_START_TIMEOUT: { title: 'Start timed out', hint: 'Not all services became healthy within 180 seconds. The one that stalled is named below.' },
       E_PROXY_BLOCK: { title: 'Containers have no network', hint: 'TUN-mode proxies usually cause this. Configure NO_PROXY for Docker, or turn the proxy off.' },
       E_UPDATE_FAILED: { title: 'Upgrade failed', hint: 'Already rolled back to the previous version. A diagnostic bundle helps us pin it down.' },
