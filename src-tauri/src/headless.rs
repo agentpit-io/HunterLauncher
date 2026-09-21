@@ -1162,9 +1162,13 @@ fn cmd_review(st: &AppState, args: &Args) -> AppResult<()> {
         .review_why
         .clone()
         .unwrap_or_else(|| "（命令行没给理由）".to_string());
-    // 证据用**这台机器上真实采到的**那一份，不是编的
-    let e = AppError::new(Code::DockerMissing, "这台机器上找不到 docker 可执行文件。");
-    let report = crate::assist::probe::collect(Some(e.code.as_str()), Some(&e.msg), Some("docker"));
+    // 证据用**这台机器上真实采到的**那一份，不是编的。
+    //
+    // 特别注意**不要往里塞一个假的错误码**：第一版这里写死了
+    // `E_DOCKER_MISSING` + 「这台机器上找不到 docker」，而测试机上 docker 好好跑着 ——
+    // 于是复核员（正确地）判定「证据自相矛盾」。证据就该是现场的样子，
+    // 「这一步是因为什么失败的」交给 `--review-why` 说。
+    let report = crate::assist::probe::collect(None, None, None);
     let survey = crate::ports::Survey::collect();
     let cfg = st.config();
     let mut port_lines = Vec::new();
