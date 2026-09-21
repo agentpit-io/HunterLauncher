@@ -90,20 +90,39 @@ pub fn available() -> Result<(), String> {
             );
         };
         let _ = p;
-        // polkit 的图形授权代理要有桌面会话才在
-        let gui = std::env::var("DISPLAY").is_ok_and(|v| !v.trim().is_empty())
-            || std::env::var("WAYLAND_DISPLAY").is_ok_and(|v| !v.trim().is_empty());
-        return if gui {
+        // polkit 有两个授权代理：桌面会话里的图形代理，和 `pkexec` 自己在终端里
+        // 做的文本提示。**两者都是 polkit 的界面，都不是我们画的**，所以两者都算数。
+        //
+        // 实测（测试机 2026-09-22 00:0x，装上 policykit-1 之后）：只看 DISPLAY 的话，
+        // 一个人坐在 ssh 前面手敲 `--headless` 也会被判成「弹不出授权框」，
+        // 而那种情况下 pkexec 明明能在终端里问他一句。
+        return if has_polkit_agent() {
             Ok(())
         } else {
             Err(
-                "这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），\
-                 polkit 弹不出授权框。"
+                "这是一个既没有图形界面、标准输入也不是终端的会话\
+                 （没有 DISPLAY / WAYLAND_DISPLAY，stdin 也不是 tty），\
+                 polkit 没有地方问你要密码。"
                     .to_string(),
             )
         };
     }
     Err("这个平台上还没有做「弹系统授权框」这条路。".to_string())
+}
+
+/// Linux 上 polkit 有没有地方问用户要密码。
+///
+/// | 有 | 靠什么 |
+/// |---|---|
+/// | 桌面会话 | polkit 的图形授权代理（`DISPLAY` / `WAYLAND_DISPLAY`） |
+/// | 人坐在终端前面 | `pkexec` 自己的文本提示（stdin 是 tty） |
+///
+/// 两者都是 polkit 的界面，启动器一个像素都没画。两样都没有（CI、cron、
+/// `nohup` 出来的进程）就是**真的没地方问**，那时如实说做不了。
+fn has_polkit_agent() -> bool {
+    let gui = std::env::var("DISPLAY").is_ok_and(|v| !v.trim().is_empty())
+        || std::env::var("WAYLAND_DISPLAY").is_ok_and(|v| !v.trim().is_empty());
+    gui || std::io::IsTerminal::is_terminal(&std::io::stdin())
 }
 
 /// 把「要以 root 跑的那条命令」包成平台自己的授权调用。

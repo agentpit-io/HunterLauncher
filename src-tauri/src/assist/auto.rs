@@ -1046,6 +1046,35 @@ impl Orchestrator {
             let Some(spec) = actions::spec(&call.id) else {
                 continue;
             };
+            // **方向该由用户定的动作，总指挥一律不替他定**（I8）。
+            //
+            // 取消「Sensitive 要用户点一下」这道门之后，这一类动作会裸奔：
+            // 模型提一句「你已经有一套 Hunter 了，改成用它吧」，启动器就真的不装了。
+            // 而用户 2026-09-21 22:35 定的是**自动选「并存、换端口」**，正好相反。
+            //
+            // 所以这里连 `confirmed` 都不给它 —— [`actions::execute_as`] 那一道
+            // 会拒掉，事件流里如实写一行「这件事得你自己开口」。
+            if spec.user_only {
+                let msg = match actions::execute_as(&call, self.mode, false, by) {
+                    Err(e) => e.msg,
+                    // execute_as 对 user_only 且未确认的一定返回 Err；走到这里说明
+                    // 那一道被谁改坏了，如实报出来而不是当没事发生
+                    Ok(_) => "动作表那一道没拦住 user_only 动作，请查 actions::execute_as".into(),
+                };
+                self.bus.emit(
+                    EventDraft::new(Kind::Action, "这件事不由启动器替你定")
+                        .under(issue)
+                        .status(Status::Skipped)
+                        .detail(format!(
+                            "模型提议「{}」—— 没有照做。默认做法是两套并存、\
+                             给新装的这一套换一组空闲端口，你原来那套一点都不动。\
+                             真要改成用已有那套，到「设置 → 已有的 Hunter」里切换。",
+                            spec.title
+                        ))
+                        .tech(msg),
+                );
+                continue;
+            }
             // 「需要你」的第一种情况：Sensitive 动作在任何档位下都要先问 ——
             // **除非用户在一次授权页上已经对这一件事明确说过「可以」**（I7）。
             //

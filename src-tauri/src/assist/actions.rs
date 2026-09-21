@@ -54,6 +54,24 @@ pub struct Spec {
     pub desc: &'static str,
     /// 参数名 → 说明。没有参数就是空
     pub params: &'static [(&'static str, &'static str)],
+    /// **只有用户自己开口要，才允许执行**（I8）。
+    ///
+    /// 这一位是 I8 把「全自动档下 `Sensitive` 不再问用户」之后补上的。
+    /// 在那之前，「要不要问一句」这件事同时兜住了两类完全不同的动作：
+    ///
+    /// | 类别 | 例子 | 不问用户行不行 |
+    /// |---|---|---|
+    /// | 风险高，但**方向是对的** | `install_runtime`（装一套运行时） | 行 —— 守卫 + 复核员把关后自己做 |
+    /// | 风险不高，但**方向该由用户定** | `reuse_existing_hunter`（改成用你已有的那套） | **不行** |
+    ///
+    /// 取消第四道门之后，第二类就裸奔了：模型提一句「你已经有一套了，用它吧」，
+    /// 启动器就真的不装了、改去管用户那一套 —— 而用户什么都没说过。
+    /// 用户 2026-09-21 22:35 定的是**自动选「并存、换端口」**，正好相反。
+    ///
+    /// 所以这一位是**档位管不着的**：无论哪一档，`user_only` 的动作只有在调用方
+    /// 拿得出「用户自己要的」这个事实（`confirmed = true`）时才执行。
+    /// 总指挥在全自动档下对这类动作**永远不给 `confirmed`**。
+    pub user_only: bool,
 }
 
 /// **全部**可执行动作。这张表之外的一律拒绝。
@@ -66,6 +84,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "macOS 的 GUI 程序拿不到终端里的 PATH，得按已知安装位置挨个探",
         desc: "重新探测 docker 可执行文件，返回按顺序探过的每一个位置与结果（存在 / 不存在 / 没有可执行位），以及最终用的是哪一条。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "docker_version",
@@ -74,6 +93,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "客户端与服务端版本能同时判断「装没装」和「daemon 起没起」",
         desc: "执行 `docker version`，返回原始输出与退出码。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "compose_config",
@@ -82,6 +102,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "配置里有语法错或变量没展开时，up 会在很后面才失败",
         desc: "执行 `docker compose config --quiet`，返回原始输出与退出码。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "read_log_tail",
@@ -90,6 +111,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "失败的原话通常就在日志最后几行",
         desc: "读 ~/.hunter/logs/launcher.log 的最后 N 行（已脱敏）。参数 lines：1–200。",
         params: &[("lines", "行数，1–200")],
+        user_only: false,
     },
     Spec {
         id: "check_ports",
@@ -98,6 +120,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "3100 / 8100 这些端口被别的程序占着时，容器起不来",
         desc: "检查 Hunter 要用的 5 个端口现在空不空，返回每个端口的状态。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "check_disk",
@@ -106,6 +129,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "六个镜像解压后要几个 GB，盘满了拉取会在半路失败",
         desc: "检查工作目录所在分区的剩余空间。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "list_runtime_apps",
@@ -114,6 +138,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "「装了但没启动」和「根本没装」要给完全不同的建议",
         desc: "检查 OrbStack / Docker Desktop / Colima / systemd 的 docker 服务，分别报「装没装」与「进程起没起」。",
         params: &[],
+        user_only: false,
     },
     // ── 改动系统（必须用户确认） ──────────────────────────────────────
     Spec {
@@ -123,6 +148,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "Docker 客户端在、只是后台服务没起来时，把它拉起来就好了",
         desc: "启动指定的容器运行时。参数 app 只能是：orbstack / docker-desktop / colima / systemd。",
         params: &[("app", "orbstack | docker-desktop | colima | systemd")],
+        user_only: false,
     },
     Spec {
         id: "set_docker_path",
@@ -131,6 +157,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "docker 装在不常见的位置时，指一次以后就不用再探了",
         desc: "把 docker 可执行文件的绝对路径写进 ~/.hunter/launcher.toml 的 [runtime] docker_path。路径必须真实存在且可执行，否则拒绝。参数 path。",
         params: &[("path", "docker 可执行文件的绝对路径")],
+        user_only: false,
     },
     Spec {
         id: "switch_registry",
@@ -139,6 +166,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "国内直连 ghcr.io 经常超时，换成腾讯云香港的镜像一般就通了",
         desc: "切换镜像源并写进设置。参数 registry 只能是候选源的 id（用 list 里给出的那些）。",
         params: &[("registry", "镜像源 id")],
+        user_only: false,
     },
     Spec {
         id: "restart_stack",
@@ -147,6 +175,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "配置改过之后要重新 up 一次才生效",
         desc: "执行 `docker compose up -d`，让改过的配置生效。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "remap_ports",
@@ -155,6 +184,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "端口被别的程序占着时，换一组空闲端口就能起来",
         desc: "重新检测端口冲突并把空闲端口写进配置与覆盖文件。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "brew_install",
@@ -163,6 +193,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "mac 上缺的组件多数能一条 brew 命令补上",
         desc: "执行 `brew install <formula>`。formula 只能是：docker / docker-compose / colima / docker-buildx。只在 macOS 上可用。",
         params: &[("formula", "docker | docker-compose | colima | docker-buildx")],
+        user_only: false,
     },
     // ── I5 动作表 v2 新增（设计文档 §五） ─────────────────────────────────
     Spec {
@@ -172,6 +203,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "拉不动的时候要先知道是哪个源不通，而不是一直重试同一个",
         desc: "对每个候选镜像源发一次 manifest 请求，返回可用与否和耗时（毫秒）。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "read_container_logs",
@@ -183,6 +215,7 @@ pub const ACTIONS: &[Spec] = &[
             ("service", "api | llm-shim | opencode | postgres | redis | web"),
             ("lines", "行数，1–200"),
         ],
+        user_only: false,
     },
     Spec {
         id: "list_other_hunter_installs",
@@ -191,6 +224,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "端口被占常常是因为用户自己早就装过一套，不查清楚就会把原因猜错",
         desc: "列出本机上镜像名含 hunter-community- 、但 compose 项目名不是 hunter 的其他安装，以及它们占着的端口。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "wait_daemon",
@@ -199,6 +233,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "点开 OrbStack / Docker Desktop 之后守护进程要几十秒才就绪",
         desc: "轮询 docker version 直到服务端可用或超时。参数 seconds：5–120。",
         params: &[("seconds", "最多等多少秒，5–120")],
+        user_only: false,
     },
     Spec {
         id: "retry_pull",
@@ -207,6 +242,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "网络抖一下就失败的拉取，等几秒再来通常就过了",
         desc: "等待若干秒后重新执行 docker compose pull。参数 delay_seconds：0–60。",
         params: &[("delay_seconds", "先等多少秒，0–60")],
+        user_only: false,
     },
     Spec {
         id: "compose_down_own",
@@ -215,6 +251,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "配置换过之后，旧容器带着旧端口，必须先拆掉再重建",
         desc: "对**本项目** hunter 执行 docker compose down（**不带 -v**，数据卷一律保留）。不会碰这台机器上别的容器。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "remove_own_stale_containers",
@@ -223,6 +260,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "上一次起到一半失败会留下「已创建未启动」的容器，它们带着旧端口",
         desc: "删除**本项目** hunter 中状态为 created 的容器（删之前逐个核对 compose 项目标签）。不带 -v，数据卷保留。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "restart_own_service",
@@ -231,6 +269,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "单个服务卡住时，重建它比把整套推倒重来快得多",
         desc: "重新创建**本项目**的某一个服务。service 只能是 api / llm-shim / opencode / postgres / redis / web。",
         params: &[("service", "api | llm-shim | opencode | postgres | redis | web")],
+        user_only: false,
     },
     Spec {
         id: "raise_timeouts",
@@ -239,6 +278,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "机器慢的时候 180 秒不够，调长比反复重试有用",
         desc: "把健康检查的等待上限写进 launcher.toml。参数 seconds：180–900。",
         params: &[("seconds", "健康检查等待上限，180–900 秒")],
+        user_only: false,
     },
     Spec {
         id: "probe_cred_helper",
@@ -247,6 +287,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "拉不动公开镜像时，第一件要分清的事是「源不通」还是「本机取不到凭据」",
         desc: "只读地看 ~/.docker/config.json 里配的 credsStore / credHelpers，并在补全后的 PATH 上找一遍那几个可执行文件。**不读 auths 里的任何值**。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "use_isolated_docker_config",
@@ -255,6 +296,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "补全 PATH 之后仍然找不到 docker-credential-* 时，拉公开镜像根本不需要凭据",
         desc: "在 ~/.hunter/docker-config/ 里生成一份去掉 credsStore / credHelpers / auths 的配置，之后所有 docker 子进程用 DOCKER_CONFIG 指过去。**用户的 ~/.docker/config.json 一个字节都不改**（守卫会拦）。",
         params: &[],
+        user_only: false,
     },
     // ── I7 动作表（设计文档 §五的最后两条） ─────────────────────────────
     Spec {
@@ -264,6 +306,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "这台机器上没有 Docker，没有它 Hunter 的六个服务一个都起不来",
         desc: "替用户把 Docker 装好并启动。按顺序自动试三条路：①内置运行时（Colima + Lima + docker 客户端 + compose + 虚拟机镜像，               全部按写死的 sha256/sha512 校验，装在 ~/.hunter/runtime，不要管理员密码、可一键卸载）；               ②OrbStack 官方安装包（验苹果签名与公证后安装并打开）；③Homebrew（没有就先装 brew）再装 OrbStack。               前一条失败才走下一条，全部由启动器执行。本机已有 OrbStack / Docker Desktop 在跑时不会执行。没有参数。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "start_builtin_runtime",
@@ -272,6 +315,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "内置运行时装好了，但它的虚拟机没在跑",
         desc: "对已经装好的内置运行时执行 colima start（profile 固定为 hunter），               并把 DOCKER_HOST 指到它的 socket。没有参数。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "uninstall_builtin_runtime",
@@ -280,14 +324,16 @@ pub const ACTIONS: &[Spec] = &[
         why: "用户不想要这套内置运行时了，或者要重装一遍",
         desc: "删掉 colima 的 hunter profile（连同它的虚拟机磁盘）并清空 ~/.hunter/runtime。               只动 ~/.hunter 里的东西，不碰本机别的 Docker。没有参数。",
         params: &[],
+        user_only: false,
     },
     Spec {
         id: "reuse_existing_hunter",
         level: Level::Sensitive,
         title: "改为管理你已经装好的那一套 Hunter",
         why: "这台机器上已经有一套在跑，再装一套要多占几个 G 和五个端口",
-        desc: "把本机上已有的那个 compose 项目记进设置，启动器改为管理它（看状态、看日志、打开网页），               不再另装一套。**不会**改它的配置、不会删它的卷；停止 / 重启这类操作以后每一次都要用户再确认。               参数 project 必须是侦察员报出来的那几个项目名之一。",
+        desc: "把本机上已有的那个 compose 项目记进设置，启动器改为管理它（看状态、看日志、打开网页），               不再另装一套。**不会**改它的配置、不会删它的卷；停止 / 重启这类操作以后每一次都要用户再确认。               参数 project 必须是侦察员报出来的那几个项目名之一。               **这一条只有用户自己开口要才会执行**：默认永远是「两套并存、换一组端口」。",
         params: &[("project", "已有的那个 compose 项目名")],
+        user_only: true,
     },
     Spec {
         id: "export_feedback_bundle",
@@ -296,6 +342,7 @@ pub const ACTIONS: &[Spec] = &[
         why: "实在修不好时，把现场打包好，用户一键就能发给开发者",
         desc: "把日志与配置脱敏后打成 zip，放到 ~/.hunter/diagnostics/，返回文件路径。",
         params: &[],
+        user_only: false,
     },
 ];
 
@@ -352,6 +399,8 @@ pub struct Plan {
     pub argv: Vec<String>,
     /// 不跑子进程的动作在这里说明它要干什么（例如「往 launcher.toml 写 docker_path = …」）
     pub summary: Option<String>,
+    /// 方向该由用户定的动作（见 [`Spec::user_only`]）。原样抄自动作表
+    pub user_only: bool,
 }
 
 impl Plan {
@@ -408,6 +457,7 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
         why: s.why.to_string(),
         argv: Vec::new(),
         summary: None,
+        user_only: s.user_only,
     };
 
     match s.id {
@@ -674,6 +724,27 @@ pub fn execute_as(
             return Err(e);
         }
     };
+    // **档位管不着的那一道**（I8）：方向该由用户定的动作，用户没开口就不执行。
+    // 放在档位判定**之前** —— 全自动档下 `needs_confirm` 恒为 false，
+    // 要是放在后面，这一道就永远走不到。
+    if p.user_only && !confirmed {
+        let e = AppError::new(
+            Code::NotImplemented,
+            format!(
+                "「{}」这件事的方向该由用户自己定，他没开口，不执行。\
+                 （默认做法是两套并存、给新装的换一组空闲端口。）",
+                p.title
+            ),
+        );
+        guard::audit(
+            &call.id,
+            &call.args,
+            by,
+            Some(p.level),
+            "拒绝：用户没要求过这件事",
+        );
+        return Err(e);
+    }
     if mode.needs_confirm(p.level) && !confirmed {
         let e = AppError::new(
             Code::NotImplemented,
@@ -1232,6 +1303,40 @@ fn disk_report() -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// I8 · **取消「Sensitive 要用户点一下」之后补的那一道。**
+    ///
+    /// 全自动档下 `needs_confirm` 恒为 false，所以「方向该由用户定」的动作
+    /// 必须有一道自己的门，而且要在档位判定**之前**。
+    #[test]
+    fn 方向该由用户定的动作_模型提了也不执行() {
+        let sp = spec("reuse_existing_hunter").expect("表里有");
+        assert!(sp.user_only, "接管已有的那一套，方向该由用户定");
+        // 三档都拦 —— 这一位和档位没关系
+        for m in [Mode::Auto, Mode::Confirm, Mode::Off] {
+            let mut c = Call::new("reuse_existing_hunter");
+            c.args
+                .insert("project".into(), "hunter-community".into());
+            let e = execute_as(&c, m, false, guard::Proposer::Model)
+                .expect_err(&format!("{m:?} 档下不该执行"));
+            assert!(e.msg.contains("方向该由用户自己定"), "{}", e.msg);
+            assert!(e.msg.contains("并存"), "要说清默认做法是什么：{}", e.msg);
+        }
+    }
+
+    /// 反过来：这张表里**只有**那一条是 `user_only`。
+    ///
+    /// 写成断言而不是靠人记：以后谁再加一条 `user_only`，得先想清楚
+    /// 「全自动档下它会怎么样」，而不是顺手加上。
+    #[test]
+    fn 只有接管已有那一套是_user_only() {
+        let names: Vec<&str> = ACTIONS
+            .iter()
+            .filter(|s| s.user_only)
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(names, vec!["reuse_existing_hunter"]);
+    }
     use super::*;
 
     /// 这个平台上**能真的规划出启动动作**的那个运行时，以及它命令里该出现的一段。
@@ -1379,6 +1484,7 @@ pub(crate) mod tests {
             why: "w".into(),
             argv: vec!["/usr/bin/open".into(), "-a".into(), "Docker Desktop".into()],
             summary: None,
+            user_only: false,
         };
         assert_eq!(p.command_line(), "/usr/bin/open -a \"Docker Desktop\"");
         assert_eq!(p.argv[2], "Docker Desktop");
