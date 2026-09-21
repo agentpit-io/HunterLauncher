@@ -697,8 +697,6 @@ pub fn start_argv() -> AppResult<Vec<String>> {
         mem.to_string(),
         "--disk".into(),
         disk.to_string(),
-        // 后台起，不要交互
-        "--very-verbose=false".into(),
     ])
 }
 
