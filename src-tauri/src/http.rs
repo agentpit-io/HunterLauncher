@@ -63,11 +63,28 @@ fn agent(timeout: Duration, proxy: Option<&str>) -> ureq::Agent {
 /// 直连真的失败时发生 —— 这样两种现场都能装上。
 ///
 /// 只有**传输层失败**才重试：HTTP 404 / 401 是答案，不是故障，不会触发重试。
+///
+/// ## 同一个主机只交一次学费
+///
+/// 实测（测试机，2026-09-21 23:15，直连 GitHub 被 DROP + 环境里配着代理）：
+/// 探一次 GHCR 花了 **60.7 秒** —— 取 token、取 manifest 各自先直连等满 20 秒
+/// 超时再走代理。第一次那 20 秒是必要的（得先知道直连不通），后面每一次都交
+/// 就纯是浪费用户的时间。
+///
+/// 所以主机一旦被记进 [`crate::netproxy::mark_rescued`]，这一次安装里对它
+/// **不再试直连**，直接走代理。作用域只有这一次安装。
 fn try_direct_then_proxy<T>(
     url: &str,
     timeout: Duration,
     mut f: impl FnMut(&ureq::Agent) -> AppResult<T>,
 ) -> AppResult<T> {
+    let host = host_of(url);
+    // 这一次安装里已经证明过「直连不通、代理能通」的主机：直接走代理
+    if crate::netproxy::prefer_proxy_for(&host) {
+        if let Some(proxy) = crate::netproxy::current().for_url(url) {
+            return f(&agent(timeout, Some(&proxy)));
+        }
+    }
     let direct = f(&agent(timeout, None));
     let Err(e) = direct else {
         return direct;
@@ -76,14 +93,13 @@ fn try_direct_then_proxy<T>(
         return Err(e);
     };
     crate::linfo!(
-        "直连 {} 失败（{}），改用你在系统里设置的网络代理重试一次",
-        host_of(url),
+        "直连 {host} 失败（{}），改用你在系统里设置的网络代理重试一次",
         e.msg
     );
     let r = f(&agent(timeout, Some(&proxy)));
     match r {
         Ok(v) => {
-            crate::netproxy::mark_rescued(&host_of(url));
+            crate::netproxy::mark_rescued(&host);
             Ok(v)
         }
         Err(e2) => {

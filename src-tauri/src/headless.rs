@@ -1827,6 +1827,10 @@ mod tests {
 
         let z = a(&["--auto", "--assist-mode", "off", "--registry", "tencent"]);
         assert_eq!(z.assist_mode.as_deref(), Some("off"));
+        assert_eq!(z.registry.as_deref(), Some("tencent"));
+
+        // 不给 --auto 时走老的 cmd_install，不该被误判
+        assert!(!a(&["--headless"]).auto);
     }
 
     /// I8 · 档位的优先级：`--assist-mode` > `--auto` > 设置里存的那一档。
@@ -1842,12 +1846,11 @@ mod tests {
         assert_eq!(asked_mode(None, true).as_deref(), Some("auto"));
         // --assist-mode 显式给了就听它的，哪怕同时给了 --auto
         assert_eq!(asked_mode(Some("off"), true).as_deref(), Some("off"));
-        assert_eq!(asked_mode(Some("confirm"), true).as_deref(), Some("confirm"));
+        assert_eq!(
+            asked_mode(Some("confirm"), true).as_deref(),
+            Some("confirm")
+        );
         assert_eq!(asked_mode(Some("auto"), false).as_deref(), Some("auto"));
-        assert_eq!(z.registry.as_deref(), Some("tencent"));
-
-        // 不给 --auto 时走老的 cmd_install，不该被误判
-        assert!(!a(&["--headless"]).auto);
     }
 
     #[test]

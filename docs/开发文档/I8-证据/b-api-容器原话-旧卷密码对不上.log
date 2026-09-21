@@ -1,0 +1,15 @@
+# 场景 A 第一次跑（2026-09-21 23:15–23:26，测试机）撞到的那条 —— 容器自己的原话。
+# 抄自 `docker logs hunter-api-1`（容器随后被 down -v 清掉了，所以留在这里）。
+# 这条与 I8 的改动无关，是「删了 ~/.hunter 但没删数据卷」这个现场本身的问题，
+# 详见 I8-迭代报告.md 第六节与待办池 P1-28。
+
+2026-09-21 15:26:17,588 | ERROR   | 迁移 | 迁移失败，api 不会启动。原因如下：
+连接数据库失败：60 秒内重试 31 次都没连上。请检查 DATABASE_URL 指向的主机/端口/账号是否正确、postgres 是否已启动。最后一次错误：connection to server at "postgres" (172.19.0.4), port 5432 failed: FATAL:  password authentication failed for user "hunter"
+
+# 现场：`rm -rf ~/.hunter` 删掉了上一次安装随机生成的 postgres 密码，
+# 但 docker 卷 `hunter_hunter_pg_data` 还在，里面的库还认那把旧密码。
+# 新写的 .env 里是一把新密码 → api 迁移连不上库 → 容器 unhealthy → compose up 失败。
+#
+# 自动修复循环跑了 3 个回合都没能解决 —— **而且它不该解决**：
+# 唯一的出路是删掉用户的数据卷，那是守卫写死不许做的事（`compose down -v` 不在动作表里）。
+# 这一点上它的行为是对的，但它**没说清楚卡在哪**，只是反复清残留容器再重试。

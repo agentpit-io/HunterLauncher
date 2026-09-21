@@ -256,6 +256,22 @@ pub fn rescued_hosts() -> Vec<String> {
     rescued().read().map(|g| g.clone()).unwrap_or_default()
 }
 
+/// 这个主机**这一次安装里已经证明过「直连不通、代理能通」**了吗。
+///
+/// 实测（测试机，2026-09-21 23:15）：不看这个的话，探一次 GHCR 要 **60.7 秒** ——
+/// 拉取 manifest 要先取 token 再取 manifest，每一次都老老实实先直连等满 20 秒超时
+/// 再走代理。第一次交的学费是必要的（得先知道直连不通），后面每一次都交就是浪费。
+///
+/// 所以：同一个主机在同一次安装里**只试一次直连**，之后直接走代理。
+/// 作用域是「这一次安装」（`reset_rescued` 在每次 `run` 开头清空），
+/// 不会跨进程留下一个「这个站永远走代理」的判断。
+pub fn prefer_proxy_for(host: &str) -> bool {
+    rescued()
+        .read()
+        .map(|g| g.iter().any(|h| h == host))
+        .unwrap_or(false)
+}
+
 /// 计数清零（每次安装开始时调一次）。
 pub fn reset_rescued() {
     if let Ok(mut g) = rescued().write() {
@@ -564,6 +580,26 @@ pub fn parse_windows_reg(text: &str) -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// I8 实测撞出来的那 60.7 秒：同一个主机在一次安装里只该试一次直连。
+    #[test]
+    fn 同一个主机只交一次直连的学费() {
+        reset_rescued();
+        assert!(!prefer_proxy_for("ghcr.io"), "还没救过场，不该直接走代理");
+        mark_rescued("ghcr.io");
+        assert!(prefer_proxy_for("ghcr.io"));
+        // 只认这一个主机，别的照旧先直连
+        assert!(!prefer_proxy_for("hkccr.ccs.tencentyun.com"));
+        // 同一个主机记两次也只有一条（「已自动解决 N 个问题」不该重复计数）
+        mark_rescued("ghcr.io");
+        assert_eq!(
+            rescued_hosts().iter().filter(|h| *h == "ghcr.io").count(),
+            1
+        );
+        // 作用域是「这一次安装」—— 清零之后回到先直连
+        reset_rescued();
+        assert!(!prefer_proxy_for("ghcr.io"));
+    }
 
     /// 用户 Mac 上 2026-09-21 22:03 那份真实输出（端口 7897 是他的真实值）。
     const REAL_MAC: &str = "<dictionary> {
