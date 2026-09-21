@@ -473,6 +473,8 @@ fn prepare_pull(
             .unwrap_or_else(|| cfg.hunter.registry_prefix.clone()),
         ports: cfg.hunter.ports.clone(),
         changes: Vec::new(),
+        // 升级这条路不测速（用的是配置里已经定下的源），所以没有被绕开的源
+        registry_skipped: Vec::new(),
     })
 }
 

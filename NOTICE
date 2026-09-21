@@ -1,0 +1,21 @@
+Hunter 轻启动器（HunterLauncher）
+Copyright 2026 agentpit.io
+
+本产品包含由 agentpit.io 开发的软件。
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+---
+
+本启动器会在运行时下载并调用若干第三方程序（它们**不随安装包分发**，
+各自保留各自的许可证）。清单与各自的协议见同目录下的 THIRD_PARTY_NOTICES.md。

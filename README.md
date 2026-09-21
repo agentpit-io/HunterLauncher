@@ -4,7 +4,7 @@
 
 **把 [HunterCode 开源版](https://github.com/agentpit-io/hunter-community) 的部署，从「clone → 改 .env → 敲命令行」变成「下载 → 填一把 key → 等几分钟」。**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-amber.svg)](LICENSE)
 [![状态](https://img.shields.io/badge/状态-v0.1.0%20预发布%20·%20未签名-orange.svg)](https://github.com/agentpit-io/HunterLauncher/releases)
 [![平台](https://img.shields.io/badge/平台-Windows%20·%20macOS%20·%20Linux-1e293b.svg)](#三平台支持)
 
@@ -225,7 +225,7 @@ Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完�
 | | hunter-community | HunterLauncher（本仓库） |
 |---|---|---|
 | 是什么 | HunterCode 开源版**本体**：6 个服务的业务代码与镜像 | 部署层的**薄壳**，帮你把上面那套跑起来 |
-| 许可证 | Apache-2.0 | MIT |
+| 许可证 | Apache-2.0 | Apache-2.0 |
 | 关系 | 被启动 | 启动别人 |
 
 **本仓库对 hunter-community 零改动。** 启动器消费的是它已经对外提供的东西：
@@ -285,9 +285,13 @@ Windows / macOS 的安装包只在 GitHub Actions 上构建（`.github/workflows
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 agentpit.io
+[Apache License 2.0](LICENSE) © 2026 agentpit.io（见 [NOTICE](NOTICE)）。
 
-被启动的 [hunter-community](https://github.com/agentpit-io/hunter-community) 是 Apache-2.0，两者相互独立。
+启动器会在运行时下载并调用若干第三方程序（Colima、Lima、docker CLI、compose、
+以及兜底链上的 OrbStack 与 Homebrew）——**它们不随安装包分发，各自保留各自的许可证**，
+清单见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+被启动的 [hunter-community](https://github.com/agentpit-io/hunter-community) 同为 Apache-2.0，两者独立授权。
 
 ---
 
@@ -333,4 +337,7 @@ pre-filled GitHub issue. Nothing in this app fabricates a number it could not me
 Tauri 2 system dependencies. Documentation, commit messages, comments and UI copy are in Chinese
 (code identifiers stay in English).
 
-**License.** MIT © 2026 agentpit.io. hunter-community is Apache-2.0 and independently licensed.
+**License.** Apache License 2.0 © 2026 agentpit.io (see [NOTICE](NOTICE)). Third-party programs the
+launcher downloads and runs at install time — Colima, Lima, the docker CLI, compose, and the OrbStack /
+Homebrew fallbacks — are **not redistributed with the installers** and keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). hunter-community is Apache-2.0 and independently licensed.

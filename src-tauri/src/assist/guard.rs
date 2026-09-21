@@ -57,7 +57,8 @@ impl Level {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Mode {
-    /// 自动驾驶：动作表内的 Safe 动作直接执行；Sensitive 仍然要问
+    /// 全自动：动作表内的动作（含 `Sensitive`）由「守卫 + 复核员」两道门把关之后
+    /// **直接执行**，安装过程里一次都不问用户（I8 · 任务书〇·五）
     Auto,
     /// 逐步确认：和 0.1.4 一样，改动类动作逐条弹确认
     Confirm,
@@ -83,20 +84,36 @@ impl Mode {
     }
     pub fn cn(self) -> &'static str {
         match self {
-            Mode::Auto => "自动驾驶",
+            Mode::Auto => "全自动",
             Mode::Confirm => "逐步确认",
             Mode::Off => "关闭",
         }
     }
     /// 这个级别的动作，在这一档下要不要先问用户。
+    ///
+    /// I8 之前 `Sensitive` 在任何档位下都要问。用户 2026-09-21 22:35 把那一条否了：
+    ///
+    /// > 需要支持全自动的安装、问题修改，不要让用户参与决策和点击确认和执行，
+    /// > 出现问题，自主分析，按最佳方案执行。
+    ///
+    /// 所以**全自动档下 `Sensitive` 不再问**——但把关的门一道没少，只是换了把关的人：
+    ///
+    /// | 门 | 谁 | 全自动档下 |
+    /// |---|---|---|
+    /// | ① 动作表 | 代码 | 表外的一律不执行（不变） |
+    /// | ② 守卫 | 代码 | 路径 / 删除 / 网络 / 他人容器的禁止项一条不放松（不变） |
+    /// | ③ 复核员 | 另一个模型 | 含 `Sensitive` 的计划必过，否决就退回诊断员换方案（不变） |
+    /// | ④ 用户点一下 | 用户 | **取消**（`Confirm` 档仍保留，在设置页给高级用户） |
+    ///
+    /// 换句话说：**放松的是「问不问用户」，不是「拦不拦得住」**。
+    /// 守卫是代码写死的硬校验，它不看档位 —— 见 [`writable_path`] / [`deletable_files`]。
     pub fn needs_confirm(self, level: Level) -> bool {
         match (self, level) {
             (_, Level::ReadOnly) => false,
-            // Sensitive 在**任何**档位下都要问 —— 包括自动驾驶
-            (_, Level::Sensitive) => true,
-            (Mode::Auto, Level::Safe) => false,
-            (Mode::Confirm, Level::Safe) => true,
-            (Mode::Off, Level::Safe) => true,
+            // 全自动：守卫 + 复核员两道门过了就执行，不再等用户
+            (Mode::Auto, _) => false,
+            (Mode::Confirm, _) => true,
+            (Mode::Off, _) => true,
         }
     }
 }
@@ -521,6 +538,159 @@ fn window_matches(rest: &[String], pat: &[&str]) -> bool {
         .any(|w| w.iter().zip(pat).all(|(a, b)| a == b))
 }
 
+// ── 两道专门的窄门（I8） ──────────────────────────────────────────────────
+//
+// 上面那道 [`argv`] 的禁用名单是按「**模型**不许碰这些程序」写的：`scutil` 能改
+// 网络设置、`bash` 能跑任意代码、`sudo` 能提权，所以一律不许。
+//
+// I8 要做两件事，恰好各自要用到名单里的一个程序：
+//
+// | 要做的事 | 要用的程序 | 为什么名单拦不住它就不安全 |
+// |---|---|---|
+// | 读用户自己配的系统代理（沿用它） | `scutil --proxy` | `scutil` 也能 `--set` 改设置 |
+// | 替用户装 Homebrew（官方脚本） | `/bin/bash <脚本>` | `bash` 能跑任意东西 |
+//
+// 解法不是「把它们从名单里删掉」，而是**另开两道更窄的门**：门里只认**完整的、
+// 由代码写死的参数形状**，模型一个字节都插不进来。名单本身一条都没动 ——
+// [`argv`] 照样拒绝 `scutil` 与 `bash`，模型走的永远是那一道。
+//
+// 这和 I7 里 `runtime::orbstack::verify` 用 `codesign` / `spctl` 是同一条原则：
+// 禁令针对的是「谁能提出这条命令」，不是「这个程序名本身有罪」。
+
+/// 只读探测的窄门。**只认这两条，一个参数都不能多。**
+///
+/// * `scutil --proxy`（macOS：打印当前代理设置，`--proxy` 只读）
+/// * `reg query HKCU\…\Internet Settings`（Windows：`query` 是只读子命令）
+///
+/// 调用点全项目只有 [`crate::netproxy`] 一处，参数是常量。
+pub fn argv_readonly_probe(argv: &[String]) -> AppResult<()> {
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let base = base.trim_end_matches(".exe");
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    match (base, rest.as_slice()) {
+        // 只读代理设置。**没有第二个参数**：`scutil --set` / `scutil --dns` 一概不行
+        ("scutil", ["--proxy"]) => Ok(()),
+        // 只读注册表。键固定死在 Internet Settings 这一个分支下
+        ("reg", ["query", key])
+            if key.eq_ignore_ascii_case(
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            ) =>
+        {
+            Ok(())
+        }
+        _ => Err(reject(format!(
+            "「{}」不在只读探测的白名单里（那张表只有两条，参数一个字都不能变），拒绝。",
+            safe(&argv.join(" "))
+        ))),
+    }
+}
+
+/// 「替用户装软件」那道窄门（I8 · 用户 2026-09-21 22:10 的原则）。
+///
+/// 用户的原话是「所有能替用户解决的问题都不要让用户自己去操作」，所以
+/// 「没有 brew 就先替他装 brew」这件事必须由启动器执行。Homebrew 的官方安装脚本
+/// 是一个 bash 脚本，而 `bash` 在禁用名单里 —— 于是有了这道门。
+///
+/// 三把锁，全是代码：
+///
+/// 1. 程序必须是 `/bin/bash`（绝对路径，不是 PATH 上找到的某个 bash）；
+/// 2. **有且只有一个参数**，而且它 `canonicalize` 之后必须落在
+///    `~/.hunter/runtime/` 里 —— 那个目录下的每一个字节都是启动器自己下的；
+/// 3. 脚本文件必须**真的存在**（模型编一个路径出来到这里就断了）。
+///
+/// 注意这道门**不提权**：脚本以当前用户身份跑，它自己需要 root 的那几步由
+/// `sudo -A` + [`crate::runtime::elevate`] 生成的原生密码框完成。
+pub fn argv_install_script(argv: &[String]) -> AppResult<()> {
+    let [prog, script] = argv else {
+        return Err(reject(format!(
+            "安装脚本只能是「/bin/bash <一个脚本>」这一种形状，收到 {} 个参数，拒绝。",
+            argv.len()
+        )));
+    };
+    if prog != "/bin/bash" {
+        return Err(reject(format!(
+            "安装脚本只能用 /bin/bash 跑，收到「{}」，拒绝。",
+            safe(prog)
+        )));
+    }
+    let p = Path::new(script);
+    if !p.is_file() {
+        return Err(reject(format!(
+            "安装脚本 {} 不存在，拒绝。",
+            crate::redact::mask_home(script)
+        )));
+    }
+    let real = writable_path(p)?;
+    let runtime = canon_for_write(&crate::paths::runtime_dir())?;
+    if !real.starts_with(&runtime) {
+        return Err(reject(format!(
+            "安装脚本必须在 {} 里（那里面的东西都是启动器自己下的），拒绝。",
+            crate::redact::mask_home(&runtime.to_string_lossy())
+        )));
+    }
+    Ok(())
+}
+
+/// 「要管理员权限的那一步」能做哪几件事（I8）。
+///
+/// 这张表就是提权的全部范围。**表外一律拒绝**，而且表里每一条的参数形状都写死。
+/// 提权的入口是系统自带的授权框（macOS 的 `do shell script … with administrator
+/// privileges`、Linux 的 `pkexec`），启动器不自绘密码框、不存密码、不写日志。
+pub const PRIVILEGED_OPS: &[&str] = &[
+    // Linux 自更新：.deb 装在 /usr 下，换包要 root
+    "dpkg -i <启动器的 .deb>",
+    // Linux：docker 后台服务要 root 才起得来
+    "systemctl start docker",
+];
+
+/// 校验**要以 root 身份跑的那条命令**（提权前的最后一道）。
+///
+/// 收到的是「里面那条命令」，不是包装后的 `osascript` / `pkexec` 命令行 ——
+/// 包装由 [`crate::runtime::elevate`] 自己拼，模型碰不到。
+pub fn argv_privileged(argv: &[String]) -> AppResult<()> {
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝提权。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    match (base.as_str(), rest.as_slice()) {
+        ("dpkg", ["-i", deb]) => {
+            let p = Path::new(deb);
+            if !p.is_file() {
+                return Err(reject(format!(
+                    "要装的 {} 不存在，拒绝提权。",
+                    crate::redact::mask_home(deb)
+                )));
+            }
+            // 只能装**我们自己下到 `~/.hunter/updates/` 的那一个包**
+            let real = writable_path(p)?;
+            let updates = canon_for_write(&crate::paths::updates_dir())?;
+            if !real.starts_with(&updates) || !deb.to_ascii_lowercase().ends_with(".deb") {
+                return Err(reject(format!(
+                    "只能安装启动器自己下到 {} 里的 .deb，拒绝提权。",
+                    crate::redact::mask_home(&updates.to_string_lossy())
+                )));
+            }
+            Ok(())
+        }
+        ("systemctl", ["start", "docker"]) => Ok(()),
+        _ => Err(reject(format!(
+            "「{}」不在可以提权的那张表里（表里只有 {}），拒绝。",
+            safe(&argv.join(" ")),
+            PRIVILEGED_OPS.join(" / ")
+        ))),
+    }
+}
+
 // ── 审计日志 ──────────────────────────────────────────────────────────────
 
 /// `~/.hunter/logs/assist-audit.log`
@@ -616,16 +786,40 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    /// I8：全自动档下一个都不问（包括 `Sensitive`）；另外两档照旧。
+    ///
+    /// 这条断言的反面 —— 「放松的只是问不问，不是拦不拦得住」——
+    /// 由本文件里那一堆守卫测试保证：它们**一条都没改**，而且不看档位。
     #[test]
-    fn 三档授权里_sensitive_永远要问() {
-        for m in [Mode::Auto, Mode::Confirm, Mode::Off] {
-            assert!(m.needs_confirm(Level::Sensitive), "{m:?}");
-            assert!(!m.needs_confirm(Level::ReadOnly), "{m:?}");
+    fn 全自动档下一个都不问_另外两档照旧() {
+        for lv in [Level::ReadOnly, Level::Safe, Level::Sensitive] {
+            assert!(!Mode::Auto.needs_confirm(lv), "全自动档不该问 {lv:?}");
         }
-        // Safe 只有自动驾驶档不问
-        assert!(!Mode::Auto.needs_confirm(Level::Safe));
-        assert!(Mode::Confirm.needs_confirm(Level::Safe));
-        assert!(Mode::Off.needs_confirm(Level::Safe));
+        for m in [Mode::Confirm, Mode::Off] {
+            assert!(!m.needs_confirm(Level::ReadOnly), "{m:?} 不该问只读动作");
+            assert!(m.needs_confirm(Level::Safe), "{m:?}");
+            assert!(m.needs_confirm(Level::Sensitive), "{m:?}");
+        }
+    }
+
+    /// 全自动档**不放松任何禁止项**：档位一改，最容易忘的就是这件事。
+    /// 这里把四条红线各挑一个代表，确认它们和档位毫无关系。
+    #[test]
+    fn 全自动档下四条禁止项一条不放松() {
+        // ① 不删用户文件：动作表外的删除请求连计划都过不了
+        assert!(
+            super::super::actions::plan(&super::super::actions::Call::new("rm_user_documents"))
+                .is_err()
+        );
+        // ② 不改网络与安全设置
+        assert!(super::super::actions::spec("set_system_proxy").is_none());
+        assert!(super::super::actions::spec("disable_gatekeeper").is_none());
+        // ③ 不动别人的容器：只有 hunter 自己项目名的 compose 动作在表里
+        assert!(super::super::actions::spec("compose_down_other").is_none());
+        // ④ 不执行模型自编的命令
+        assert!(super::super::actions::spec("run_shell").is_none());
+        // ⑤ 路径守卫不看档位：~/.hunter 外的路径永远拒绝
+        assert!(writable_path(Path::new("/etc/hosts")).is_err());
     }
 
     #[test]
@@ -977,5 +1171,97 @@ mod tests {
             P
         )
         .is_err());
+    }
+
+    // ── I8 的两道窄门 ────────────────────────────────────────────────────
+
+    /// 只读探测这道门**只认两条**，而且参数一个字都不能变。
+    #[test]
+    fn 只读探测的白名单之外一律拒绝() {
+        assert!(argv_readonly_probe(&a(&["/usr/sbin/scutil", "--proxy"])).is_ok());
+        assert!(argv_readonly_probe(&a(&["scutil", "--proxy"])).is_ok());
+        assert!(argv_readonly_probe(&a(&[
+            "reg",
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        ]))
+        .is_ok());
+        // 会**改**设置的写法：一条都不许
+        for bad in [
+            vec!["/usr/sbin/scutil"],
+            vec!["/usr/sbin/scutil", "--set", "HostName", "x"],
+            vec!["/usr/sbin/scutil", "--dns"],
+            vec!["/usr/sbin/scutil", "--proxy", "--set"],
+            vec!["networksetup", "-setwebproxy", "Wi-Fi", "127.0.0.1", "7897"],
+            vec![
+                "reg",
+                "add",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            ],
+            vec!["reg", "query", r"HKLM\SYSTEM"],
+        ] {
+            assert!(
+                argv_readonly_probe(&a(&bad)).is_err(),
+                "这条该被拒：{bad:?}"
+            );
+        }
+        // 通用那一道**没有被放松**：模型走的是它，scutil 照样拒
+        assert!(argv(&a(&["/usr/sbin/scutil", "--proxy"])).is_err());
+    }
+
+    /// 装 Homebrew 那道门：只能跑**我们自己下到 `~/.hunter/runtime` 里**的那个脚本。
+    #[test]
+    fn 安装脚本只能跑自己下的那一个() {
+        let dir = crate::paths::runtime_dir().join("cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("brew-install.sh");
+        std::fs::write(&ok, b"#!/bin/bash\nexit 0\n").unwrap();
+        assert!(argv_install_script(&a(&["/bin/bash", &ok.to_string_lossy()])).is_ok());
+
+        // 别的地方的脚本：拒
+        let outside = std::env::temp_dir().join("hunter-guard-outside.sh");
+        std::fs::write(&outside, b"#!/bin/bash\n").unwrap();
+        assert!(argv_install_script(&a(&["/bin/bash", &outside.to_string_lossy()])).is_err());
+        // 不存在的脚本：拒
+        assert!(argv_install_script(&a(&["/bin/bash", "/绝对没有这个文件.sh"])).is_err());
+        // 多一个参数：拒（`bash -c "任意代码"` 正是要挡的东西）
+        assert!(argv_install_script(&a(&["/bin/bash", "-c", "rm -rf ~"])).is_err());
+        // 换一个解释器：拒
+        assert!(argv_install_script(&a(&["/bin/sh", &ok.to_string_lossy()])).is_err());
+        // 通用那一道照样拒 bash —— 模型走的是它
+        assert!(argv(&a(&["/bin/bash", &ok.to_string_lossy()])).is_err());
+
+        let _ = std::fs::remove_file(&ok);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// 提权那张表：**表外一律拒绝**，表里的参数形状也写死。
+    #[test]
+    fn 提权只允许表里那两件事() {
+        assert!(argv_privileged(&a(&["/usr/bin/systemctl", "start", "docker"])).is_ok());
+        assert!(argv_privileged(&a(&["systemctl", "start", "docker"])).is_ok());
+        for bad in [
+            vec!["systemctl", "stop", "docker"],
+            vec!["systemctl", "start", "sshd"],
+            vec!["rm", "-rf", "/"],
+            vec!["bash", "-c", "curl x | sh"],
+            vec!["networksetup", "-setwebproxy"],
+            vec!["dpkg", "-i", "/tmp/x.deb"],
+            vec!["chown", "-R", "root", "/"],
+        ] {
+            assert!(argv_privileged(&a(&bad)).is_err(), "这条该被拒：{bad:?}");
+        }
+        // 自己下到 ~/.hunter/updates/ 里的 .deb：放行
+        let up = crate::paths::updates_dir();
+        std::fs::create_dir_all(&up).unwrap();
+        let deb = up.join("hunter-launcher_0.0.0_amd64.deb");
+        std::fs::write(&deb, b"x").unwrap();
+        assert!(argv_privileged(&a(&["dpkg", "-i", &deb.to_string_lossy()])).is_ok());
+        // 同一个目录里的非 .deb：拒
+        let other = up.join("x.sh");
+        std::fs::write(&other, b"x").unwrap();
+        assert!(argv_privileged(&a(&["dpkg", "-i", &other.to_string_lossy()])).is_err());
+        let _ = std::fs::remove_file(&deb);
+        let _ = std::fs::remove_file(&other);
     }
 }

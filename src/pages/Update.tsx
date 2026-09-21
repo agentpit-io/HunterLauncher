@@ -6,12 +6,11 @@ import { LogBox } from '../components/LogBox'
 import { Modal } from '../components/Modal'
 import { PlainLayout } from '../components/WizardLayout'
 import { useAsync } from '../lib/useAsync'
-import { copyText } from '../lib/clipboard'
 import { isoToShanghai } from '../lib/format'
 import * as ipc from '../lib/ipc'
 import { bytes } from '../lib/format'
 import { useStore } from '../state/context'
-import type { BackupMeta, LauncherUpdate, ManualInstall, UpgradeStatus } from '../lib/types'
+import type { BackupMeta, LauncherUpdate, UpgradeStatus } from '../lib/types'
 
 /**
  * 更新页（技术方案 §5.6、§10）。视觉稿里没有这一页，按同一套设计令牌延展：
@@ -54,7 +53,6 @@ function LauncherCard() {
   const { t } = useStore()
   const u = useAsync(() => ipc.checkLauncherUpdate(), [])
   const [busy, setBusy] = useState(false)
-  const [manual, setManual] = useState<ManualInstall | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const d: LauncherUpdate | null = u.data ?? null
 
@@ -62,9 +60,10 @@ function LauncherCard() {
     setBusy(true)
     setErr(null)
     try {
-      // 能就地装的机器上这个 Promise 永远不会 resolve —— Rust 那边装完直接重启进程了
-      const m = await ipc.installLauncherUpdate()
-      setManual(m)
+      // 这个 Promise 永远不会 resolve —— Rust 那边装完直接重启进程了。
+      // I8：`.deb` 也走这条路（先弹 polkit 的原生授权框，再 dpkg -i），
+      // 所以界面上不再有「复制命令自己去装」那条出口。
+      await ipc.installLauncherUpdate()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -105,7 +104,7 @@ function LauncherCard() {
         </pre>
       )}
 
-      {/* .deb 这一路要把"为什么最后一步得你自己来"讲清楚，而不是只给一个灰按钮 */}
+      {/* .deb 这一路要先把「为什么会弹系统密码框」讲清楚 —— 弹框之前，不是弹框之后 */}
       {d?.available && !d.canSelfInstall && (
         <div className="mt-[14px] rounded-md border border-line bg-window px-3 py-2.5 text-xs leading-[1.6] text-muted">
           {t.update.manualWhy}
@@ -145,54 +144,10 @@ function LauncherCard() {
         )}
       </div>
 
-      {manual && <ManualDialog m={manual} onClose={() => setManual(null)} />}
     </Card>
   )
 }
 
-function ManualDialog({ m, onClose }: { m: ManualInstall; onClose: () => void }) {
-  const { t } = useStore()
-  // null = 还没点过；true/false = 真的复制成功 / 真的没成（红线 1：不许假装成功）
-  const [copied, setCopied] = useState<boolean | null>(null)
-  return (
-    <Modal
-      testId="manual-install"
-      title={t.update.manualTitle}
-      onClose={onClose}
-      footer={
-        <>
-          <Button size="sm" onClick={() => void ipc.revealPath(m.path)}>
-            {t.update.manualReveal}
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
-            data-testid="copy-install-cmd"
-            onClick={() => {
-              void copyText(m.command).then(setCopied)
-            }}
-          >
-            {copied === null
-              ? t.common.copy
-              : copied
-                ? t.common.copied
-                : t.common.copyFailed}
-          </Button>
-        </>
-      }
-    >
-      <p className="leading-[1.6]">{m.message}</p>
-      <div className="mt-[14px] text-sm text-label">{t.update.manualCmd}</div>
-      <pre className="tnum selectable mt-[8px] overflow-x-auto rounded-md border border-line bg-log px-3 py-2.5 text-sm text-amber-text">
-        {m.command}
-      </pre>
-      <div className="tnum mt-[10px] break-all text-xs text-muted">
-        {m.path} · {bytes(m.bytes)}
-      </div>
-      <div className="mt-[10px] text-xs leading-[1.6] text-muted">{t.update.manualThen}</div>
-    </Modal>
-  )
-}
 
 // ── Hunter 升级 ──────────────────────────────────────────────────────────
 

@@ -339,11 +339,18 @@ pub struct AssistSection {
     /// 默认**开**。关掉之后只用第一层的确定性规则，一个 token 也不花
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// 授权档位（I5 · 设计文档 §3.2）：`auto` 自动驾驶 / `confirm` 逐步确认 / `off` 关闭。
+    /// 授权档位：`auto` 全自动 / `confirm` 逐步确认 / `off` 关闭。
     ///
-    /// **默认是 `confirm`，不是 `auto`** —— 自动驾驶要用户在一次授权页上亲自选，
-    /// 不能靠一个默认值替他同意。授权页上 `auto` 是推荐项、预先选中，
-    /// 但只有他点了那个按钮，这里才会写成 `auto`。
+    /// **I8 起默认是 `auto`。** I5–I7 的默认是 `confirm`，理由写的是
+    /// 「不能靠一个默认值替用户同意自动驾驶」。用户 2026-09-21 22:35 把这个
+    /// 权衡改了：
+    ///
+    /// > 需要支持全自动的安装、问题修改，不要让用户参与决策和点击确认和执行。
+    ///
+    /// 「同意」这件事没有消失，只是挪了位置：授权页仍然要用户亲手点一次
+    /// 「开始安装」，那一次点击就是授权 —— 页面上写清了 AI 会做什么、绝不做什么。
+    /// 换句话说，**默认值替他同意的不是「要不要装」，而是「装的过程中不再打扰他」**。
+    /// 想回到逐条确认的，设置页里还有 `confirm` 那一档。
     #[serde(default = "default_assist_mode")]
     pub mode: String,
     /// 用户是哪一刻做的授权（上海时间）。没授权过就是空
@@ -353,20 +360,20 @@ pub struct AssistSection {
     /// 「如果电脑上没有 Docker，允许 AI 为你安装（装在 `~/.hunter/runtime` 里，
     /// 不改系统，可一键卸载）」。
     ///
-    /// 勾了 → `install_runtime` 这个 `Sensitive` 动作**不再弹「需要你」卡片**，
-    /// 因为用户已经在授权页上对它明确说过「可以」——「已授权」与「每次都问」
-    /// 是两件事，把已经授权过的事再问一遍不叫谨慎，叫啰嗦。
+    /// I8 起它覆盖的范围扩大到**整条兜底链**：内置运行时、OrbStack 官方安装包、
+    /// Homebrew。文案里写明了「可能安装 Homebrew / OrbStack，需要时会弹系统密码框」。
     ///
-    /// 没勾 → 照旧走「需要你」卡片。
+    /// 全自动档下动作本来就不再逐条问用户（见 [`crate::assist::guard::Mode::needs_confirm`]），
+    /// 这一项在那一档下的作用是**留痕**：事件流里会出一张「为什么这一步没问你」的卡片。
+    /// 「逐步确认」档下它仍然决定 `install_runtime` 要不要弹确认。
     ///
-    /// **注意**：它只对 `install_runtime` 这一个动作生效，别的 `Sensitive` 动作
-    /// （例如 `reuse_existing_hunter`，会动用户已有的那一套）照样每次都问。
+    /// 没勾 → 启动器不装任何软件，没有 Docker 就如实说装不了。
     #[serde(default = "yes")]
     pub allow_install_runtime: bool,
 }
 
 fn default_assist_mode() -> String {
-    "confirm".into()
+    "auto".into()
 }
 
 impl AssistSection {

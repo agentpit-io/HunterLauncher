@@ -228,6 +228,8 @@ pub struct Orchestrator {
     prep: Option<flow::PrepareResult>,
     /// 侦察员采到的、这一次安装里已经报告过的「本机其他 Hunter」，只说一次
     reported_others: Mutex<bool>,
+    /// 已经报告过的「靠系统代理才通的站点」（I8）。同一个站点只说一次、只计一次
+    reported_proxy: std::collections::HashSet<String>,
     /// 这一次安装里**已经试过而且失败了**的动作 id。
     ///
     /// 场景 2 首轮实测：`systemctl start docker` 没有权限，退出码 1，
@@ -278,6 +280,7 @@ impl Orchestrator {
             offer: Arc::new(Mutex::new(None)),
             prep: None,
             reported_others: Mutex::new(false),
+            reported_proxy: std::collections::HashSet::new(),
             failed_actions: std::collections::HashSet::new(),
             switched_registry: std::collections::HashSet::new(),
             answer_reader: None,
@@ -334,6 +337,9 @@ impl Orchestrator {
     pub fn run(&mut self, state: &AppState, opts: &InstallOptions) -> Outcome {
         let mut opts = opts.clone();
         self.t0 = Instant::now();
+        // 这一次安装的「代理救场」计数从零开始（上一次的不该算进这一次）
+        crate::netproxy::reset_rescued();
+        crate::netproxy::invalidate();
         self.tick("开始安装");
         crate::linfo!(
             "AI 自动安装开始（授权档位 {}，预算：单问题 {} 回合 / 整次 {} 回合 / {} token）",
@@ -361,10 +367,10 @@ impl Orchestrator {
             }
             if let Err(e) = self.run_step_with_repair(state, &mut opts, step) {
                 // 最终页上要给一条能照着做的出路，而不是只丢一个错误码
-                let msg = match manual_step(&e) {
-                    Some((what, cmd)) => {
-                        format!("{}\n{what}：在终端里执行 {cmd}，然后重试。", e.msg)
-                    }
+                // 最终页上要说清「卡在哪、启动器为什么做不下去」，
+                // **不给一条让用户自己去敲的命令**（I8 第〇节）
+                let msg = match cannot_do(&e) {
+                    Some((what, why)) => format!("{}\n{what}：{why}", e.msg),
                     None => e.msg.clone(),
                 };
                 return self.fail(e.code, &msg);
@@ -461,6 +467,8 @@ impl Orchestrator {
                         &detail,
                         Some(t.elapsed().as_millis() as u64),
                     );
+                    // 这一步里如果靠代理救了场，现在把它如实报出来
+                    self.note_proxy_rescues(ev);
                     if let Some(e) = last_err.take() {
                         // 上一圈失败的那一步这回过了 —— 验证员判定「修好了」
                         self.solved += 1;
@@ -615,6 +623,27 @@ impl Orchestrator {
                         self.bus.emit(d);
                     }
                 }
+                // 有源连不上、启动器自动换到另一个 —— 也是解决掉一个问题（I8 一.4）
+                if !prep.registry_skipped.is_empty() {
+                    self.solved += 1;
+                    self.tick(&self.phase.clone());
+                    let mut d = EventDraft::new(
+                        Kind::Resolved,
+                        format!(
+                            "有 {} 个下载源连不上，已自动改用「{}」",
+                            prep.registry_skipped.len(),
+                            prep.registry_label
+                        ),
+                    )
+                    .under(parent)
+                    .status(Status::Ok)
+                    .detail("你不用做任何事，启动器自己挑了一个测得通的源");
+                    for sk in &prep.registry_skipped {
+                        d = d.tech(sk.clone());
+                    }
+                    self.bus.emit(d);
+                }
+                self.note_proxy_rescues(parent);
                 let line = format!(
                     "下载源 {} · 端口 web {} · api {} · opencode {} · postgres {} · redis {}",
                     prep.registry_label,
@@ -704,17 +733,52 @@ impl Orchestrator {
 
     // ── 侦察员 ────────────────────────────────────────────────────────────
 
-    /// 本机上别的 Hunter —— 一次安装里只报一次，并给出那两个结论式按钮（I7）。
+    /// 「直连不通、改走你自己配的系统代理之后成功了」——**这也是一次自动修复**，
+    /// 如实报一张卡片并计进「已自动解决 N 个问题」（I8 一.4）。
     ///
-    /// ## 这张卡片**不阻塞**
+    /// 只说主机名与「已沿用」，不打代理地址里可能有的用户名密码。
+    fn note_proxy_rescues(&mut self, parent: u64) {
+        let hosts = crate::netproxy::rescued_hosts();
+        let fresh: Vec<String> = hosts
+            .into_iter()
+            .filter(|h| !self.reported_proxy.contains(h))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        for h in &fresh {
+            self.reported_proxy.insert(h.clone());
+        }
+        self.solved += 1;
+        self.tick(&self.phase.clone());
+        self.bus.emit(
+            EventDraft::new(
+                Kind::Resolved,
+                format!("直连 {} 不通，已沿用你设置的网络代理", fresh.join("、")),
+            )
+            .under(parent)
+            .status(Status::Ok)
+            .detail(crate::netproxy::current().one_line())
+            .tech("只读取你系统里已有的代理设置，不会修改它，也不会改 DNS / hosts / 防火墙。"),
+        );
+    }
+
+    /// 本机上别的 Hunter —— 一次安装里只报一次。
     ///
-    /// 默认处置一直是「换一组空闲端口，两套并存」，那是推荐做法，也是不点任何
-    /// 按钮时会发生的事 —— 所以没有理由把安装停在这里等一次点击
-    /// （「授权之后零点击」是这一整套的底线）。卡片上把这句话**写出来**：
-    /// 不点也行，下面已经在跑了。
+    /// ## I8：这里不再问用户，自己拿主意
     ///
-    /// 用户如果确实想「直接用它」，点了之后 [`Handle::answer`] 把项目名记下来，
-    /// 总指挥在下一个步骤开始前读到就改道（[`Orchestrator::maybe_takeover`]）。
+    /// I7 的做法是一张**不阻塞**的卡片，上面两个按钮：「和它并存」与「直接用它」。
+    /// 用户 2026-09-21 22:35 把「让用户参与决策」整类做法否了，于是这里改成：
+    ///
+    /// > **自动选「并存、换端口」** —— 它是风险最小的那个方案：
+    /// > 不停用户已有的那套、不删它的数据、不改它的配置，只给新装的这一套
+    /// > 挑一组空闲端口。
+    ///
+    /// 卡片还在，但它现在是一句**告知**：做了什么决定、为什么这么定、
+    /// 想改的话去哪儿改（设置页）。没有按钮，也不等任何人。
+    ///
+    /// 「直接用已有那套」这条路并没有消失 —— [`Handle::answer`] 仍然认
+    /// [`TAKEOVER_PREFIX`]，设置页与命令行 `--takeover` 走的就是它。
     fn report_other_installs(&self, parent: u64) {
         if self.reported_others.lock().map(|g| *g).unwrap_or(true) {
             return;
@@ -727,51 +791,38 @@ impl Orchestrator {
             return;
         }
         let who: Vec<String> = cands.iter().map(|o| o.one_line()).collect();
-        let mut choices = vec![Choice {
-            value: "coexist".into(),
-            label: "和它并存（推荐，不动它）".into(),
-            primary: true,
-        }];
-        // 只给**管得起来**的那几个「直接用它」的按钮。读不到 compose 文件的那种
-        // 接管过来也只能看，不如不给按钮、把原因说出来
-        for c in &cands {
-            choices.push(Choice {
-                value: format!("{TAKEOVER_PREFIX}{}", c.project),
-                label: format!("直接用「{}」，不再装一套", c.project),
-                primary: false,
-            });
-        }
-        let mut d = EventDraft::new(Kind::NeedUser, "你电脑上已经在运行另一套 Hunter")
+        let mut d = EventDraft::new(Kind::Resolved, "你电脑上已经在运行另一套 Hunter")
             .under(parent)
-            .status(Status::Waiting)
+            .status(Status::Ok)
             .detail(format!(
-                "{}。不点也行 —— 默认就是「和它并存」，下面这一步已经在跑了。",
+                "{}。已自动选择「和它并存」：新装的这一套换一组空闲端口，\
+                 你原来那套一点都不动 —— 这是风险最小的做法。\
+                 想改成直接使用已有那套，到「设置 → 已有的 Hunter」里切换。",
                 who.join("；")
             ))
-            .tech("并存的做法：新装的这一套换一组空闲端口。启动器不会停它、不会删它、不会改它的配置。")
-            .choices(choices);
+            .tech(
+                "并存的做法：新装的这一套换一组空闲端口。\
+                 启动器不会停它、不会删它、不会改它的配置。",
+            );
         for c in &cands {
             if c.manageable() {
                 d = d.tech(format!(
-                    "「{}」的 compose 文件在 {}，所以接管之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）",
+                    "「{}」的 compose 文件在 {}，所以在设置里切过去之后能看状态、看日志，\
+                     也能停 / 重启（每次都要再确认一遍）",
                     c.project,
                     crate::redact::mask_home(&c.working_dir)
                 ));
             } else {
                 d = d.tech(format!(
                     "「{}」的容器上没有 working_dir 标签，读不到它的 compose 文件 —— \
-                     接管之后只能看状态与日志，停 / 重启做不了",
+                     切过去之后只能看状态与日志，停 / 重启做不了",
                     c.project
                 ));
             }
         }
-        let id = self.bus.emit(d);
-        if let Ok(mut g) = self.offer.lock() {
-            *g = Some(id);
-        }
+        self.bus.emit(d);
     }
 
-    /// 用户点过「直接用它」了吗。点过就**改道**：记进设置，不再往下装。
     fn maybe_takeover(&mut self) -> Option<Outcome> {
         let want = self.takeover.lock().ok().and_then(|mut g| g.take())?;
         let ev = self.bus.emit(
@@ -924,8 +975,8 @@ impl Orchestrator {
                         .status(Status::Failed)
                         .detail("没有可以安全执行的办法"),
                 );
-                if let Some((what, cmd)) = manual_step(e) {
-                    return Ok(self.ask_manual(issue, &what, &cmd));
+                if let Some((what, why)) = cannot_do(e) {
+                    self.say_cannot(issue, &what, &why);
                 }
                 return Ok(false);
             };
@@ -961,8 +1012,8 @@ impl Orchestrator {
                         .status(Status::Failed)
                         .detail("换了一个办法还是没过，不再继续试了"),
                 );
-                if let Some((what, cmd)) = manual_step(e) {
-                    return Ok(self.ask_manual(issue, &what, &cmd));
+                if let Some((what, why)) = cannot_do(e) {
+                    self.say_cannot(issue, &what, &why);
                 }
                 return Ok(false);
             }
@@ -995,6 +1046,35 @@ impl Orchestrator {
             let Some(spec) = actions::spec(&call.id) else {
                 continue;
             };
+            // **方向该由用户定的动作，总指挥一律不替他定**（I8）。
+            //
+            // 取消「Sensitive 要用户点一下」这道门之后，这一类动作会裸奔：
+            // 模型提一句「你已经有一套 Hunter 了，改成用它吧」，启动器就真的不装了。
+            // 而用户 2026-09-21 22:35 定的是**自动选「并存、换端口」**，正好相反。
+            //
+            // 所以这里连 `confirmed` 都不给它 —— [`actions::execute_as`] 那一道
+            // 会拒掉，事件流里如实写一行「这件事得你自己开口」。
+            if spec.user_only {
+                let msg = match actions::execute_as(&call, self.mode, false, by) {
+                    Err(e) => e.msg,
+                    // execute_as 对 user_only 且未确认的一定返回 Err；走到这里说明
+                    // 那一道被谁改坏了，如实报出来而不是当没事发生
+                    Ok(_) => "动作表那一道没拦住 user_only 动作，请查 actions::execute_as".into(),
+                };
+                self.bus.emit(
+                    EventDraft::new(Kind::Action, "这件事不由启动器替你定")
+                        .under(issue)
+                        .status(Status::Skipped)
+                        .detail(format!(
+                            "模型提议「{}」—— 没有照做。默认做法是两套并存、\
+                             给新装的这一套换一组空闲端口，你原来那套一点都不动。\
+                             真要改成用已有那套，到「设置 → 已有的 Hunter」里切换。",
+                            spec.title
+                        ))
+                        .tech(msg),
+                );
+                continue;
+            }
             // 「需要你」的第一种情况：Sensitive 动作在任何档位下都要先问 ——
             // **除非用户在一次授权页上已经对这一件事明确说过「可以」**（I7）。
             //
@@ -1100,13 +1180,10 @@ impl Orchestrator {
             return Ok(true);
         }
 
-        // 一个都没成。**有些事 AI 本来就不该替用户做** —— 比如 Linux 上
-        // `systemctl start docker` 要 root：设计文档 §3.3 第 4 条说得很清楚，
-        // 这时候降级成「请你执行这一条命令」，而不是替用户提权。
-        if let Some((what, cmd)) = manual_step(e) {
-            if self.ask_manual(issue, &what, &cmd) {
-                return Ok(true);
-            }
+        // 一个都没成。**不把活儿丢回给用户**（I8 第〇节）：能做的都做过了，
+        // 剩下的只有如实说清楚卡在哪，以及诊断包那条路
+        if let Some((what, why)) = cannot_do(e) {
+            self.say_cannot(issue, &what, &why);
         }
         Ok(false)
     }
@@ -1549,47 +1626,31 @@ impl Orchestrator {
 
     // ── 需要你 ────────────────────────────────────────────────────────────
 
-    /// 「这一件事只能你来做」——发一张卡片，把要敲的那一条命令原样给出来，等他做完回来。
+    /// 「这一步我确实做不了」——发一张**如实说明**的卡片。
     ///
-    /// 这是设计文档 §3.3 第 4 条的落地：动作表里**没有**任何需要 sudo 的动作，
-    /// 撞上要管理员权限的事就老老实实请用户出手，不替他提权、也不假装做过了。
-    fn ask_manual(&self, parent: u64, what: &str, cmd: &str) -> bool {
-        let ev = self.bus.emit(
-            EventDraft::new(Kind::NeedUser, what)
+    /// I8 之前这里是另一张卡片：把要敲的命令原样给出来 + 一个「我执行完了，继续」
+    /// 按钮。用户 2026-09-21 22:10 把那种做法否了：
+    ///
+    /// > 不要让用户拷贝命令到命令行执行，因为很多用户连这个都不明白。
+    ///
+    /// 所以现在只有两种结局：**要么启动器自己做完**（要管理员权限就弹系统密码框，
+    /// 见 [`crate::runtime::elevate`]），**要么如实说做不了**并给出诊断包那条路。
+    /// 中间那种「把活儿丢回给用户」的卡片不再存在。
+    fn say_cannot(&self, parent: u64, what: &str, why: &str) {
+        self.bus.emit(
+            EventDraft::new(Kind::Failed, what)
                 .under(parent)
-                .status(Status::Waiting)
-                .detail(format!("请在终端里执行：{cmd}"))
-                .tech("这一条要管理员权限。启动器不会替你提权，也不会把它塞进动作表。")
-                .choices(choices_manual()),
-        );
-        let yes = self.wait_answer(
-            &format!("{what}（请在终端里执行：{cmd}）"),
-            &choices_manual(),
-        );
-        self.bus.finish(
-            ev,
-            if yes { Status::Ok } else { Status::Skipped },
-            if yes {
-                "你说执行完了，这就再试一次"
-            } else if self.interactive {
-                "你选择先不弄"
-            } else {
-                "命令行下没有人能回答，按「先不弄」处理"
-            },
-            None,
+                .status(Status::Failed)
+                .detail(why)
+                .tech("这一步启动器自己做不了，也不会把它变成一条让你去敲的命令。"),
         );
         guard::audit(
-            "manual_step",
-            &std::collections::BTreeMap::from([("command".to_string(), cmd.to_string())]),
-            Proposer::User,
+            "cannot_do",
+            &std::collections::BTreeMap::from([("what".to_string(), what.to_string())]),
+            Proposer::Orchestrator,
             None,
-            if yes {
-                "用户说已执行"
-            } else {
-                "用户放弃"
-            },
+            why,
         );
-        yes
     }
 
     /// 挂一个提问并阻塞等答案。**不设超时** —— 悄悄超时然后自己决定，
@@ -1685,149 +1746,85 @@ impl Orchestrator {
     }
 
     fn run_install_runtime_inner(&mut self, parent: u64) -> AppResult<String> {
-        use crate::runtime::builtin;
-        match builtin::decide() {
-            builtin::Decision::AlreadyRunning(who) => {
-                return Ok(format!("{who} 正在运行，一个字节都不用下。"))
-            }
-            builtin::Decision::Unsupported(why) => {
-                return Err(AppError::new(Code::NotImplemented, why))
-            }
-            _ => {}
-        }
-        if LauncherConfig::load().runtime.route() == crate::config::InstallRoute::OrbStack {
-            let bus = self.bus.clone();
-            let ev = bus.emit(
-                EventDraft::new(Kind::Action, "正在装 OrbStack（官方安装包）")
-                    .under(parent)
-                    .status(Status::Running),
-            );
-            let mut say = |line: &str| bus.finish(ev, Status::Running, line, None);
-            let c = self.cancel.clone();
-            let cancel = move || c.load(Ordering::Relaxed);
-            let r = crate::runtime::orbstack::install(&mut say, &cancel);
-            match &r {
-                Ok(t) => self.bus.finish(ev, Status::Ok, &first_line(t), None),
-                Err(e) => self.bus.finish(ev, Status::Failed, &e.msg, None),
-            }
-            return r;
-        }
-
-        let items = crate::runtime::manifest::for_host();
-        let total = crate::runtime::manifest::total_bytes(&items);
+        // 整条兜底链在 [`crate::runtime::chain`] 里（内置运行时 → OrbStack 官方包 →
+        // Homebrew）。这里只负责把它吐出来的每一句话变成事件流里的一张卡片，
+        // 以及把下载进度做成**真实字节数**的那一行。
         let bus = self.bus.clone();
-        let dl = bus.emit(
-            EventDraft::new(
-                Kind::Action,
-                format!(
-                    "正在下载容器运行时（{} 个组件，合计 {}）",
-                    items.len(),
-                    crate::assist::probe::human_bytes(total)
-                ),
-            )
-            .under(parent)
-            .status(Status::Running),
+        let head = bus.emit(
+            EventDraft::new(Kind::Action, "正在替你把 Docker 装好")
+                .under(parent)
+                .status(Status::Running),
         );
         let t0 = Instant::now();
-        if !builtin::is_installed() {
-            let b2 = bus.clone();
-            let mut say = |line: &str| {
-                b2.emit(
-                    EventDraft::new(Kind::Action, line)
-                        .under(dl)
-                        .status(Status::Ok),
-                );
-            };
-            let b3 = bus.clone();
-            let mut last = 0u64;
-            let mut bytes = move |got: u64, total: u64| {
-                // 每 4 MB 更新一行，不要一秒刷几十条
-                if got < last + 4 * 1024 * 1024 && got < total {
-                    return;
-                }
-                last = got;
-                let pct = got
-                    .checked_mul(100)
-                    .and_then(|x| x.checked_div(total))
-                    .unwrap_or(0);
-                b3.finish(
-                    dl,
-                    Status::Running,
-                    &format!(
-                        "{pct}% · 已下载 {} / {}",
-                        crate::assist::probe::human_bytes(got),
-                        crate::assist::probe::human_bytes(total)
-                    ),
-                    None,
-                );
-            };
-            let c = self.cancel.clone();
-            let cancel = move || c.load(Ordering::Relaxed);
-            let mut pr = builtin::Progress {
-                say: &mut say,
-                bytes: &mut bytes,
-                cancel: &cancel,
-            };
-            match builtin::install(&mut pr) {
-                Ok(_) => bus.finish(
-                    dl,
-                    Status::Ok,
-                    &format!(
-                        "{} 全部下载并校验通过 · 用时 {}",
-                        crate::assist::probe::human_bytes(total),
-                        fmt_secs(t0.elapsed().as_secs())
-                    ),
-                    Some(t0.elapsed().as_millis() as u64),
-                ),
-                Err(e) => {
-                    bus.finish(dl, Status::Failed, &e.msg, None);
-                    return Err(e);
-                }
+        let b2 = bus.clone();
+        let mut say = |line: &str| {
+            b2.emit(
+                EventDraft::new(Kind::Action, line)
+                    .under(head)
+                    .status(Status::Ok),
+            );
+        };
+        let b3 = bus.clone();
+        let mut last = 0u64;
+        let mut bytes = move |got: u64, total: u64| {
+            // 每 4 MB 更新一行，不要一秒刷几十条
+            if got < last + 4 * 1024 * 1024 && got < total {
+                return;
             }
-        } else {
-            bus.finish(dl, Status::Ok, "内置运行时之前已经装好了，直接用", None);
-        }
-
-        let (cpu, mem, disk) = builtin::vm_params();
-        let vm = bus.emit(
-            EventDraft::new(
-                Kind::Action,
-                format!("正在启动虚拟机（{cpu} 核 · {mem} GiB 内存 · {disk} GiB 磁盘）"),
-            )
-            .under(parent)
-            .status(Status::Running),
-        );
-        let t1 = Instant::now();
-        let b4 = bus.clone();
-        let mut say = |line: &str| b4.finish(vm, Status::Running, line, None);
-        let mut nb = |_: u64, _: u64| {};
+            last = got;
+            let pct = got
+                .checked_mul(100)
+                .and_then(|x| x.checked_div(total))
+                .unwrap_or(0);
+            b3.finish(
+                head,
+                Status::Running,
+                &format!(
+                    "{pct}% · 已下载 {} / {}",
+                    crate::assist::probe::human_bytes(got),
+                    crate::assist::probe::human_bytes(total)
+                ),
+                None,
+            );
+        };
         let c = self.cancel.clone();
         let cancel = move || c.load(Ordering::Relaxed);
-        let mut pr = builtin::Progress {
+        let mut pr = crate::runtime::builtin::Progress {
             say: &mut say,
-            bytes: &mut nb,
+            bytes: &mut bytes,
             cancel: &cancel,
         };
-        let r = builtin::start(&mut pr);
+        let r = crate::runtime::chain::install_docker(&mut pr);
         match &r {
-            Ok(t) => bus.finish(
-                vm,
-                Status::Ok,
-                &first_line(t),
-                Some(t1.elapsed().as_millis() as u64),
-            ),
-            Err(e) => bus.finish(vm, Status::Failed, &e.msg, None),
+            Ok(out) => {
+                // 换过路线也是一次「自动解决的问题」——**如实计数**（I8 一.4）
+                for (route, why) in &out.failed {
+                    // 换一条路线走通了，也是**自动解决掉一个问题**（I8 一.4）。
+                    // 与「预检时换端口」那一条同一个计数器，不另立一个
+                    self.solved += 1;
+                    crate::linfo!("兜底链换过一次路线（{} 没走通）", route.label());
+                    bus.emit(
+                        EventDraft::new(
+                            Kind::Resolved,
+                            format!("「{}」这条路没走通，已自动改走下一条", route.label()),
+                        )
+                        .under(head)
+                        .status(Status::Ok)
+                        .detail("你不用做任何事，启动器自己换了一条路")
+                        .tech(why.clone()),
+                    );
+                }
+                self.tick(&self.phase.clone());
+                bus.finish(
+                    head,
+                    Status::Ok,
+                    &format!("{}（走的是「{}」）", out.message, out.route.label()),
+                    Some(t0.elapsed().as_millis() as u64),
+                );
+            }
+            Err(e) => bus.finish(head, Status::Failed, &e.msg, None),
         }
-        let started = r?;
-        // 钉进设置：下次开启动器不用再探一遍
-        if let Some(d) = builtin::docker_bin() {
-            let mut cfg = LauncherConfig::load();
-            cfg.runtime.docker_path = d.to_string_lossy().into_owned();
-            cfg.save()?;
-            crate::runtime::which::invalidate();
-            crate::runtime::env::invalidate();
-        }
-        Ok(started)
+        Ok(r?.message)
     }
 
     /// 发一张「需要你」卡片并**阻塞等待**用户点。按钮文案是结论不是问句。
@@ -1891,23 +1888,6 @@ impl Orchestrator {
         );
         yes
     }
-}
-
-/// 「这件事只能你来做」那张卡片上的两个按钮。**一处定义**，
-/// 事件流里发的和命令行里问的是同一份 —— 两边各写一套迟早会对不上。
-pub fn choices_manual() -> Vec<Choice> {
-    vec![
-        Choice {
-            value: "yes".into(),
-            label: "我执行完了，继续".into(),
-            primary: true,
-        },
-        Choice {
-            value: "no".into(),
-            label: "先不弄了".into(),
-            primary: false,
-        },
-    ]
 }
 
 // ── 侦察员采到的证据 ──────────────────────────────────────────────────────
@@ -2012,6 +1992,26 @@ impl Evidence {
                     .join("、")
             ));
         }
+        // ── 网络代理（I8）──
+        //
+        // 「直连不通」这类失败里，这一行常常就是答案。**只说事实**：
+        // 配没配、有没有靠它救过场；不提议去改它（改用户的网络设置是禁止项）
+        let px = crate::netproxy::current();
+        if px.any() {
+            s.push_str(&format!(
+                "这台机器配了网络代理（{}），启动器在直连失败时会自动沿用它（只读，不修改）。\n",
+                px.source_cn()
+            ));
+            let rescued = crate::netproxy::rescued_hosts();
+            if !rescued.is_empty() {
+                s.push_str(&format!(
+                    "本次安装里这些站点是靠代理才通的：{}\n",
+                    rescued.join("、")
+                ));
+            }
+        } else {
+            s.push_str("这台机器没有配系统代理（环境变量与系统设置里都没有）。\n");
+        }
         // ── 本机凭据助手（I6）──
         s.push_str(&format!("{}\n", self.sub_env));
         if self.cred_helpers.is_empty() {
@@ -2073,6 +2073,8 @@ pub const AUTO_SYSTEM_PROMPT: &str = "\
 - macOS 的 GUI 程序 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，不含 /usr/local/bin，所以「终端里能跑 docker」不等于「启动器找得到 docker」。
 - 国内直连 ghcr.io 经常超时，腾讯云香港的源（id 是 tencent）一般能通。
 - Hunter 要 5 个端口：web 3100、api 8100、opencode 3921、postgres 5442、redis 6479，被占时可以往上挪。
+- 启动器会**只读地**沿用用户在系统里配好的网络代理（直连失败时自动走一次代理重试，子进程与虚拟机也会带上）。所以「直连超时」这件事已经自动兜过一层了；不要提议去改代理、DNS、hosts —— 那些动作不存在，提了也只会被拒绝。
+- 这台电脑上没有 Docker 时，启动器会自动依次试三条路把它装好（内置运行时 → OrbStack 官方安装包 → Homebrew），**全部由启动器执行**。把这件事推给用户是不允许的，也没有这样的工具可调。
 ";
 
 // ── 讲解员（模板，不调模型） ──────────────────────────────────────────────
@@ -2100,27 +2102,36 @@ pub fn narrate_detail(e: &AppError) -> String {
     crate::redact::mask_home(&crate::redact::redact(&first_line(&e.msg)))
 }
 
-/// AI 没有权限做、只能请用户自己敲的那几条。**不带 sudo 的动作表里一条都没有**，
-/// 所以这里给的是「要你去终端里执行的命令」，不是一个会被执行的动作。
-fn manual_step(e: &AppError) -> Option<(String, String)> {
+/// **启动器自己做不到**的那几件事：说清是什么、为什么。
+///
+/// I8 之前这个函数的名字叫 `manual_step`，返回的是「一句话 + 一条要用户去敲的命令」。
+/// 现在它只返回「一句话 + 为什么做不了」——
+/// 能替用户做的都已经在兜底链（[`crate::runtime::chain`]）与系统授权框
+/// （[`crate::runtime::elevate`]）里做掉了，走到这里的都是**真的做不了**的。
+fn cannot_do(e: &AppError) -> Option<(String, String)> {
     match e.code {
         Code::DaemonDown if cfg!(target_os = "linux") => Some((
-            "Docker 后台服务要用管理员权限才能启动".to_string(),
-            "sudo systemctl start docker".to_string(),
+            "Docker 后台服务没能启动".to_string(),
+            format!(
+                "启动它要管理员权限。启动器试过让系统弹授权框，但{}",
+                crate::runtime::elevate::available()
+                    .err()
+                    .unwrap_or_else(|| "授权没有通过（你可能点了取消）。".to_string())
+            ),
         )),
-        Code::DockerMissing if cfg!(target_os = "linux") => Some((
-            "这台机器上没有 Docker，装它要管理员权限".to_string(),
-            "curl -fsSL https://get.docker.com | sh".to_string(),
+        Code::DockerMissing if !cfg!(target_os = "macos") => Some((
+            "这台电脑上没有 Docker".to_string(),
+            crate::runtime::chain::platform_cannot_install(),
         )),
-        Code::DockerMissing if cfg!(target_os = "macos") => Some((
-            "这台 Mac 上没有 Docker".to_string(),
-            "brew install --cask orbstack（或者去 orbstack.dev 下载）".to_string(),
+        Code::DockerMissing => Some((
+            "三条路都没能把 Docker 装起来".to_string(),
+            "每一条失败的原话都在上面，也会一起打进诊断包。".to_string(),
         )),
-        // 自动这条路（补 PATH → 另起一份配置）都走不通时，剩下的只有用户自己动手。
-        // **给的是「去掉 credsStore」而不是「装个助手」** —— 前者一行就能做完
         Code::CredHelper => Some((
-            "你的 ~/.docker/config.json 里配了一个这台机器上找不到的凭据助手".to_string(),
-            "把 config.json 里的 \"credsStore\" 那一行删掉（拉公开镜像不需要它）".to_string(),
+            "你的 Docker 配置里指定了一个这台电脑上不存在的登录助手".to_string(),
+            "启动器已经替你另起了一份不带登录助手的配置（你自己的配置一个字节没动）；\
+             如果还是不行，把诊断包发给开发者是最快的一条路。"
+                .to_string(),
         )),
         _ => None,
     }

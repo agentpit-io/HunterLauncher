@@ -77,15 +77,16 @@ pub struct LauncherUpdate {
     pub reason: Option<String>,
 }
 
-/// 下载好但要用户自己装时返回的东西。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ManualInstall {
-    pub path: String,
-    pub bytes: u64,
-    /// 可以直接粘贴的一条命令
-    pub command: String,
-    pub message: String,
+/// `.deb` 下好之后、提权安装之前的中间结果。
+///
+/// I8 之前它叫「要用户自己装时返回的东西」，会一路传到界面上变成一张
+/// 「复制这条命令去终端里跑」的弹窗。现在它**不出这个模块**：
+/// 下完就直接交给 [`crate::runtime::elevate`] 装掉。
+#[derive(Debug, Clone)]
+struct Downloaded {
+    path: String,
+    /// 真实字节数。进日志（红线 5：数字一律实测）
+    bytes: u64,
 }
 
 /// 这份启动器是以什么形式装在机器上的。
@@ -256,13 +257,16 @@ pub async fn check<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> LauncherUpda
     out
 }
 
-/// 装。能就地装就就地装完重启；不能就下载下来给一条命令。
+/// 装。**两条路都由启动器自己装完**，装完调用方重启进程。
 ///
-/// 返回 `Ok(None)` = 已经就地装好，调用方应当重启进程；
-/// 返回 `Ok(Some(manual))` = 包下好了，要用户自己敲那条命令。
-pub async fn install<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> AppResult<Option<ManualInstall>> {
+/// | 装法 | 怎么装 | 要不要密码 |
+/// |---|---|---|
+/// | AppImage / Windows / macOS | Tauri 的 updater 就地换掉 | 不要 |
+/// | `.deb` | 下好包 → polkit 原生授权框 → `dpkg -i` | 要（系统自己弹） |
+///
+/// 返回 `Ok(())` = 装好了，调用方应当重启进程。装不了就是 `Err`，**如实说原因**
+/// （I8 之前这里还有第三种结局：「包下好了，命令给你，你自己去敲」—— 没有了）。
+pub async fn install<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<()> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app
         .updater()
@@ -286,16 +290,42 @@ pub async fn install<R: tauri::Runtime>(
                 )
             })?;
         linfo!("启动器 {version} 已安装，准备重启");
-        return Ok(None);
+        return Ok(());
     }
 
-    // .deb 这类：只下载，装由用户自己来
-    let manual = download_only(&version)?;
-    Ok(Some(manual))
+    // `.deb` 这类：I8 之前是「下载下来 + 给一条命令 + 请你自己去终端里敲」。
+    // 用户 2026-09-21 22:10 把那种做法否了，所以现在**启动器自己装**：
+    // 下好包 → 走 polkit 的原生授权框（`pkexec dpkg -i`）→ 装完。
+    //
+    // 提权前那条命令要过 [`crate::assist::guard::argv_privileged`]：
+    // 只允许 `dpkg -i <~/.hunter/updates/ 下我们自己刚下的那个包>`。
+    let pkg = download_only(&version)?;
+    if let Err(e) = crate::runtime::elevate::available() {
+        // 没有 polkit 就**如实说装不了**，不退回「请你自己敲一条命令」
+        return Err(AppError::new(
+            Code::UpdateFailed,
+            format!(
+                "新版本 {version} 的安装包已经下到 {}，但这台机器上装不了：{e}",
+                crate::redact::mask_home(&pkg.path)
+            ),
+        ));
+    }
+    linfo!(
+        "{} 已下好（{}），接下来弹系统授权框把它装上",
+        crate::redact::mask_home(&pkg.path),
+        crate::flow::human_bytes(pkg.bytes)
+    );
+    crate::runtime::elevate::run(
+        crate::runtime::elevate::Op::InstallDeb,
+        &["dpkg".to_string(), "-i".to_string(), pkg.path.clone()],
+        Duration::from_secs(300),
+    )?;
+    linfo!("启动器 {version} 已安装（.deb，经系统授权框），准备重启");
+    Ok(())
 }
 
 /// 把新版 `.deb` 下到 `~/.hunter/updates/`。两个地址按顺序试（国内在前）。
-fn download_only(version: &str) -> AppResult<ManualInstall> {
+fn download_only(version: &str) -> AppResult<Downloaded> {
     paths::ensure_dirs()?;
     let name = deb_file_name(version);
     let dst = paths::updates_dir().join(&name);
@@ -306,18 +336,7 @@ fn download_only(version: &str) -> AppResult<ManualInstall> {
             Ok(n) if n > 0 => {
                 linfo!("已下载 {name}（{n} 字节，来自 {host}）");
                 let path = dst.to_string_lossy().into_owned();
-                let command = deb_install_command(&path);
-                return Ok(ManualInstall {
-                    message: format!(
-                        "新版本 {version} 的安装包已经下到 {path}（{}）。\
-                         这台机器上的启动器是用 .deb 装的，换包要 root 权限，\
-                         所以最后一步得你自己来：在终端里跑下面这条命令，装完重新打开启动器就是新版本。",
-                        crate::flow::human_bytes(n)
-                    ),
-                    path,
-                    bytes: n,
-                    command,
-                });
+                return Ok(Downloaded { path, bytes: n });
             }
             Ok(_) => why.push(format!("{host} 返回了一个空文件")),
             Err(e) => why.push(format!("{host} {}", e.msg)),
@@ -625,9 +644,13 @@ pub fn verify(bytes: &[u8], sig: &str) -> AppResult<()> {
 /// headless 的 `--self-update`。
 ///
 /// * AppImage → 验签后**就地替换**那个文件（先写临时文件再 rename，中途断电不会留下半个）
-/// * `.deb` / 认不出来的 → 下到 `~/.hunter/updates/` 并返回一条要用户自己敲的命令
+/// * `.deb` → 验签后下到 `~/.hunter/updates/`，再走 polkit 的原生授权框装上（I8）
 ///
 /// 两条路都**先验签再落地**。
+///
+/// `.deb` 那条路在**没有图形会话**的地方（ssh、cron）弹不出 polkit 的框 ——
+/// 那时如实说弹不出来，并把该跑的命令打在终端里。这是唯一保留「给一条命令」的地方，
+/// 理由很简单：**调用方本来就在终端里**（`check-wording.py` 的白名单写的就是这一条）。
 pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
     let current = env!("CARGO_PKG_VERSION");
     let (m, host) = fetch_manifest(Duration::from_secs(20))?;
@@ -706,16 +729,35 @@ pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
         }
         _ => {
             note(&format!(
-                "这台机器上的启动器是 {} 形式装的，换包要 root —— 只下载，不替你装。",
+                "这台机器上的启动器是 {} 形式装的，换包要管理员权限。",
                 kind.as_str()
             ));
             let deb = download_and_verify_deb(&m.version, &mut note)?;
-            Ok(format!(
-                "新版本 {} 的安装包已下到 {}（签名已验过）。装它：\n  {}",
-                m.version,
-                deb,
-                deb_install_command(&deb)
-            ))
+            // I8：先试着自己装完 —— 弹的是 polkit 自己的授权框
+            match crate::runtime::elevate::available() {
+                Ok(()) => {
+                    note("签名已验过，接下来系统会弹出它自己的授权框");
+                    crate::runtime::elevate::run(
+                        crate::runtime::elevate::Op::InstallDeb,
+                        &["dpkg".to_string(), "-i".to_string(), deb.clone()],
+                        Duration::from_secs(300),
+                    )?;
+                    Ok(format!(
+                        "已更新到 v{}。重新运行启动器就是新版本。",
+                        m.version
+                    ))
+                }
+                // 没有图形会话（ssh / cron）时 polkit 弹不出框。**如实说**，
+                // 并把命令打在终端里 —— 调用方本来就在终端里
+                Err(why) => Ok(format!(
+                    "新版本 {} 的安装包已下到 {}（签名已验过），但这里装不上：{why}\n\
+                     在有桌面会话的地方重新跑一次 --self-update 就能装；\n\
+                     要现在装的话：{}",
+                    m.version,
+                    deb,
+                    deb_install_command(&deb)
+                )),
+            }
         }
     }
 }

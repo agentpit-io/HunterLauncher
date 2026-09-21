@@ -43,6 +43,7 @@ pub mod gateway;
 pub mod headless;
 pub mod http;
 pub mod log;
+pub mod netproxy;
 pub mod offline;
 pub mod paths;
 pub mod ports;

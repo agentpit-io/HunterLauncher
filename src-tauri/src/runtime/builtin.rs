@@ -142,7 +142,61 @@ pub fn docker_host() -> Option<String> {
         .then(|| format!("unix://{}", s.to_string_lossy()))
 }
 
-/// 装好了吗（四个文件都在）。
+/// 虚拟机系统镜像放在哪儿（I8）。`dist/diskimage/<原文件名>`。
+pub fn disk_image_dir() -> PathBuf {
+    crate::paths::runtime_dist().join("diskimage")
+}
+
+/// 这台机器要的那份虚拟机镜像，**下好了就返回它的路径**。
+///
+/// 返回 `Some` 的条件是文件真的在那儿；不核 sha512（那是下载时做的事，
+/// 而且 colima 自己还要再核一遍）。
+pub fn disk_image_path() -> Option<PathBuf> {
+    let item = manifest::disk_image_for_host()?;
+    let p = disk_image_dir().join(item.file);
+    p.is_file().then_some(p)
+}
+
+/// 清单里这一条落地之后应该在哪儿。
+fn dest_path(item: &Item) -> PathBuf {
+    match item.unpack {
+        Unpack::Binary if item.component == "docker-compose" => {
+            crate::paths::runtime_docker_config()
+                .join("cli-plugins")
+                .join(exe(item.dest))
+        }
+        Unpack::Binary | Unpack::TarGzPick(_) => crate::paths::runtime_bin().join(exe(item.dest)),
+        Unpack::TarGz => crate::paths::runtime_dist().join(item.dest),
+        Unpack::Keep => crate::paths::runtime_dist().join(item.dest).join(item.file),
+    }
+}
+
+/// 这一条落地了吗。
+fn placed(item: &Item) -> bool {
+    let p = dest_path(item);
+    match item.unpack {
+        Unpack::TarGz => p.is_dir(),
+        _ => p.is_file(),
+    }
+}
+
+/// 清单里**还缺**的那几条（I8）。
+///
+/// 为什么不是一个 bool：0.1.7 装过一次的机器上前四个文件都在，缺的只有
+/// I8 新加的那份虚拟机镜像。缺哪几条就只下哪几条，不要为了一个文件重下 95 MB。
+pub fn missing_items() -> Vec<&'static Item> {
+    manifest::for_host()
+        .into_iter()
+        .filter(|i| !placed(i))
+        .collect()
+}
+
+/// **工具装齐了吗**（docker、colima、limactl、compose 插件四件）。
+///
+/// 注意它和 [`missing_items`] 问的是两个问题：这里问「能不能用」，那里问
+/// 「还差什么要下」。I8 往清单里加了虚拟机镜像之后，0.1.7 装过的机器上
+/// 「工具齐了但镜像还没下」是一个**真实存在的中间态** —— 两个问题合成一个的话，
+/// 那种机器上 `DOCKER_CONFIG` 会突然不指向内置那份，compose 插件当场就找不到了。
 pub fn is_installed() -> bool {
     docker_bin().is_some()
         && colima_bin().is_some()
@@ -151,6 +205,11 @@ pub fn is_installed() -> bool {
             .join("cli-plugins")
             .join(exe("docker-compose"))
             .is_file()
+}
+
+/// 还有东西要下吗（含 I8 新加的虚拟机镜像）。
+pub fn needs_download() -> bool {
+    !missing_items().is_empty()
 }
 
 /// 虚拟机在跑吗（socket 在 = colima 起着）。
@@ -190,7 +249,8 @@ pub fn status() -> Status {
         socket: crate::redact::mask_home(&socket_path().to_string_lossy()),
         items: inst.items,
         installed_at: inst.installed_at,
-        download_bytes: manifest::total_bytes(&manifest::for_host()),
+        // **还要下多少**，不是「一共多大」—— 装过一半的机器上这两个数不一样
+        download_bytes: manifest::total_bytes(&missing_items()),
     }
 }
 
@@ -264,8 +324,17 @@ pub fn decide() -> Decision {
     if d.installed && d.daemon_running {
         return Decision::AlreadyRunning(d.runtime_label.unwrap_or_else(|| "Docker".to_string()));
     }
-    if is_installed() {
+    if is_installed() && !needs_download() {
         return Decision::StartBuiltin;
+    }
+    // 工具装着、只差几个文件（0.1.7 装过的机器上差的是虚拟机镜像）：
+    // 照样走「装」，只是 install() 只会下缺的那几个
+    if is_installed() {
+        return match supported() {
+            Ok(()) => Decision::Install,
+            // 这台机器装不了新东西，但工具是齐的 —— 起它，colima 会自己想办法
+            Err(_) => Decision::StartBuiltin,
+        };
     }
     // 装了但没跑的（OrbStack / Docker Desktop / Colima）优先点它，不另装一套
     for a in crate::assist::probe::runtime_apps() {
@@ -365,13 +434,19 @@ pub struct Progress<'a> {
 /// 下载 + 校验 + 落地。**校验不过就删掉重来一个源，两个源都不过就失败**。
 pub fn install(p: &mut Progress) -> AppResult<Installed> {
     supported().map_err(|e| AppError::new(Code::NotImplemented, e))?;
-    let items = manifest::for_host();
+    // **只下还缺的那几个**（I8）：0.1.7 装过一次的机器上前四个都在，
+    // 缺的只有新加进清单的那份虚拟机镜像
+    let items = missing_items();
     let total = manifest::total_bytes(&items);
-    (p.say)(&format!(
-        "要下 {} 个组件，合计 {}",
-        items.len(),
-        crate::assist::probe::human_bytes(total)
-    ));
+    if items.is_empty() {
+        (p.say)("需要的文件都已经在本机了，一个字节都不用下");
+    } else {
+        (p.say)(&format!(
+            "要下 {} 个文件，合计 {}",
+            items.len(),
+            crate::assist::probe::human_bytes(total)
+        ));
+    }
     ensure_dirs()?;
 
     let mut done_bytes: u64 = 0;
@@ -383,7 +458,7 @@ pub fn install(p: &mut Progress) -> AppResult<Installed> {
         let cached = crate::paths::runtime_cache().join(item.file);
         // 上一次下到一半又重来时，已经校验通过的那一份不必再下一遍
         let mut source_id = "cache".to_string();
-        if !(cached.is_file() && sha256_file(&cached).as_deref() == Some(item.sha256)) {
+        if !(cached.is_file() && verify_file(&cached, item).is_ok()) {
             let srcs = sources_for(item);
             let mut last: Option<AppError> = None;
             let mut ok = false;
@@ -406,29 +481,28 @@ pub fn install(p: &mut Progress) -> AppResult<Installed> {
                     &mut |got, _| (p.bytes)(base + got, total),
                 );
                 match r {
-                    Ok(n) => {
-                        let got = sha256_file(&cached);
-                        if got.as_deref() == Some(item.sha256) {
+                    Ok(n) => match verify_file(&cached, item) {
+                        Ok(which) => {
                             (p.say)(&format!(
-                                "{} 校验通过（sha256 对上了，{} 字节）",
+                                "{} 校验通过（{} 对上了，{} 字节）",
                                 item.label(),
+                                which,
                                 n
                             ));
                             source_id = s.id.to_string();
                             ok = true;
                             break;
                         }
-                        let _ = std::fs::remove_file(&cached);
-                        let msg = format!(
-                            "{} 从「{}」下回来的内容 sha256 对不上：期望 {}，实际 {}。已删掉，不会使用。",
-                            item.file,
-                            s.label,
-                            item.sha256,
-                            got.unwrap_or_else(|| "算不出来".into())
-                        );
-                        crate::lwarn!("{msg}");
-                        last = Some(AppError::new(Code::Unknown, msg));
-                    }
+                        Err(msg) => {
+                            let _ = std::fs::remove_file(&cached);
+                            let msg = format!(
+                                "{} 从「{}」下回来的内容{}。已删掉，不会使用。",
+                                item.file, s.label, msg
+                            );
+                            crate::lwarn!("{msg}");
+                            last = Some(AppError::new(Code::Unknown, msg));
+                        }
+                    },
                     Err(e) => {
                         crate::lwarn!("下 {} 失败（{}）：{}", item.file, s.label, e.msg);
                         last = Some(e);
@@ -457,8 +531,14 @@ pub fn install(p: &mut Progress) -> AppResult<Installed> {
     }
 
     write_docker_config()?;
+    // 这一次只下了缺的那几条，**历史记录不能丢**（否则设置页会显示「只装了一个文件」）
+    let mut merged = installed().unwrap_or_default().items;
+    for it in installed_items {
+        merged.retain(|o| o.component != it.component || o.file != it.file);
+        merged.push(it);
+    }
     let rec = Installed {
-        items: installed_items,
+        items: merged,
         installed_at: crate::timefmt::now_shanghai(),
         launcher_version: env!("CARGO_PKG_VERSION").to_string(),
     };
@@ -477,7 +557,10 @@ pub fn install(p: &mut Progress) -> AppResult<Installed> {
     let _ = crate::paths::chmod_600(&path);
     // 下载中转留着没有意义（校验过的东西已经搬到位了），100 MB 不该白占
     let _ = std::fs::remove_dir_all(crate::paths::runtime_cache());
-    (p.say)("四个组件都装好了，都在 ~/.hunter/runtime 里，没动系统任何地方");
+    (p.say)(&format!(
+        "{} 个文件都装好了，都在 ~/.hunter/runtime 里，没动系统任何地方",
+        manifest::for_host().len()
+    ));
     super::which::invalidate();
     super::env::invalidate();
     Ok(rec)
@@ -536,6 +619,27 @@ fn place(item: &Item, cached: &Path) -> AppResult<()> {
                 )
             })?;
             untar(cached, &dir, None)
+        }
+        Unpack::Keep => {
+            // 虚拟机镜像：原样搬过去，不解压、不加可执行位。
+            // 它唯一的用处是当 `colima start --disk-image` 的参数
+            let dir = disk_image_dir();
+            crate::assist::guard::writable_path(&dir)?;
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                AppError::new(
+                    Code::ConfigWrite,
+                    format!("建目录 {} 失败：{e}", dir.display()),
+                )
+            })?;
+            let dest = dir.join(item.file);
+            crate::assist::guard::writable_path(&dest)?;
+            std::fs::copy(cached, &dest).map_err(|e| {
+                AppError::new(
+                    Code::ConfigWrite,
+                    format!("放 {} 失败：{e}", dest.display()),
+                )
+            })?;
+            Ok(())
         }
         Unpack::TarGzPick(inner) => {
             let tmp = crate::paths::runtime_cache().join(format!("{}.unpack", item.dest));
@@ -676,6 +780,13 @@ fn host_mem_gib() -> Option<u32> {
 }
 
 /// `colima start` 要跑的那条命令（**展示与执行同一个来源**）。
+///
+/// I8 加了两样东西，都是 0.1.7 真机首测逼出来的：
+///
+/// | 参数 | 为什么 |
+/// |---|---|
+/// | `--disk-image <本地文件>` | 不让 colima 自己去 GitHub 下那 341 MB（用户 Mac 上就是这一步超时的）。给了本地文件之后它按内置 sha512 核一遍就用，一个字节都不下 |
+/// | `--env HTTP_PROXY=…` | 虚拟机里的 docker 拉镜像也要能走用户的代理。**只监听本机的代理不传**（虚拟机里的 127.0.0.1 是它自己），那种情况这里就没有 `--env` |
 pub fn start_argv() -> AppResult<Vec<String>> {
     let c = colima_bin().ok_or_else(|| {
         AppError::new(
@@ -684,7 +795,7 @@ pub fn start_argv() -> AppResult<Vec<String>> {
         )
     })?;
     let (cpu, mem, disk) = vm_params();
-    Ok(vec![
+    let mut v = vec![
         c.to_string_lossy().into_owned(),
         "start".into(),
         "--profile".into(),
@@ -697,7 +808,35 @@ pub fn start_argv() -> AppResult<Vec<String>> {
         mem.to_string(),
         "--disk".into(),
         disk.to_string(),
-    ])
+    ];
+    if let Some(img) = disk_image_path() {
+        v.push("--disk-image".into());
+        v.push(img.to_string_lossy().into_owned());
+    }
+    for (k, val) in crate::netproxy::current().for_vm() {
+        // colima 的 --env 收的是 KEY=VALUE；大小写两份都给（VM 里跑的程序两种都有）
+        v.push("--env".into());
+        v.push(format!("{k}={val}"));
+    }
+    Ok(v)
+}
+
+/// 起虚拟机之前要不要先说一句代理的事（事件流用）。**说实话**：
+/// 传进去了就说传了，没传进去要说清为什么没传。
+pub fn vm_proxy_note() -> Option<String> {
+    let p = crate::netproxy::current();
+    if !p.any() {
+        return None;
+    }
+    if p.for_vm().is_empty() {
+        Some(format!(
+            "{}。不过它只监听你这台电脑本机（127.0.0.1），虚拟机里访问不到，\
+             所以没有把它传进虚拟机 —— 虚拟机拉镜像会走腾讯云香港的源。",
+            p.one_line()
+        ))
+    } else {
+        Some(format!("{}，并把它传给了虚拟机里的 docker。", p.one_line()))
+    }
 }
 
 /// colima / limactl 要的环境变量。**全部指向 `~/.hunter/runtime`**，
@@ -722,6 +861,9 @@ pub fn env_pairs() -> Vec<(String, String)> {
     if let Some(h) = docker_host() {
         v.push(("DOCKER_HOST".to_string(), h));
     }
+    // colima / limactl 自己也会下东西（lima 的 guest agent、模板），直连不通时
+    // 它们得能走用户的代理 —— 这几个变量是它们唯一认得的入口（I8）
+    v.extend(crate::netproxy::current().env_pairs());
     v
 }
 
@@ -746,7 +888,15 @@ pub fn start(p: &mut Progress) -> AppResult<String> {
     }
     let argv = start_argv()?;
     crate::assist::guard::argv(&argv)?;
-    (p.say)("正在启动虚拟机（第一次要下一份 Linux 镜像，通常两三分钟）");
+    if let Some(note) = vm_proxy_note() {
+        (p.say)(&note);
+    }
+    if disk_image_path().is_some() {
+        (p.say)("正在启动虚拟机（系统镜像刚才已经下好并校验过了，这一步不再下东西）");
+    } else {
+        // 清单里没有这台机器的镜像时如实说明：colima 会自己去下
+        (p.say)("正在启动虚拟机（本机没有预先下好的系统镜像，colima 会自己去下一份）");
+    }
     let t = Instant::now();
     let (prog, args) = argv.split_first().expect("start_argv 至少有一项");
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -857,6 +1007,49 @@ pub fn uninstall() -> AppResult<String> {
 }
 
 // ── 工具 ──────────────────────────────────────────────────────────────────
+
+/// 按清单校验一个下回来的文件。
+///
+/// **上游发了 sha512 的，两个都要对上**（虚拟机镜像就是这一类：colima 自己
+/// 还会按 sha512 再核一遍，我们这边先核一遍是为了「对不上就别往下走」）。
+/// 返回值是「对上了哪几种」，给人看的那一行里要写清楚。
+fn verify_file(path: &Path, item: &Item) -> Result<String, String> {
+    let got = sha256_file(path).ok_or_else(|| "的 sha256 算不出来".to_string())?;
+    if got != item.sha256 {
+        return Err(format!(
+            " sha256 对不上：期望 {}，实际 {}",
+            item.sha256, got
+        ));
+    }
+    if item.sha512.is_empty() {
+        return Ok("sha256".to_string());
+    }
+    let got = sha512_file(path).ok_or_else(|| "的 sha512 算不出来".to_string())?;
+    if got != item.sha512 {
+        return Err(format!(
+            " sha512 对不上：期望 {}，实际 {}",
+            item.sha512, got
+        ));
+    }
+    Ok("sha256 与 sha512".to_string())
+}
+
+/// 一个文件的 sha512（小写十六进制）。读不动就返回 `None`。
+pub fn sha512_file(p: &Path) -> Option<String> {
+    use sha2::{Digest, Sha512};
+    use std::io::Read;
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut h = Sha512::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Some(hex(&h.finalize()))
+}
 
 /// 一个文件的 sha256（小写十六进制）。读不动就返回 `None`。
 pub fn sha256_file(p: &Path) -> Option<String> {

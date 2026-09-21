@@ -43,7 +43,12 @@ import type {
 /** 构建产物里能被 grep 到的标记，CI 用它确认发布包里没有演示数据。 */
 export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
 
-export const DEMO_LAUNCHER_VERSION = '0.1.0'
+/**
+ * 演示数据里的版本号。**发版时要跟着 `package.json` 一起改** ——
+ * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
+ * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
+ */
+export const DEMO_LAUNCHER_VERSION = '0.1.8'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -474,10 +479,11 @@ export const demoComposeLog: string[] = [
 export const demoLauncherUpdate: LauncherUpdate = {
   available: true,
   current: DEMO_LAUNCHER_VERSION,
-  version: '0.1.1',
+  version: '0.1.9',
   notes: '修了拉取页在慢网络下 ETA 抖动的问题；升级失败回滚后不再重复提示。',
   date: '2026-09-21T02:00:00Z',
-  // 演示的是 .deb 这一路 —— 它的界面分支更多（要显示那条命令），预览时更有用
+  // 演示的是 .deb 这一路 —— I8 起它是「弹系统授权框再自己装」那一支，
+  // 界面上要多显示一段「为什么会弹密码框」，预览时更有用
   canSelfInstall: false,
   installKind: 'deb',
   reason: null,
@@ -805,18 +811,26 @@ export const demoAutoReview: AssistAutoSnapshot = {
 }
 
 /**
- * 「你电脑上已经在运行另一套 Hunter」那张**不阻塞**的选择卡片（I7）。
+ * I8：「你电脑上已经在运行另一套 Hunter」——**自己拿主意，不问用户**。
+ *
+ * I7 这里是一张不阻塞的选择卡片，两个按钮。用户 2026-09-21 22:35 把
+ * 「让用户参与决策」整类做法否了，所以现在是一张**告知**卡片：
+ * 做了什么决定、为什么这么定、想改的话去哪儿改。没有按钮。
+ *
+ * 同一张图里还有另外两条 I8 的东西：自动换下载源、自动沿用系统代理，
+ * 各自都算进「已自动解决 N 个问题」。
+ *
  * `HUNTER_DEMO_PAGE=auto-takeover-offer`。
  */
 export const demoAutoTakeoverOffer: AssistAutoSnapshot = {
   running: true,
   summary: {
-    solved: 1,
+    solved: 3,
     open: 0,
     tokens: 0,
     rounds: 0,
     maxRounds: 10,
-    elapsedMs: 9_400,
+    elapsedMs: 29_400,
     phase: '挑下载源、算端口、写配置',
   },
   events: [
@@ -842,20 +856,36 @@ export const demoAutoTakeoverOffer: AssistAutoSnapshot = {
     {
       id: 3,
       parent: 2,
-      kind: 'needUser',
-      status: 'waiting',
+      kind: 'resolved',
+      status: 'ok',
       title: '你电脑上已经在运行另一套 Hunter',
       detail:
-        'hunter-community（5 个容器，占着端口 3100、3921、5442、6479、8100）。不点也行 —— 默认就是「和它并存」，下面这一步已经在跑了。',
+        'hunter-community（6 个容器，占着端口 3100、3921、5442、6479、8100）。已自动选择「和它并存」：新装的这一套换一组空闲端口，你原来那套一点都不动 —— 这是风险最小的做法。想改成直接使用已有那套，到「设置 → 已有的 Hunter」里切换。',
       tech: [
         '并存的做法：新装的这一套换一组空闲端口。启动器不会停它、不会删它、不会改它的配置。',
-        '「hunter-community」的 compose 文件在 ~/hunter-community，所以接管之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）',
-      ],
-      choices: [
-        { value: 'coexist', label: '和它并存（推荐，不动它）', primary: true },
-        { value: 'takeover:hunter-community', label: '直接用「hunter-community」，不再装一套', primary: false },
+        '「hunter-community」的 compose 文件在 ~/hunter-community，所以在设置里切过去之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）',
       ],
       at: '2026-09-21 18:30:04',
+    },
+    {
+      id: 4,
+      parent: 2,
+      kind: 'resolved',
+      status: 'ok',
+      title: '有 1 个下载源连不上，已自动改用「腾讯云 · 香港」',
+      detail: '你不用做任何事，启动器自己挑了一个测得通的源',
+      tech: ['GHCR · GitHub（请求 ghcr.io 失败：timeout: connect）'],
+      at: '2026-09-21 18:30:24',
+    },
+    {
+      id: 5,
+      parent: 2,
+      kind: 'resolved',
+      status: 'ok',
+      title: '直连 ghcr.io、raw.githubusercontent.com 不通，已沿用你设置的网络代理',
+      detail: '检测到你设置了网络代理（HTTPS 127.0.0.1:7897 · HTTP 127.0.0.1:7897，来自系统设置），已沿用',
+      tech: ['只读取你系统里已有的代理设置，不会修改它，也不会改 DNS / hosts / 防火墙。'],
+      at: '2026-09-21 18:30:26',
     },
   ],
 }

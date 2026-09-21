@@ -31,7 +31,6 @@ import type {
   KeyCheckResult,
   LauncherSettings,
   LauncherUpdate,
-  ManualInstall,
   MissingEndpoint,
   OfflineImport,
   OneClickFeedback,
@@ -329,15 +328,15 @@ export async function checkLauncherUpdate(): Promise<LauncherUpdate> {
 }
 
 /**
- * 装启动器的新版本。
+ * 装启动器的新版本。**两条路都由启动器自己装完**（I8）。
  *
- * 能就地装（AppImage / Windows / macOS）时这个 Promise **不会 resolve** ——
- * Rust 那边装完直接重启进程了。返回一个 ManualInstall 说明这台机器装不了自己
- * （.deb），包已经下好，要用户自己敲那条命令。
+ * 成功时这个 Promise **不会 resolve** —— Rust 那边装完直接重启进程了。
+ * `.deb` 那条路会先弹一次 polkit 的原生授权框；用户在那个框上点取消、
+ * 或者这台机器上没有 polkit，都会 reject 并带上原话。
  */
-export async function installLauncherUpdate(): Promise<ManualInstall | null> {
-  if (DEMO) return null
-  return call<ManualInstall | null>('install_launcher_update')
+export async function installLauncherUpdate(): Promise<void> {
+  if (DEMO) return
+  return call<void>('install_launcher_update')
 }
 
 // ── M4 · Hunter 升级（方案 §5.6、§10） ───────────────────────────────────

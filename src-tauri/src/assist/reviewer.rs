@@ -405,15 +405,18 @@ mod tests {
         assert!(v.approve);
         // 守卫仍然拒绝 —— 这一道和模型说什么毫无关系
         assert!(actions::plan(&Call::new("rm_user_documents")).is_err());
-        // Sensitive 动作即使复核通过，档位判定照样要求用户确认
+        // I8：全自动档下 Sensitive 不再等用户点 —— 把关的是守卫与复核员这两道。
+        // 「逐步确认」档仍然要用户确认（设置页里给高级用户留的那一档）。
         let sp = actions::spec("install_runtime").expect("表里有");
         assert_eq!(sp.level, Level::Sensitive);
-        for m in [
-            super::super::guard::Mode::Auto,
-            super::super::guard::Mode::Confirm,
-        ] {
-            assert!(m.needs_confirm(sp.level), "{m:?} 下 Sensitive 仍要问");
-        }
+        assert!(
+            !super::super::guard::Mode::Auto.needs_confirm(sp.level),
+            "全自动档不该再问"
+        );
+        assert!(
+            super::super::guard::Mode::Confirm.needs_confirm(sp.level),
+            "逐步确认档仍要问"
+        );
     }
 
     #[test]

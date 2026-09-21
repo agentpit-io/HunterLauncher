@@ -1,0 +1,58 @@
+=== 场景 2 · 装了但 daemon 没起 ===
+reset 完成；旧栈容器数：6
+
+Hunter 启动器 · AI 自动驾驶安装
+────────────────────────────────────────────
+工作目录 /home/support/.hunter
+  从 /home/support/.hunter-launcher-test/key 读到一把 key（hunt_tools_****）
+  ✓ key 有效
+  授权档位：auto（全自动）
+  预算：单问题 4 回合 · 整次 10 回合 · 60000 token · 单次模型 45 秒
+
+[总览] 开始安装 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+… 检查 Docker
+[总览] 检查 Docker · 已自动解决 0 个问题 · 回合 0/10 · token 0
+× 检查 Docker　docker 命令在，但连不上后台服务（daemon 没起）。
+[总览] 正在解决：Docker 装了，但没在运行 · 已自动解决 0 个问题 · 回合 1/10 · token 0
+! 发现问题：Docker 装了但没在运行　docker 命令在，但连不上后台服务（daemon 没起）。
+   … 分析中…
+   ✓ 分析中…　查了 5 个端口
+   ✓ 找到原因　systemd 的 docker 服务 装着但没在运行，把它启动起来再等它就绪。
+   … 正在处理：启动 systemd 的 docker 服务
+   × 正在处理：启动 systemd 的 docker 服务　「启动 systemd 的 docker 服务」没成功（退出码 Some(1)）：See system logs and 'systemctl status docker.service' for details.；用系统授权框再试也没成：这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），polkit 弹不出授权框。
+   × Docker 后台服务没能启动　启动它要管理员权限。启动器试过让系统弹授权框，但这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），polkit 弹不出授权框。
+× 没能自动装好　docker 命令在，但连不上后台服务（daemon 没起）。
+Docker 后台服务没能启动：启动它要管理员权限。启动器试过让系统弹授权框，但这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），polkit 弹不出授权框。
+[总览] 失败 · 已自动解决 0 个问题 · 回合 1/10 · token 0
+
+事件流：/home/support/.hunter/logs/assist-events.jsonl
+审计日志：/home/support/.hunter/logs/assist-audit.log
+统计：自动解决 0 个问题 · 1 个修复回合 · 0 token · 用时 1 秒
+
+✗ E_DAEMON_DOWN: docker 命令在，但连不上后台服务（daemon 没起）。
+Docker 后台服务没能启动：启动它要管理员权限。启动器试过让系统弹授权框，但这是一个没有图形界面的会话（没有 DISPLAY / WAYLAND_DISPLAY），polkit 弹不出授权框。
+  日志：/home/support/.hunter/logs/launcher.log
+RC=1  耗时=3s
+--- 恢复 docker ---
+hunter-community-api-1
+hunter-community-llm-shim-1
+hunter-community-opencode-1
+hunter-community-postgres-1
+
+# ══════════════════════════════════════════════════════════════════════
+# 上面是「装了 polkit、但会话没有图形界面也没有终端」（nohup 出来的进程）。
+# 启动器如实说「polkit 没有地方问你要密码」，没有把活儿丢回给用户 —— 这是 I8 要的行为。
+#
+# 下面是同一台机器、同一个二进制，**给它一个 pty**（`script -qec … /dev/null`）之后：
+# polkit 自己的文本提示出来了。那句话是 polkit 打的，不是启动器打的。
+# ══════════════════════════════════════════════════════════════════════
+
+$ sudo systemctl stop docker.socket docker.service
+$ script -qec "hunter-launcher --auto --assist-mode auto --key-file ~/.hunter-launcher-test/key" /dev/null < /dev/zero
+
+   … 正在处理：启动 systemd 的 docker 服务
+Authentication is needed to run `/usr/bin/systemctl start docker' as the super user
+
+# ↑ polkit 的原话。这一步之后要输密码 —— 这里没有人能输，所以到此为止。
+#   **真的输一次密码、真的把 docker 起来**这一段在测试机上验不了（没有人坐在前面），
+#   报告第五节如实写明了。

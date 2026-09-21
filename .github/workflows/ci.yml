@@ -38,6 +38,13 @@ jobs:
         run: pnpm lint
       - name: 类型检查
         run: pnpm typecheck
+      - name: 界面文案里不许有「让用户自己动手」的话（I8 原则）
+        # 0.1.7 在用户 Mac 上停在一张「请在终端里执行 …」+「我执行完了，继续」的卡片上，
+        # 而那张卡片是代码里写死的字符串。守这条原则只能在流水线上扫字符串。
+        # `--self-test` 先证明规则本身有效（9 条反例 + 8 条正当文案），再扫仓库。
+        run: |
+          python3 scripts/check-wording.py --self-test
+          python3 scripts/check-wording.py
       - name: 字体子集覆盖了所有会上屏的中文（忘了重新生成 = 界面上多一个豆腐块）
         # 只盯「能显示出来的字」：前端全文 + Rust 的字符串字面量。改注释不会触发。
         run: python3 scripts/check-fonts.py
@@ -245,6 +252,24 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
           -- --nocapture --test-threads=1
           runtime::manifest::tests runtime::builtin::tests runtime::orbstack::tests
+      # I8 · 0.1.7 真机首测撞出来的两条，**能在 CI 上验的那一半**：
+      #
+      #   ① 用户 Mac 上配着系统代理（scutil --proxy 显示 HTTP/HTTPS/SOCKS 都开着），
+      #      而 colima 下虚拟机镜像那一次没走代理 → connection timed out。
+      #      netproxy 把「跑命令」与「解析输出」拆开了，解析那一半是纯函数 ——
+      #      单测里抄的就是用户那台机器上 `scutil --proxy` 的真实输出。
+      #   ② 兜底链（内置运行时 → OrbStack dmg → Homebrew）与系统原生授权框：
+      #      路线排序、dmg 验签命令的形状、askpass 脚本的生成、
+      #      `colima start --disk-image` 的参数拼法，都是纯函数。
+      #
+      # **真的弹一次密码框、真的装一次 Homebrew 验不了**：runner 上没有人能输密码，
+      # 而且 GitHub 的 macOS runner 本来就预装了 brew。那一段只能靠用户真机。
+      - name: 系统代理 / 兜底链 / 原生授权框（I8 · macOS 分支）
+        if: runner.os == 'macOS'
+        run: >
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+          -- --nocapture --test-threads=1
+          netproxy::tests runtime::chain::tests runtime::elevate::tests runtime::brew::tests
       # M4 起 PR 上也真编一次 release 二进制。
       # `cargo check` 编不出 `custom-protocol` 那条路径，而正是那条路径出过问题
       # （M1 §9：不带这个特性的产物会去连 devUrl，表现为白屏）。

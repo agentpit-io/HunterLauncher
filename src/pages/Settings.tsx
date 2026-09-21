@@ -121,7 +121,7 @@ export function Settings() {
                 ['off', t.settings.assistModeOff, t.settings.assistModeOffHint],
               ] as const
             ).map(([value, label, hint]) => {
-              const on = (d?.assistMode ?? 'confirm') === value
+              const on = (d?.assistMode ?? 'auto') === value
               return (
                 <button
                   key={value}
