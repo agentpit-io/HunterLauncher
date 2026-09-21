@@ -153,6 +153,19 @@ fn bind_once(addr: SocketAddr) -> Option<String> {
     if addr.is_ipv6() {
         let _ = sock.set_only_v6(true);
     }
+    // Windows 的 SO_REUSEADDR 语义和 Unix 完全不是一回事：它允许**抢占**别人已经绑上的地址。
+    // 所以在 Windows 上「不设 SO_REUSEADDR」还不够 —— 绑 `0.0.0.0:P` 在别人占着
+    // `127.0.0.1:P` 时照样会成功（CI 的 windows runner 上实测：两条端口用例都红了，
+    // 绑上去的端口号和被占的那个一模一样）。`SO_EXCLUSIVEADDRUSE` 才是 Windows 上
+    // 「有任何冲突的绑定就让我失败」的那个开关。
+    //
+    // **没有 Windows 真机验证过**（总控规则默认决策：Windows 以 CI 编译 + 代码审阅为准）。
+    // 即使这一行不起作用，第 2、3 路（`docker ps` 与 `netstat`）仍然能抓住占用 ——
+    // 三重确认本来就是为了不依赖任何单独一条。
+    #[cfg(windows)]
+    {
+        let _ = sock.set_exclusive_address_use(true);
+    }
     match sock.bind(&addr.into()) {
         Ok(()) => None,
         Err(e) => Some(e.to_string()),
@@ -625,6 +638,23 @@ mod tests {
         let v = Survey::empty().verdict(port, &[]);
         assert!(!v.free, "{}", v.human());
         drop(s);
+    }
+
+    /// 占用者绑在**具体地址**（`127.0.0.1:P`）上时，通配探测也要判占用。
+    ///
+    /// 这一条在三个平台上考的是三件不同的事：
+    /// * Linux：内核直接拒绝「通配 + 具体」共存；
+    /// * macOS：只要我们**不设** `SO_REUSEADDR` 就会拒绝（本轮 P0 的反面）；
+    /// * Windows：靠 `SO_EXCLUSIVEADDRUSE`（见 `bind_once` 里的注释，未经真机验证）。
+    #[test]
+    fn 占用者绑在具体地址上也要抓得住() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let v = Survey::empty().verdict(port, &[]);
+        // Windows 上如果 SO_EXCLUSIVEADDRUSE 没起作用，这一条会红 ——
+        // 那正是我们想知道的事，不要把它改成「平台相关地跳过」
+        assert!(!v.free, "{}", v.human());
+        drop(l);
     }
 
     #[test]
