@@ -839,7 +839,7 @@ impl Orchestrator {
         }
         Evidence {
             report,
-            others: crate::ports::other_hunter_installs(&survey.published),
+            others: crate::takeover::candidates(),
             stale: compose::stale_own_containers(),
             port_lines,
             cred_helpers: crate::dockercfg::helper_status(),
@@ -1914,7 +1914,13 @@ pub fn choices_manual() -> Vec<Choice> {
 
 pub struct Evidence {
     pub report: probe::Report,
-    pub others: Vec<crate::ports::OtherInstall>,
+    /// 本机上别的 Hunter 安装。
+    ///
+    /// **用的是 [`crate::takeover::Candidate`] 而不是 [`crate::ports::OtherInstall`]**（I7）：
+    /// 后者只有项目名 / 容器 / 端口，缺了**工作目录**。而 `reuse_existing_hunter`
+    /// 的计划里会写出工作目录 —— 证据里没有它，复核员就会（正确地）判定
+    /// 「这个事实在证据里找不到依据，属于凭空编造」并否决。实测撞到过一次。
+    pub others: Vec<crate::takeover::Candidate>,
     pub stale: Vec<compose::StaleContainer>,
     pub port_lines: Vec<String>,
     /// 本机 docker 凭据助手：`(助手名, 补全后的 PATH 上找到的绝对路径)`（I6）
@@ -1967,14 +1973,29 @@ impl Evidence {
             );
             for o in &self.others {
                 s.push_str(&format!(
-                    "  compose 项目 {} · 容器 {} · 端口 {}\n",
+                    "  compose 项目 {} · 容器 {} · 端口 {} · 工作目录 {} · compose 文件 {} · web 端口 {}\n",
                     o.project,
                     o.containers.join("、"),
                     o.ports
                         .iter()
                         .map(|p| p.to_string())
                         .collect::<Vec<_>>()
-                        .join("、")
+                        .join("、"),
+                    if o.working_dir.is_empty() {
+                        "读不到".to_string()
+                    } else {
+                        crate::redact::mask_home(&o.working_dir)
+                    },
+                    if o.config_files.is_empty() {
+                        "读不到".to_string()
+                    } else {
+                        crate::redact::mask_home(&o.config_files)
+                    },
+                    if o.web_port > 0 {
+                        o.web_port.to_string()
+                    } else {
+                        "读不到".into()
+                    }
                 ));
             }
         }
@@ -2177,10 +2198,13 @@ mod tests {
     fn 端口冲突走规则层且只换自己的端口() {
         let o = orch(Mode::Auto);
         let mut ev = ev_empty();
-        ev.others = vec![crate::ports::OtherInstall {
+        ev.others = vec![crate::takeover::Candidate {
             project: "hunter-fresh".into(),
             containers: vec!["hunter-fresh-api-1".into()],
             ports: vec![8100],
+            working_dir: "/home/u/hunter-fresh".into(),
+            config_files: "/home/u/hunter-fresh/docker-compose.yml".into(),
+            web_port: 3100,
         }];
         let e = AppError::new(Code::PortConflict, "Bind for 0.0.0.0:8100 failed");
         let (calls, why) = o
@@ -2369,13 +2393,23 @@ mod tests {
     fn 证据里带着占用者与其他安装() {
         let mut ev = ev_empty();
         ev.port_lines = vec!["api 8100 被占用 · Docker 容器 hunter-fresh-api-1（compose 项目 hunter-fresh · 0.0.0.0:8100->8000/tcp）".into()];
-        ev.others = vec![crate::ports::OtherInstall {
+        ev.others = vec![crate::takeover::Candidate {
             project: "hunter-fresh".into(),
             containers: vec!["hunter-fresh-api-1".into()],
             ports: vec![8100],
+            working_dir: "/home/u/hunter-fresh".into(),
+            config_files: "/home/u/hunter-fresh/docker-compose.yml".into(),
+            web_port: 3100,
         }];
         let p = ev.to_prompt();
         assert!(p.contains("hunter-fresh"), "{p}");
+        // **工作目录也要在证据里**（I7 实测）：`reuse_existing_hunter` 的计划里会写它，
+        // 证据里没有的话复核员会判「凭空编造」并否决 —— 而且它判得对
+        assert!(p.contains("工作目录"), "{p}");
+        assert!(
+            p.contains("hunter-fresh") && p.contains("compose 文件"),
+            "{p}"
+        );
         assert!(p.contains("不要提议停掉、删掉、改动它们"), "{p}");
         // 例外也要写明 —— 不写的话复核员会把「用户亲手同意的接管」也一并否决（I7 实测）
         assert!(p.contains("reuse_existing_hunter"), "{p}");

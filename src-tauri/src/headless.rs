@@ -1176,7 +1176,7 @@ fn cmd_review(st: &AppState, args: &Args) -> AppResult<()> {
     }
     let ev = crate::assist::auto::Evidence {
         report,
-        others: crate::ports::other_hunter_installs(&survey.published),
+        others: crate::takeover::candidates(),
         stale: crate::compose::stale_own_containers(),
         port_lines,
         cred_helpers: crate::dockercfg::helper_status(),
