@@ -43,7 +43,12 @@ import type {
 /** 构建产物里能被 grep 到的标记，CI 用它确认发布包里没有演示数据。 */
 export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
 
-export const DEMO_LAUNCHER_VERSION = '0.1.0'
+/**
+ * 演示数据里的版本号。**发版时要跟着 `package.json` 一起改** ——
+ * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
+ * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
+ */
+export const DEMO_LAUNCHER_VERSION = '0.1.8'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -474,10 +479,11 @@ export const demoComposeLog: string[] = [
 export const demoLauncherUpdate: LauncherUpdate = {
   available: true,
   current: DEMO_LAUNCHER_VERSION,
-  version: '0.1.1',
+  version: '0.1.9',
   notes: '修了拉取页在慢网络下 ETA 抖动的问题；升级失败回滚后不再重复提示。',
   date: '2026-09-21T02:00:00Z',
-  // 演示的是 .deb 这一路 —— 它的界面分支更多（要显示那条命令），预览时更有用
+  // 演示的是 .deb 这一路 —— I8 起它是「弹系统授权框再自己装」那一支，
+  // 界面上要多显示一段「为什么会弹密码框」，预览时更有用
   canSelfInstall: false,
   installKind: 'deb',
   reason: null,

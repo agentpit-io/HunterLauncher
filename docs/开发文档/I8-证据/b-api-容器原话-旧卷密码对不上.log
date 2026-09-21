@@ -1,7 +1,7 @@
 # 场景 A 第一次跑（2026-09-21 23:15–23:26，测试机）撞到的那条 —— 容器自己的原话。
 # 抄自 `docker logs hunter-api-1`（容器随后被 down -v 清掉了，所以留在这里）。
 # 这条与 I8 的改动无关，是「删了 ~/.hunter 但没删数据卷」这个现场本身的问题，
-# 详见 I8-迭代报告.md 第六节与待办池 P1-28。
+# 详见 I8-迭代报告.md 第六节与待办池 P1-29。
 
 2026-09-21 15:26:17,588 | ERROR   | 迁移 | 迁移失败，api 不会启动。原因如下：
 连接数据库失败：60 秒内重试 31 次都没连上。请检查 DATABASE_URL 指向的主机/端口/账号是否正确、postgres 是否已启动。最后一次错误：connection to server at "postgres" (172.19.0.4), port 5432 failed: FATAL:  password authentication failed for user "hunter"
