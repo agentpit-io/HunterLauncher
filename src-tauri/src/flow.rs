@@ -406,6 +406,20 @@ pub fn prepare(
         registry_label: cand.label.to_string(),
         ports,
         changes,
+        // 测速时**连不上**的那几个源（I8）。它们是「启动器自动绕开的一个问题」，
+        // 上面那行「已自动解决 N 个问题」要把它算进去 —— 用户 Mac 上 0.1.7 的现场
+        // 正是「GitHub 测速超时、自动选了腾讯云」，那一下确实解决了一个问题
+        registry_skipped: probes
+            .iter()
+            .filter(|r| !r.available)
+            .map(|r| {
+                format!(
+                    "{}（{}）",
+                    r.label,
+                    r.detail.clone().unwrap_or_else(|| "无响应".into())
+                )
+            })
+            .collect(),
     })
 }
 
@@ -416,6 +430,8 @@ pub struct PrepareResult {
     pub registry_label: String,
     pub ports: Ports,
     pub changes: Vec<PortChange>,
+    /// 测速时连不上、因而被自动绕开的下载源（标签 + 原话）
+    pub registry_skipped: Vec<String>,
 }
 
 /// 红线 4 的机器自查：从 `docker compose config --format json` 的渲染结果里确认

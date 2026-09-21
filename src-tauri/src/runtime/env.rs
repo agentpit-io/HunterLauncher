@@ -60,6 +60,13 @@ pub struct SubEnv {
     /// 给子进程的 `DOCKER_HOST`（I7 内置运行时起的那台虚拟机的 socket）；
     /// `None` = 原样继承（用本机默认的 `/var/run/docker.sock`）
     pub docker_host: Option<String>,
+    /// 用户自己配的网络代理（I8）。**只读来的，不改他的设置**。
+    ///
+    /// 0.1.7 在用户 Mac 上失败的第二个根因就是这里空着：他系统里配了
+    /// `127.0.0.1:7897`，而我们拉起来的 colima 一无所知，直连 GitHub 超时。
+    /// 现在所有子进程都继承这几个变量（`HTTP_PROXY` / `HTTPS_PROXY` /
+    /// `ALL_PROXY` / `NO_PROXY`，大小写各一份）。
+    pub proxy: Vec<(String, String)>,
 }
 
 impl SubEnv {
@@ -80,6 +87,10 @@ impl SubEnv {
         };
         if let Some(h) = &self.docker_host {
             head.push_str(&format!("；DOCKER_HOST={}", crate::redact::mask_home(h)));
+        }
+        if !self.proxy.is_empty() {
+            // 只说「沿用了代理」与主机端口，不打用户名密码（代理地址里可能有）
+            head.push_str(&format!("；{}", crate::netproxy::current().one_line()));
         }
         head
     }
@@ -198,6 +209,7 @@ pub fn build_path(base: &str, candidates: &[String], exists: &dyn Fn(&str) -> bo
         added,
         docker_config: None,
         docker_host: None,
+        proxy: Vec::new(),
     }
 }
 
@@ -217,6 +229,7 @@ fn compute() -> SubEnv {
         crate::dockercfg::isolated_dir_if_enabled().map(|p| p.to_string_lossy().into_owned())
     };
     e.docker_host = super::builtin::docker_host();
+    e.proxy = crate::netproxy::current().env_pairs();
     e
 }
 
@@ -265,6 +278,9 @@ pub fn apply(cmd: &mut std::process::Command) {
     }
     if let Some(h) = &e.docker_host {
         cmd.env("DOCKER_HOST", h);
+    }
+    for (k, v) in &e.proxy {
+        cmd.env(k, v);
     }
 }
 

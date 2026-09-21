@@ -262,7 +262,7 @@ pub const ACTIONS: &[Spec] = &[
         level: Level::Sensitive,
         title: "装一套容器运行时",
         why: "这台机器上没有 Docker，没有它 Hunter 的六个服务一个都起不来",
-        desc: "在 ~/.hunter/runtime 里装一套完全用户态的容器运行时（Colima + Lima + docker 客户端 + compose 插件），               全部文件按写死的 sha256 校验，不需要管理员密码、不改系统任何地方、可一键卸载。               本机已有 OrbStack / Docker Desktop 在跑时不会执行（会直接用已有的）。没有参数。",
+        desc: "替用户把 Docker 装好并启动。按顺序自动试三条路：①内置运行时（Colima + Lima + docker 客户端 + compose + 虚拟机镜像，               全部按写死的 sha256/sha512 校验，装在 ~/.hunter/runtime，不要管理员密码、可一键卸载）；               ②OrbStack 官方安装包（验苹果签名与公证后安装并打开）；③Homebrew（没有就先装 brew）再装 OrbStack。               前一条失败才走下一条，全部由启动器执行。本机已有 OrbStack / Docker Desktop 在跑时不会执行。没有参数。",
         params: &[],
     },
     Spec {
@@ -553,39 +553,29 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
         }
         // ── I7 ──────────────────────────────────────────────────────────
         "install_runtime" => {
-            let route = crate::config::LauncherConfig::load().runtime.route();
-            match route {
-                crate::config::InstallRoute::Builtin => {
-                    crate::runtime::builtin::supported()
-                        .map_err(|e| AppError::new(Code::NotImplemented, e))?;
-                    let items = crate::runtime::manifest::for_host();
-                    let (cpu, mem, disk) = crate::runtime::builtin::vm_params();
-                    p.summary = Some(format!(
-                        "在 {} 里装 {} 个组件（合计 {}，每个都按写死的 sha256 校验），                         再起一台 {cpu} 核 / {mem} GiB 内存 / {disk} GiB 磁盘的虚拟机。                         不要管理员密码，不动系统任何地方，设置里可一键卸载。",
-                        crate::redact::mask_home(
-                            &crate::paths::runtime_dir().to_string_lossy()
-                        ),
-                        items.len(),
-                        crate::assist::probe::human_bytes(
-                            crate::runtime::manifest::total_bytes(&items)
-                        ),
-                    ));
-                    p.title = "装一套内置的容器运行时（装在 Hunter 自己的文件夹里）".into();
-                }
-                crate::config::InstallRoute::OrbStack => {
-                    let url = crate::runtime::orbstack::download_url()?;
-                    p.summary = Some(format!(
-                        "从官方地址（{}）下 OrbStack 安装镜像，验苹果签名与公证（Team ID {}）之后装到 {}。{}",
-                        crate::http::host_of(url),
-                        crate::runtime::orbstack::TEAM_ID,
-                        crate::redact::mask_home(
-                            &crate::runtime::orbstack::install_dir().to_string_lossy()
-                        ),
-                        crate::runtime::orbstack::FIRST_RUN_NOTE
-                    ));
-                    p.title = "装 OrbStack（官方安装包）".into();
-                }
+            // 展示与执行同一个来源：这里写的顺序就是 `chain::routes()` 的顺序
+            let routes = crate::runtime::chain::routes();
+            if routes.is_empty() {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    crate::runtime::chain::platform_cannot_install(),
+                ));
             }
+            let missing = crate::runtime::builtin::missing_items();
+            let bytes = crate::runtime::manifest::total_bytes(&missing);
+            p.summary = Some(format!(
+                "按顺序自动试这几条路：{}。第一条要下 {}，装在 {} 里，不要管理员密码、可一键卸载；\
+                 前一条没走通才会走下一条，需要管理员权限的那一步会弹系统自己的密码框。",
+                routes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| format!("{}·{}", i + 1, r.label()))
+                    .collect::<Vec<_>>()
+                    .join(" → "),
+                crate::assist::probe::human_bytes(bytes),
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy()),
+            ));
+            p.title = "替你把 Docker 装好".into();
         }
         "start_builtin_runtime" => {
             let argv = crate::runtime::builtin::start_argv()?;
@@ -878,6 +868,28 @@ pub fn execute_as(
             // 这份包要能发出去，路径给全（它本来就在用户自己机器上）
             format!("诊断包已生成：{}", path.display())
         }
+        // Linux 上起 docker 服务多半要 root。**先原样试一次**（桌面上 polkit
+        // 可能直接放行），不行再走系统自己的授权框 —— 不再退回「请你去终端里敲」（I8）
+        "start_runtime" if call.args.get("app").map(|s| s.as_str()) == Some("systemd") => {
+            match run_argv(&p) {
+                Ok(t) => t,
+                Err(e) => {
+                    crate::lwarn!("直接起 docker 服务没成（{}），改走系统授权框", e.msg);
+                    let inner: Vec<String> = p.argv.clone();
+                    crate::runtime::elevate::run(
+                        crate::runtime::elevate::Op::StartDockerService,
+                        &inner,
+                        Duration::from_secs(180),
+                    )
+                    .map_err(|e2| {
+                        AppError::new(
+                            e2.code,
+                            format!("{}；用系统授权框再试也没成：{}", e.msg, e2.msg),
+                        )
+                    })?
+                }
+            }
+        }
         // 剩下的都是「跑一个子进程」
         _ => run_argv(&p)?,
     };
@@ -900,43 +912,18 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").chars().take(200).collect()
 }
 
-/// `install_runtime` 的真身（I7）。
+/// `install_runtime` 的真身（I7 起；I8 改成走兜底链）。
 ///
 /// 这个入口是给**规则层 / 模型 / 命令行**共用的「没有事件总线」版本：
 /// 进度只写日志。界面上那条带实时下载字节数的路走的是
-/// [`crate::assist::auto::Orchestrator::install_runtime_with_events`]。
+/// [`crate::assist::auto::Orchestrator::run_install_runtime`]，
+/// 两条路**调的是同一个** [`crate::runtime::chain::install_docker`]。
 fn install_runtime_now() -> AppResult<String> {
-    // **先问一遍本机已有的**。已经有在跑的运行时就一个字节都不下
-    match crate::runtime::builtin::decide() {
-        crate::runtime::builtin::Decision::AlreadyRunning(who) => {
-            return Ok(format!("这台机器上的 {who} 正在运行，不需要再装一套。"))
-        }
-        crate::runtime::builtin::Decision::StartExisting(app) => {
-            return Err(AppError::new(
-                Code::NotImplemented,
-                format!(
-                    "{} 已经装在这台机器上了，只是没启动 —— 该做的是把它点起来（start_runtime），不是再装一套。",
-                    runtime_label(&app)
-                ),
-            ))
-        }
-        crate::runtime::builtin::Decision::Unsupported(why) => {
-            return Err(AppError::new(Code::NotImplemented, why))
-        }
-        crate::runtime::builtin::Decision::StartBuiltin
-        | crate::runtime::builtin::Decision::Install => {}
-    }
-    let route = crate::config::LauncherConfig::load().runtime.route();
-    if route == crate::config::InstallRoute::OrbStack {
-        let mut say = |s: &str| crate::linfo!("装 OrbStack：{s}");
-        let no_cancel = || false;
-        return crate::runtime::orbstack::install(&mut say, &no_cancel);
-    }
-    let mut say = |s: &str| crate::linfo!("装内置运行时：{s}");
+    let mut say = |s: &str| crate::linfo!("装容器运行时：{s}");
     let mut nb = |got: u64, total: u64| {
         if total > 0 && got % (16 * 1024 * 1024) < 256 * 1024 {
             crate::linfo!(
-                "装内置运行时：已下 {} / {}",
+                "装容器运行时：已下 {} / {}",
                 crate::assist::probe::human_bytes(got),
                 crate::assist::probe::human_bytes(total)
             );
@@ -948,22 +935,20 @@ fn install_runtime_now() -> AppResult<String> {
         bytes: &mut nb,
         cancel: &no_cancel,
     };
-    if !crate::runtime::builtin::is_installed() {
-        crate::runtime::builtin::install(&mut pr)?;
+    let out = crate::runtime::chain::install_docker(&mut pr)?;
+    let mut s = format!("{}（走的是「{}」这条路）", out.message, out.route.label());
+    if !out.failed.is_empty() {
+        // 前面失败过的路线**如实写出来**，不当无事发生
+        s.push_str(&format!(
+            "。在这之前试过：{}",
+            out.failed
+                .iter()
+                .map(|(r, e)| format!("{}（没成：{}）", r.label(), first_line(e)))
+                .collect::<Vec<_>>()
+                .join("；")
+        ));
     }
-    let started = crate::runtime::builtin::start(&mut pr)?;
-    // 装好之后把 docker 路径钉进设置：下次开启动器就不用再探一遍
-    if let Some(d) = crate::runtime::builtin::docker_bin() {
-        let mut cfg = crate::config::LauncherConfig::load();
-        cfg.runtime.docker_path = d.to_string_lossy().into_owned();
-        cfg.save()?;
-        which::invalidate();
-        crate::runtime::env::invalidate();
-    }
-    Ok(format!(
-        "内置运行时装好并起来了。{started}
-全部文件都在 ~/.hunter/runtime 里，         没有改系统任何地方；不想要了在设置页点「卸载内置运行时」就能清干净。"
-    ))
+    Ok(s)
 }
 
 /// 轮询 `docker version` 直到服务端起来。**不是 sleep 一个固定时长然后宣布成功**。

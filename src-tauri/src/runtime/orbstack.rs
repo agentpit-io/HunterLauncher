@@ -5,12 +5,13 @@
 //! 这条路线本身很短：下 dmg → 验签 → 挂载 → 拷到 `/Applications` → 卸载镜像 →
 //! `open -a OrbStack` → 等 daemon。问题出在最后一步之后：
 //!
-//! > **OrbStack 首次启动会弹系统级提示** —— 欢迎页，以及「安装辅助程序」那一步
-//! > 要管理员密码。那是 macOS 与 OrbStack 自己的交互，启动器**无法也不应**代点。
+//! > **OrbStack 首次启动会弹它自己的欢迎窗口**，以及「安装辅助程序」那一步
+//! > 可能要管理员密码。那是 macOS 与 OrbStack 自己的交互，启动器代不了点。
 //!
-//! 也就是说这条路走不到「零点击」。用户 2026-09-21 17:00 要的是「不要人去操作」，
-//! 所以默认路线是 [`super::builtin`]（Colima，全程零点击），这条留在设置里给
-//! 「我就想要 OrbStack」的人。报告与界面上都要把这件事**说清楚**，不能含糊。
+//! 也就是说这条路走不到「零点击」。默认路线仍然是 [`super::builtin`]
+//! （Colima，全程零点击），这一条是**兜底链的第 2 条**（I8 · [`super::chain`]）：
+//! 内置运行时没走通时自动走它，装完由启动器自己 [`open_app`]，
+//! 剩下 OrbStack 自己那几下如实告诉用户「按默认选项继续就行」。
 //!
 //! 另外：**OrbStack 个人使用免费，商用需要授权**。界面上注明，不替用户决定。
 //!
@@ -230,8 +231,8 @@ pub fn detach_argv(mount: &Path) -> Vec<String> {
 
 /// 整条链路。**每一步失败都如实返回，不跳过、不假装成功。**
 ///
-/// `say` 是进度回调（事件流）。装完**不替用户点开** —— 起它是另一个动作
-/// （`start_runtime`），因为 OrbStack 首启的系统提示只能用户自己过。
+/// `say` 是进度回调（事件流）。装完之后由 [`super::chain`] 调 [`open_app`]
+/// 替用户打开它（I8：打开这一步不再丢给用户）。
 pub fn install(say: &mut dyn FnMut(&str), cancel: &dyn Fn() -> bool) -> AppResult<String> {
     let url = download_url()?;
     let dmg = crate::paths::runtime_cache().join("OrbStack.dmg");
@@ -360,10 +361,43 @@ fn copy_app(mount: &Path, say: &mut dyn FnMut(&str)) -> AppResult<String> {
     ))
 }
 
-/// 这句话必须原样出现在界面与报告里 —— 它是这条路线**做不到零点击**的原因。
-pub const FIRST_RUN_NOTE: &str = "第一次打开 OrbStack 时，macOS 与 OrbStack 自己会弹欢迎页，\
-并且可能要你输一次管理员密码来安装它的辅助程序。那是系统与 OrbStack 的交互，\
-启动器不会、也不应该替你点。另：OrbStack 个人使用免费，商用需要另外授权。";
+/// 这句话必须原样出现在界面与报告里。
+///
+/// I8 改了它的立场：**打开 OrbStack 这一步由启动器自己做**（[`open_app`]），
+/// 用户不必去访达里找它。剩下那一点确实代不了的（OrbStack 自己的欢迎窗口、
+/// 它装辅助程序时 macOS 弹的授权框）如实说明，并告诉用户「按默认选项继续就行」，
+/// 而不是让他去猜。
+pub const FIRST_RUN_NOTE: &str = "接下来启动器会替你打开 OrbStack。\
+第一次打开时它会显示自己的欢迎窗口，可能还会弹一次系统密码框来装它的辅助程序 —— \
+那是 OrbStack 与 macOS 自己的界面，按它给的默认选项点继续就行，\
+启动器会自己等它就绪。另：OrbStack 个人使用免费，商用需要另外授权。";
+
+/// 替用户把 OrbStack 打开（I8）。
+///
+/// 用 `open -a`：让系统自己去找那个 `.app`，比我们猜路径可靠（`install_dir`
+/// 可能是 `/Applications`，也可能是 `~/Applications`）。
+pub fn open_app(say: &mut dyn FnMut(&str)) -> AppResult<()> {
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::new(
+            Code::NotImplemented,
+            "OrbStack 只有 macOS 版。".to_string(),
+        ));
+    }
+    let open = super::which::resolve("open")
+        .resolved
+        .unwrap_or_else(|| "/usr/bin/open".to_string());
+    let argv = vec![open.clone(), "-a".to_string(), "OrbStack".to_string()];
+    crate::assist::guard::argv(&argv)?;
+    say("正在打开 OrbStack");
+    let r = crate::proc::run_timeout(&open, &["-a", "OrbStack"], Duration::from_secs(120))?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::DaemonDown,
+            format!("打开 OrbStack 没成功：{}", r.err_line()),
+        ));
+    }
+    Ok(())
+}
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").chars().take(200).collect()
@@ -435,10 +469,27 @@ mod tests {
     }
 
     /// 首启会弹系统提示这件事**必须**写在文案里 —— 这是这条路线不是默认的原因。
+    /// I8：这段话要**说清三件事** —— 打开这一步由启动器做、
+    /// OrbStack 自己的窗口按默认选项继续、商用要另外授权。
+    /// 而且它**不许**把用户赶去终端（第〇节原则）。
     #[test]
-    fn 首启提示里说清了代不了点与商用授权() {
-        assert!(FIRST_RUN_NOTE.contains("管理员密码"));
-        assert!(FIRST_RUN_NOTE.contains("不会、也不应该替你点"));
+    fn 首启提示说清了谁来点与商用授权() {
+        assert!(FIRST_RUN_NOTE.contains("启动器会替你打开"));
+        assert!(FIRST_RUN_NOTE.contains("默认选项"));
         assert!(FIRST_RUN_NOTE.contains("商用"));
+        for bad in ["终端", "命令行", "复制"] {
+            assert!(!FIRST_RUN_NOTE.contains(bad), "不该出现「{bad}」");
+        }
+    }
+
+    /// 打开 OrbStack 那条命令的形状（`open -a`，而且过得了守卫）。
+    #[test]
+    fn 打开命令是_open_a() {
+        let argv = vec![
+            "/usr/bin/open".to_string(),
+            "-a".to_string(),
+            "OrbStack".to_string(),
+        ];
+        assert!(crate::assist::guard::argv(&argv).is_ok());
     }
 }

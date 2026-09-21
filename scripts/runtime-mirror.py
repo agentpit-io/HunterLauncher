@@ -23,9 +23,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "src-tauri" / "src" / "runtime" / "manifest.rs"
-# 清单里现在有 8 条（macOS 的 4 个组件 × 2 个架构）。改清单时这个数也要跟着改 ——
-# 它是一道「我真的读全了吗」的看门断言，不是装饰
-EXPECTED = 8
+# 清单里现在有 10 条（macOS 的 5 个文件 × 2 个架构；I8 起多了虚拟机系统镜像）。
+# 改清单时这个数也要跟着改 —— 它是一道「我真的读全了吗」的看门断言，不是装饰
+EXPECTED = 10
 
 ITEM = re.compile(
     r"Item\s*\{\s*"
@@ -37,6 +37,8 @@ ITEM = re.compile(
     r'url:\s*"(?P<url>[^"]+)",\s*'
     r'(?:(?://[^\n]*\n\s*)*)'
     r'sha256:\s*"(?P<sha256>[0-9a-f]{64})",\s*'
+    r'(?:(?://[^\n]*\n\s*)*)'
+    r'sha512:\s*"(?P<sha512>[0-9a-f]*)",\s*'
     r"size:\s*(?P<size>[0-9_]+),",
     re.S,
 )
@@ -124,7 +126,15 @@ def main() -> int:
             if r.returncode != 0:
                 print(f"::error::下载 {it['url']} 失败")
                 return 1
-            h = hashlib.sha256(local.read_bytes()).hexdigest()
+            data = local.read_bytes()
+            h = hashlib.sha256(data).hexdigest()
+            if it["sha512"]:
+                # 上游发了 sha512 的（虚拟机镜像），两个都要对上 ——
+                # colima 自己会按 sha512 校验我们给它的那个文件
+                h512 = hashlib.sha512(data).hexdigest()
+                if h512 != it["sha512"]:
+                    print(f"::error::{it['file']} 的 sha512 是 {h512}，清单写的是 {it['sha512']}，不同步")
+                    return 1
             if h != it["sha256"]:
                 # **官方地址上的内容和清单对不上**：要么上游重打了包，要么路上出了事。
                 # 两种都不该悄悄传上去 —— 桶里的副本必须与清单逐字节相同
