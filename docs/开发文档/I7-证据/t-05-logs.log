@@ -1,0 +1,3 @@
+
+✗ E_UNKNOWN: /usr/bin/docker compose --project-name hunter-community --project-directory /home/support/hunter-v120 -f /home/support/hunter-v120/docker-compose.yml logs --no-color --tail 200 超过 60 秒没有返回
+  日志：/home/support/.hunter/logs/launcher.log

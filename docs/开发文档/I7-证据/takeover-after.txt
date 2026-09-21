@@ -1,0 +1,21 @@
+--containers--
+16595225ff83 hunter-community-web-1
+398f76d0a3b6 hunter-community-api-1
+533ef00d032b hunter-community-llm-shim-1
+a2391309294b hunter-community-opencode-1
+b65aaa655f84 hunter-community-redis-1
+fb422b602fdb hunter-community-postgres-1
+--volumes--
+hunter-community_hunter_opencode_data
+hunter-community_hunter_packages
+hunter-community_hunter_pg_data
+hunter-community_hunter_redis_data
+hunter-community_hunter_secrets
+hunter-community_hunter_user_skills
+--volume-createdat--
+hunter-community_hunter_opencode_data 2026-09-19T09:51:04Z
+hunter-community_hunter_packages 2026-09-19T09:51:04Z
+hunter-community_hunter_pg_data 2026-09-19T09:51:04Z
+hunter-community_hunter_redis_data 2026-09-19T09:51:04Z
+hunter-community_hunter_secrets 2026-09-19T09:51:04Z
+hunter-community_hunter_user_skills 2026-09-19T09:51:04Z

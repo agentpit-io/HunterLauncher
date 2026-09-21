@@ -1,0 +1,12 @@
+
+停止被接管的那一套
+──────────────────
+  要停止「hunter-community」吗？这是你自己装的那一套，停了它上面正在用的人会断。数据卷不会动，随时可以再启动回来。
+
+  **没有执行**。动的是你自己装的那一套，每一次都要再确认一遍：加 -y 再跑。
+hunter-community-opencode-1 Up 6 hours (healthy)
+hunter-community-web-1 Up 6 hours (healthy)
+hunter-community-api-1 Up 6 hours (healthy)
+hunter-community-redis-1 Up 6 hours (healthy)
+hunter-community-postgres-1 Up 6 hours (healthy)
+hunter-community-llm-shim-1 Up 6 hours (healthy)

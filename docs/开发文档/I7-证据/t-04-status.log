@@ -1,0 +1,15 @@
+
+被接管的那一套
+──────────────
+  compose 项目：hunter-community
+  工作目录：<用户目录>/hunter-v120
+  接管时间：2026-09-21 18:20:00
+  网页地址：http://localhost:3100
+  能不能停 / 重启：能
+  容器：
+    hunter-community-opencode-1 · Up 6 hours (healthy) · ghcr.io/agentpit-io/hunter-community-opencode:1.2.0 · 0.0.0.0:3921->3901/tcp, [::]:3921->3901/tcp
+    hunter-community-web-1 · Up 6 hours (healthy) · ghcr.io/agentpit-io/hunter-community-web:1.2.0 · 0.0.0.0:3100->3000/tcp, [::]:3100->3000/tcp
+    hunter-community-api-1 · Up 6 hours (healthy) · ghcr.io/agentpit-io/hunter-community-api:1.2.0 · 0.0.0.0:8100->8000/tcp, [::]:8100->8000/tcp
+    hunter-community-redis-1 · Up 6 hours (healthy) · redis:7-alpine · 0.0.0.0:6479->6379/tcp, [::]:6479->6379/tcp
+    hunter-community-postgres-1 · Up 6 hours (healthy) · 3c5c8892d184 · 0.0.0.0:5442->5432/tcp, [::]:5442->5432/tcp
+    hunter-community-llm-shim-1 · Up 6 hours (healthy) · ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0 · 3999/tcp
