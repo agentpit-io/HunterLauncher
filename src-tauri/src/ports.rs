@@ -153,44 +153,45 @@ fn bind_once(addr: SocketAddr) -> Option<String> {
     if addr.is_ipv6() {
         let _ = sock.set_only_v6(true);
     }
-    // Windows 的 SO_REUSEADDR 语义和 Unix 完全不是一回事：它允许**抢占**别人已经绑上的地址。
-    // 所以在 Windows 上「不设 SO_REUSEADDR」还不够 —— 绑 `0.0.0.0:P` 在别人占着
-    // `127.0.0.1:P` 时照样会成功（CI 的 windows runner 上实测：两条端口用例都红了，
-    // 绑上去的端口号和被占的那个一模一样）。`SO_EXCLUSIVEADDRUSE` 才是 Windows 上
-    // 「有任何冲突的绑定就让我失败」的那个开关。
-    //
-    // **没有 Windows 真机验证过**（总控规则默认决策：Windows 以 CI 编译 + 代码审阅为准）。
-    // 即使这一行不起作用，第 2、3 路（`docker ps` 与 `netstat`）仍然能抓住占用 ——
-    // 三重确认本来就是为了不依赖任何单独一条。
-    #[cfg(windows)]
-    {
-        let _ = sock.set_exclusive_address_use(true);
-    }
     match sock.bind(&addr.into()) {
         Ok(()) => None,
         Err(e) => Some(e.to_string()),
     }
 }
 
-/// 第 1 路：`0.0.0.0` 与 `[::]` 各绑一次，任一失败就算占用。
+/// 第 1 路：`0.0.0.0`、`[::]`、`127.0.0.1` 各绑一次，任一失败就算占用。
 ///
-/// 为什么探通配地址而不是 `127.0.0.1`：通配绑定和**任何**具体地址上的监听都冲突，
-/// 是三种绑法里最保守的一种 —— 别人占着 `127.0.0.1:P` 或 `192.168.x.x:P`，
-/// 我们绑 `0.0.0.0:P` 都会失败。红线 4 要求除 web 外的容器端口绑 `127.0.0.1`，
-/// 那是**发布**时的事；**探测**一律按通配来，宁可多换一个端口，不可漏判。
+/// **为什么探三个地址而不是一个**
+///
+/// * 通配（`0.0.0.0` / `[::]`）：在 Linux 与 macOS 上它和**任何**具体地址上的监听都冲突，
+///   是最保守的一种 —— 别人占着 `127.0.0.1:P` 或 `192.168.x.x:P`，我们绑 `0.0.0.0:P` 都会失败。
+/// * `127.0.0.1`：**这一条是为 Windows 加的**。Windows 的 `SO_REUSEADDR` 语义和 Unix
+///   完全不是一回事（它允许抢占别人已经绑上的地址），通配绑定在那边**不**会因为
+///   「别人占着 `127.0.0.1:P`」而失败 —— CI 的 windows runner 上实测到了这一点：
+///   两条端口用例红了，绑上去的端口号和被占的那个一模一样。
+///   直接绑 `127.0.0.1:P` 就能撞上，而回环正是 Docker 发布端口最常用的那个地址
+///   （红线 4：除 web 外全绑 `127.0.0.1`）。
+///
+/// 三个地址都探完仍有一个残留缺口：Windows 上占用者绑在**具体的非回环地址**
+/// （例如 `192.168.1.5:P`）时，这一路看不见。那种情况交给第 3 路（`netstat`）。
+/// 三重确认本来就是为了不依赖任何单独一条。
+///
+/// 红线 4 要求除 web 外的容器端口绑 `127.0.0.1`，那是**发布**时的事；
+/// **探测**一律往保守里判，宁可多换一个端口，不可漏判。
 pub fn bind_probe(port: u16) -> Vec<Occupant> {
+    let addrs = [
+        ("0.0.0.0", SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))),
+        ("[::]", SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))),
+        ("127.0.0.1", SocketAddr::from((Ipv4Addr::LOCALHOST, port))),
+    ];
     let mut v = Vec::new();
-    if let Some(r) = bind_once(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))) {
-        v.push(Occupant::Bind {
-            addr: "0.0.0.0".into(),
-            reason: r,
-        });
-    }
-    if let Some(r) = bind_once(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port))) {
-        v.push(Occupant::Bind {
-            addr: "[::]".into(),
-            reason: r,
-        });
+    for (label, addr) in addrs {
+        if let Some(r) = bind_once(addr) {
+            v.push(Occupant::Bind {
+                addr: label.into(),
+                reason: r,
+            });
+        }
     }
     v
 }
