@@ -52,22 +52,73 @@ pub fn run_with_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRe
 
 /// 带超时的版本。docker 在 daemon 半死不活时会一直挂着，不设超时会把界面卡住。
 pub fn run_timeout(program: &str, args: &[&str], timeout: Duration) -> AppResult<Ran> {
-    let mut child = base_command(program)
-        .args(args)
+    run_timeout_env(program, args, timeout, &[])
+}
+
+/// 带超时 **且带额外环境变量** 的版本（I7 的内置运行时要给 colima / docker
+/// 传 `LIMA_HOME` / `COLIMA_HOME` / `DOCKER_HOST`）。
+///
+/// 这些变量**只加在这一次调用上**，不写进进程环境 —— 启动器自己的环境里
+/// 出现 `DOCKER_HOST` 会把「用不用内置运行时」这件事变成全局隐式状态，
+/// 那正是最难查的一类 bug。
+pub fn run_timeout_env(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> AppResult<Ran> {
+    let mut cmd = base_command(program);
+    cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| AppError::new(Code::Unknown, format!("无法执行 {program}：{e}")))?;
 
+    // **必须一边跑一边读**（I7 实测撞出来的）。
+    //
+    // 管道的内核缓冲区只有 64 KB 左右。原先的写法是「先等它退出，再
+    // `wait_with_output()` 把输出读出来」—— 子进程写满 64 KB 之后就阻塞在 `write` 上
+    // 永远不退出，而我们在等它退出。**双方互等，只能靠超时收场。**
+    //
+    // 现场：`docker compose logs --tail 200` 对着一套 6 个容器的栈
+    // （postgres 的日志行很长），60 秒超时报「超过 60 秒没有返回」；
+    // 同一条命令在终端里 0.24 秒就跑完了。
+    //
+    // 这不是 I7 才有的问题 —— `compose::logs` 走的是同一个函数，
+    // 只是我们自己那一套的日志一直没满过 64 KB。
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let h_out = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+    let h_err = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+
     let deadline = std::time::Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(st)) => break st,
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
+                    // 杀掉它，两个读线程就会拿到 EOF 结束 —— 否则 join 会挂住
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = h_out.join();
+                    let _ = h_err.join();
                     return Err(AppError::new(
                         Code::Unknown,
                         format!(
@@ -80,20 +131,22 @@ pub fn run_timeout(program: &str, args: &[&str], timeout: Duration) -> AppResult
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
+                let _ = child.kill();
+                let _ = h_out.join();
+                let _ = h_err.join();
                 return Err(AppError::new(
                     Code::Unknown,
                     format!("等待 {program} 失败：{e}"),
-                ))
+                ));
             }
         }
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| AppError::new(Code::Unknown, format!("读取 {program} 输出失败：{e}")))?;
+    };
+    let stdout = h_out.join().unwrap_or_default();
+    let stderr = h_err.join().unwrap_or_default();
     Ok(Ran {
-        status: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        status: status.code(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }
 
@@ -167,5 +220,62 @@ mod tests {
         let r = run_timeout("sleep", &["10"], Duration::from_millis(300));
         assert!(r.is_err());
         assert!(r.unwrap_err().msg.contains("没有返回"));
+    }
+
+    /// **输出超过管道缓冲区（64 KB）时不许挂住。**
+    ///
+    /// I7 实测撞出来的：原先的写法先等进程退出、再 `wait_with_output()` 读输出 ——
+    /// 子进程写满 64 KB 之后阻塞在 `write` 上，而我们在等它退出，双方互等。
+    /// 现场是 `docker compose logs --tail 200` 对着一套 6 个容器的栈。
+    ///
+    /// 这条测试造 1 MB 输出（远超缓冲区），限时 20 秒 —— 修之前必然超时。
+    #[test]
+    fn 输出超过管道缓冲区也不会挂住() {
+        // 1 MB：`yes` 打 16 个字符一行，打 65536 行
+        let r = run_timeout(
+            "/usr/bin/env",
+            &[
+                "sh",
+                "-c",
+                "i=0; while [ $i -lt 65536 ]; do echo 0123456789abcde; i=$((i+1)); done",
+            ],
+            Duration::from_secs(20),
+        );
+        // 这台机器上没有 /usr/bin/env 或 sh 的话跳过（Windows）
+        let Ok(r) = r else {
+            if cfg!(windows) {
+                return;
+            }
+            panic!("起不来：{:?}", r.err().map(|e| e.msg));
+        };
+        assert_eq!(r.status, Some(0));
+        assert!(
+            r.stdout.len() > 1_000_000,
+            "只读到 {} 字节，管道那一头被截断了",
+            r.stdout.len()
+        );
+        assert_eq!(r.stdout.lines().count(), 65536);
+    }
+
+    /// stderr 那一路同样要一边跑一边读。
+    #[test]
+    fn stderr_超过缓冲区也不会挂住() {
+        let r = run_timeout(
+            "/usr/bin/env",
+            &[
+                "sh",
+                "-c",
+                "i=0; while [ $i -lt 65536 ]; do echo 0123456789abcde >&2; i=$((i+1)); done",
+            ],
+            Duration::from_secs(20),
+        );
+        let Ok(r) = r else {
+            if cfg!(windows) {
+                return;
+            }
+            panic!("起不来");
+        };
+        assert_eq!(r.status, Some(0));
+        assert!(r.stderr.len() > 1_000_000, "只读到 {} 字节", r.stderr.len());
     }
 }

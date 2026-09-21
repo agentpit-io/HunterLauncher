@@ -133,6 +133,35 @@ pub fn deletable_files() -> Vec<PathBuf> {
     ]
 }
 
+/// 允许**整棵删掉**的目录。目前只有一个：内置运行时（I7）。
+///
+/// 它和 [`deletable_files`] 是同一条原则的两种形态 —— 只有**启动器自己从零
+/// 生成**的东西才允许删。`~/.hunter/runtime` 下的每一个字节都是
+/// [`crate::runtime::builtin::install`] 写进去的：下载回来的四个二进制、
+/// 解压出来的 lima、colima 建的虚拟机磁盘。用户不会往这里放东西
+/// （界面上也从不引导他往这里放），所以整棵删是安全的。
+///
+/// `~/.hunter` 下别的目录一个都不在这张表里：`app/` 有 `.env`（他的 key）、
+/// `backups/` 是他的备份、`diagnostics/` 是他导出的包。
+pub fn deletable_trees() -> Vec<PathBuf> {
+    vec![crate::paths::runtime_dir()]
+}
+
+/// 允许整棵删吗。先过 [`writable_path`]，再比对目录白名单。
+pub fn deletable_tree(p: &Path) -> AppResult<PathBuf> {
+    let real = writable_path(p)?;
+    let ok = deletable_trees()
+        .iter()
+        .any(|w| matches!(canon_for_write(w), Ok(c) if c == real));
+    if !ok {
+        return Err(reject(format!(
+            "{} 不在「可以整棵删掉」的清单里（那里面可能有你自己的东西），拒绝。",
+            crate::redact::mask_home(&real.to_string_lossy())
+        )));
+    }
+    Ok(real)
+}
+
 /// 允许删吗。先过 [`writable_path`]，再比对白名单。
 pub fn deletable_path(p: &Path) -> AppResult<PathBuf> {
     let real = writable_path(p)?;
@@ -317,12 +346,90 @@ pub fn argv(argv: &[String]) -> AppResult<()> {
     argv_scoped(argv, false)
 }
 
+/// 接管态（I7）专用的那一道。**比默认那一道更严，不是更松。**
+///
+/// 默认规则是「改动容器状态的 docker 命令必须 `--project-name hunter`」——
+/// 接管用户自己那一套时项目名当然不是 `hunter`，所以要开一个口子。
+/// 这个口子有三把锁，全是代码：
+///
+/// 1. `launcher.toml` 的 `[takeover] project` 必须**非空**，且命令里指名的
+///    就是它 —— 用户没在「需要你」卡片上点过「直接用它」，这条路根本不存在；
+/// 2. 子命令只能是 `stop` / `start` / `restart` —— `down`、`rm`、`kill` 一律不行；
+/// 3. 剩下的全部检查照旧走 [`argv_scoped`]（`-v`、`volume rm`、`sudo`、
+///    改网络设置……一条都不少）。
+pub fn argv_takeover(argv: &[String]) -> AppResult<()> {
+    let cfg = crate::config::LauncherConfig::load();
+    argv_takeover_for(argv, &cfg.takeover.project)
+}
+
+/// 同上，但被接管的项目名由调用方给。
+///
+/// 拆出来是为了**能测它**：判定只跟「project 是什么」有关，不该为了测一条规则
+/// 去改用户真实的 `launcher.toml`（测试跑在开发者自己的 `~/.hunter` 上）。
+pub fn argv_takeover_for(argv: &[String], takeover_project: &str) -> AppResult<()> {
+    let project = takeover_project.trim().to_ascii_lowercase();
+    if project.is_empty() {
+        return Err(reject(
+            "现在没有在管理别的 Hunter，这条命令没有理由指向别的 compose 项目，拒绝。".to_string(),
+        ));
+    }
+    let rest: Vec<String> = argv
+        .iter()
+        .skip(1)
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    // 指名的必须正是被接管的那一个
+    let named = rest
+        .windows(2)
+        .find(|w| w[0] == "-p" || w[0] == "--project-name")
+        .map(|w| w[1].clone());
+    match named.as_deref() {
+        Some(n) if n == project => {}
+        Some(n) => {
+            return Err(reject(format!(
+                "这条命令指向 compose 项目「{}」，而你让启动器管理的是「{}」，拒绝。",
+                safe(n),
+                safe(&project)
+            )))
+        }
+        None => {
+            return Err(reject(
+                "接管态下的命令必须写明 `--project-name`，拒绝。".to_string(),
+            ))
+        }
+    }
+    // 只有这三个子命令。`down` 会删容器与网络，`rm` / `kill` 更不用说
+    const ALLOWED: &[&str] = &["stop", "start", "restart", "logs", "ps"];
+    if !rest.iter().any(|a| ALLOWED.contains(&a.as_str())) {
+        return Err(reject(format!(
+            "接管别人那一套时只允许 {} 这几个子命令，拒绝。",
+            ALLOWED.join(" / ")
+        )));
+    }
+    for bad in ["down", "rm", "kill", "create", "up", "recreate"] {
+        if rest.iter().any(|a| a == bad) {
+            return Err(reject(format!(
+                "`{bad}` 会改动你自己装的那一套的结构，接管态下不允许，拒绝。"
+            )));
+        }
+    }
+    // **任何**带卷的写法都拒。通用那一道只在 `down` / `rm` 上拦 `-v`
+    //（那两个子命令这里本来就不允许），所以这一条是接管态自己加的一层：
+    // 动的是用户自己的数据，不留任何可能碰到卷的写法
+    if rest.iter().any(|a| a == "-v" || a == "--volumes") {
+        return Err(reject(
+            "接管态下的命令里不允许出现 `-v` / `--volumes`，拒绝。".to_string(),
+        ));
+    }
+    argv_scoped(argv, true)
+}
+
 /// 同上，但调用方已经用 [`own_container`] 逐个核过目标容器的项目标签。
 ///
 /// 只有这一种情况可以免掉 `--project-name hunter` 的要求：`docker rm <id>`
 /// 这类按 ID 操作的命令带不了项目名，它的范围保证来自那次 `docker inspect`。
-/// `container_verified` 传 true 的地方全项目只有一处（[`crate::compose::remove_own_stale_containers`]），
-/// 别的地方一律走 [`argv`]。
+/// `container_verified` 传 true 的地方全项目只有两处（[`crate::compose::remove_own_stale_containers`]
+/// 与上面的 [`argv_takeover`]），别的地方一律走 [`argv`]。
 pub fn argv_scoped(argv: &[String], container_verified: bool) -> AppResult<()> {
     let Some(prog) = argv.first() else {
         return Err(reject("空命令，拒绝。".to_string()));
@@ -757,5 +864,118 @@ mod tests {
         );
         let t = audit_tail(1);
         assert!(!t[0].contains("abcdefghij"), "{}", t[0]);
+    }
+
+    // ── I7 ────────────────────────────────────────────────────────────────
+
+    /// 整棵删的白名单里**只有内置运行时**那一个目录。
+    #[test]
+    fn 只有内置运行时目录可以整棵删() {
+        let root = crate::paths::root();
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+        assert!(deletable_tree(&crate::paths::runtime_dir()).is_ok());
+        // ~/.hunter 里别的目录一个都不行 —— 它们放着用户的东西
+        for d in [
+            crate::paths::app_dir(),
+            crate::paths::backups_dir(),
+            crate::paths::diagnostics_dir(),
+            crate::paths::logs_dir(),
+            root.clone(),
+        ] {
+            std::fs::create_dir_all(&d).unwrap();
+            assert!(
+                deletable_tree(&d).is_err(),
+                "{} 不该在「可以整棵删」的清单里",
+                d.display()
+            );
+        }
+        // ~/.hunter 外的更不行
+        assert!(deletable_tree(&crate::paths::home().join("Documents")).is_err());
+    }
+
+    /// 没接管任何东西时，指向别人 compose 项目的命令**一律拒绝**。
+    #[test]
+    fn 没接管时不许动别人的项目() {
+        let argv = a(&[
+            "docker",
+            "compose",
+            "--project-name",
+            "hunter-community",
+            "stop",
+        ]);
+        let e = argv_takeover_for(&argv, "").expect_err("没接管就该拒绝");
+        assert!(e.msg.contains("没有在管理"), "{}", e.msg);
+        // 只有空白也一样
+        assert!(argv_takeover_for(&argv, "   ").is_err());
+    }
+
+    /// 接管之后：只放行 stop / start / restart / logs / ps，
+    /// **而且只对那一个项目**；down / rm / kill 一概拒绝。
+    #[test]
+    fn 接管态只放行三个子命令且只对那一个项目() {
+        const P: &str = "hunter-community";
+        let ok =
+            |sub: &str| argv_takeover_for(&a(&["docker", "compose", "--project-name", P, sub]), P);
+        for sub in ["stop", "start", "restart", "logs", "ps"] {
+            assert!(ok(sub).is_ok(), "{sub} 该放行：{:?}", ok(sub).err());
+        }
+        for sub in ["down", "rm", "kill", "up", "create"] {
+            assert!(ok(sub).is_err(), "{sub} 该拒绝");
+        }
+        // 指向**别的**项目：拒绝
+        assert!(argv_takeover_for(
+            &a(&[
+                "docker",
+                "compose",
+                "--project-name",
+                "hunter-other",
+                "stop"
+            ]),
+            P
+        )
+        .is_err());
+        // 连我们自己那一套都不行 —— 那条路走 `argv`，不走这里
+        assert!(argv_takeover_for(
+            &a(&["docker", "compose", "--project-name", PROJECT, "stop"]),
+            P
+        )
+        .is_err());
+        // 不写项目名：拒绝
+        assert!(argv_takeover_for(&a(&["docker", "compose", "stop"]), P).is_err());
+        // 带 -v：拒绝（通用那一道拦的）
+        assert!(argv_takeover_for(
+            &a(&["docker", "compose", "--project-name", P, "stop", "-v"]),
+            P
+        )
+        .is_err());
+    }
+
+    /// 接管态那道口子**不放松**通用规则：sudo、改网络、删文件照样拒。
+    #[test]
+    fn 接管态不放松通用规则() {
+        const P: &str = "hunter-community";
+        for prog in ["sudo", "rm", "bash", "networksetup"] {
+            assert!(
+                argv_takeover_for(
+                    &a(&[prog, "docker", "compose", "--project-name", P, "stop"]),
+                    P
+                )
+                .is_err(),
+                "{prog} 该被通用那一道拦下"
+            );
+        }
+        // hosts 这类路径照样拦
+        assert!(argv_takeover_for(
+            &a(&[
+                "docker",
+                "compose",
+                "--project-name",
+                P,
+                "stop",
+                "/etc/hosts"
+            ]),
+            P
+        )
+        .is_err());
     }
 }

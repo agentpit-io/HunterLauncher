@@ -228,6 +228,20 @@ jobs:
         run: >
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
           runtime::env::tests -- --nocapture --test-threads=1
+      # I7 · 内置运行时那条路上，**能在 CI 上验的那一半**：
+      #
+      # 清单的形状（sha256 是 64 位小写、地址里不许出现 latest、两个架构四件套齐全、
+      # 同组件两架构同版本、没有复制粘贴出来的重复 sha256）、vm_params 的区间、
+      # supported() 在非 macOS 上说得出原因、三个隔离环境变量齐全。
+      #
+      # **真正起虚拟机那一段验不了**：GitHub 的 macOS runner 不支持嵌套虚拟化。
+      # 需要联网的那两条（真下文件核对 sha256、八个文件的 HEAD）是 #[ignore] 的，
+      # 这里不跑 —— CI 不该依赖上游的可用性。
+      - name: 内置运行时的清单与纯逻辑（I7）
+        run: >
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+          runtime::manifest::tests runtime::builtin::tests runtime::orbstack::tests
+          -- --nocapture --test-threads=1
       # M4 起 PR 上也真编一次 release 二进制。
       # `cargo check` 编不出 `custom-protocol` 那条路径，而正是那条路径出过问题
       # （M1 §9：不带这个特性的产物会去连 devUrl，表现为白屏）。

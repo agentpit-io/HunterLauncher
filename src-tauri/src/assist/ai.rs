@@ -596,7 +596,6 @@ pub(crate) fn call_gateway(
     messages: &[serde_json::Value],
     key: &str,
 ) -> Result<serde_json::Value, Degrade> {
-    // 出口闸：整个请求体序列化出来再扫一遍，带着 key 的形状就**不发**
     let body = serde_json::json!({
         "model": gateway::DEFAULT_MODEL,
         "messages": messages,
@@ -606,6 +605,34 @@ pub(crate) fn call_gateway(
         // 1200 实测会出现「这一轮全花在思考上、content 是空的」
         "max_tokens": 2000,
     });
+    send(body, key, TIMEOUT)
+}
+
+/// **不带工具表**的一次调用（I7 的复核员用）。
+///
+/// 复核员只出结论、不动手，给它工具表有两个坏处：白白多几千 token 的输入，
+/// 以及给了它一条本不该有的动手通路。两条都不值得。
+pub(crate) fn call_gateway_plain(
+    messages: &[serde_json::Value],
+    key: &str,
+    timeout: std::time::Duration,
+    max_tokens: u32,
+) -> Result<serde_json::Value, Degrade> {
+    let body = serde_json::json!({
+        "model": gateway::DEFAULT_MODEL,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    });
+    send(body, key, timeout)
+}
+
+/// 真去打网关。出口闸、状态码分类、降级判定都在这里，**只此一处**。
+fn send(
+    body: serde_json::Value,
+    key: &str,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, Degrade> {
+    // 出口闸：整个请求体序列化出来再扫一遍，带着 key 的形状就**不发**
     let text = body.to_string();
     if let Some(what) = probe::assert_no_secret(&text) {
         crate::lwarn!("诊断报文出口闸拦下了一次发送：{what}");
@@ -617,7 +644,7 @@ pub(crate) fn call_gateway(
         CHAT_URL,
         &[("Authorization", auth.as_str())],
         &body,
-        TIMEOUT,
+        timeout,
     ) {
         Ok(r) => r,
         Err(e) => {

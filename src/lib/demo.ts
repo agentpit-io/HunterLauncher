@@ -19,6 +19,7 @@ import type {
   AppInfo,
   BackupMeta,
   BootState,
+  BuiltinRuntimeStatus,
   DiagSection,
   AssistState,
   DockerInfo,
@@ -28,10 +29,13 @@ import type {
   LauncherUpdate,
   MissingEndpoint,
   OfflineImport,
+  OneClickFeedback,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
+  TakeoverCandidate,
+  TakeoverState,
   TelemetryView,
   UpgradeCheck,
 } from './types'
@@ -227,13 +231,15 @@ export const demoRuntime: RuntimeStatus = {
   running: true,
   uptimeSeconds: 3 * 86400 + 6 * 3600,
   webUrl: 'http://localhost:3100',
+  // 免费版只允许本机访问（I7），演示数据也照这个来
+  webLanExposed: false,
   services: [
-    { service: 'web', state: 'running', health: 'healthy', port: 3100, exitCode: null },
-    { service: 'api', state: 'running', health: 'healthy', port: 8100, exitCode: null },
-    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, exitCode: null },
-    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, exitCode: null },
-    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
-    { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
+    { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null },
+    { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
+    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null },
+    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
+    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
+    { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
   ],
   upstream: {
     reachable: true,
@@ -271,20 +277,21 @@ export const demoRuntime: RuntimeStatus = {
 }
 
 export const demoStartingServices: RuntimeStatus['services'] = [
-  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
-  { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
-  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, exitCode: null },
-  { service: 'api', state: 'running', health: 'healthy', port: 8100, exitCode: null },
-  { service: 'opencode', state: 'running', health: 'starting', port: 3921, exitCode: null },
-  { service: 'web', state: 'created', health: 'pending', port: 3100, exitCode: null },
+  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
+  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
+  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
+  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
+  { service: 'opencode', state: 'running', health: 'starting', port: 3921, bind: '127.0.0.1', exitCode: null },
+  // 还没创建出来的容器 docker 报不出绑定地址 —— 那就是 null，不猜（红线 1）
+  { service: 'web', state: 'created', health: 'pending', port: 3100, bind: null, exitCode: null },
 ]
 
 export const demoSettings: LauncherSettings = {
   locale: 'zh-CN',
   autostart: false,
   checkUpdate: true,
-  // 默认对外 —— 和真实默认值一致（演示模式也不该显示一个不存在的默认）
-  webLocalOnly: false,
+  // 免费版只允许本机访问，所以这一项恒为 false（演示模式也不该显示一个不存在的状态）
+  webLanExposed: false,
   registry: 'ghcr',
   hunterTag: DEMO_HUNTER_TAG,
   workDir: '~/.hunter',
@@ -302,6 +309,73 @@ export const demoSettings: LauncherSettings = {
   assistMode: 'auto',
   assistConsentedAt: '2026-09-21 10:30:00',
   dockerPath: '/usr/bin/docker',
+  // I7：授权页上那一项勾，默认勾着
+  allowInstallRuntime: true,
+  installRoute: 'builtin',
+  builtinRuntimeInstalled: false,
+  builtinRuntimeRunning: false,
+  takeoverProject: '',
+}
+
+/** 内置运行时的演示态：**没装**（默认就是没装，别编一个装好的样子出来）。 */
+export const demoBuiltinRuntime: BuiltinRuntimeStatus = {
+  supported: false,
+  unsupportedReason:
+    '内置运行时目前只做了 macOS 这一条路线（演示数据；真机上这一行来自 Rust 的真实判断）。',
+  installed: false,
+  running: false,
+  profile: 'hunter',
+  dir: '~/.hunter/runtime',
+  socket: '~/.hunter/runtime/colima/hunter/docker.sock',
+  items: [],
+  installedAt: '',
+  downloadBytes: 0,
+}
+
+/** 「本机已经有一套 Hunter」的演示数据（截图用）。 */
+export const demoTakeoverCandidates: TakeoverCandidate[] = [
+  {
+    project: 'hunter-community',
+    containers: [
+      'hunter-community-web-1',
+      'hunter-community-api-1',
+      'hunter-community-opencode-1',
+      'hunter-community-postgres-1',
+      'hunter-community-redis-1',
+    ],
+    ports: [3100, 8100, 3921, 5442, 6479],
+    workingDir: '~/hunter-community',
+    configFiles: '~/hunter-community/docker-compose.yml',
+    webPort: 3100,
+  },
+]
+
+export const demoTakeoverState: TakeoverState = {
+  active: true,
+  manageable: true,
+  project: 'hunter-community',
+  workingDir: '~/hunter-community',
+  since: '2026-09-21 18:20:00',
+  webUrl: 'http://localhost:3100',
+  containers: [
+    { name: 'hunter-community-web-1', status: 'Up 2 days', image: 'hunter-community-web:1.2.0', ports: '0.0.0.0:3100->3000/tcp' },
+    { name: 'hunter-community-api-1', status: 'Up 2 days', image: 'hunter-community-api:1.2.0', ports: '0.0.0.0:8100->8000/tcp' },
+    { name: 'hunter-community-opencode-1', status: 'Up 2 days', image: 'hunter-community-opencode:1.2.0', ports: '0.0.0.0:3921->3921/tcp' },
+    { name: 'hunter-community-postgres-1', status: 'Up 2 days', image: 'postgres:16-alpine', ports: '0.0.0.0:5442->5432/tcp' },
+    { name: 'hunter-community-redis-1', status: 'Up 2 days', image: 'redis:7-alpine', ports: '0.0.0.0:6479->6379/tcp' },
+  ],
+  note: '',
+}
+
+/** 一键反馈的演示态。**scanHit 是 null（干净），bundlePath 用 ~ 开头的脱敏路径。** */
+export const demoOneClick: OneClickFeedback = {
+  bundlePath: '~/.hunter/diagnostics/hunter-diagnostics-20260921-183045.zip',
+  bundleBytes: 24_576,
+  issueUrl: 'https://github.com/agentpit-io/HunterLauncher/issues/new?title=%E6%BC%94%E7%A4%BA&body=%E6%BC%94%E7%A4%BA',
+  issueTitle: '[部署问题] E_PULL_FAILED AI 自动安装没能把问题解决',
+  issueBody: '## 遇到了什么\n\n演示数据。\n\n## 环境\n\n```\n启动器: 0.1.7\n系统: macos aarch64\n```\n',
+  scanHit: null,
+  note: '演示数据：诊断包只在你自己的机器上，启动器没有把它发给任何人。',
 }
 
 /** 遥测队列的演示内容。开关关着时真实队列是空的，这里演示的是「开了之后长什么样」。 */
@@ -480,6 +554,21 @@ export const demoRuntimeQuotaExhausted: RuntimeStatus = {
 }
 
 /**
+ * 「这台机器是从 0.1.7 之前升上来的，网页端口还对局域网开着」的运行面板演示态
+ * （截图脚本 `HUNTER_DEMO_PAGE=dashboard-lan`）。
+ *
+ * 新装的机器**不可能**是这个样子 —— 免费版只允许本机访问（I7 · 用户 2026-09-21 19:05 的决定）。
+ * 绑定地址照着旧版本装出来的现场写：web 在 `0.0.0.0` 上，其余四个当初就是 `127.0.0.1`。
+ */
+export const demoRuntimeLanExposed: RuntimeStatus = {
+  ...demoRuntime,
+  webLanExposed: true,
+  services: demoRuntime.services.map((s) =>
+    s.service === 'web' ? { ...s, bind: '0.0.0.0' } : s,
+  ),
+}
+
+/**
  * AI 诊断助手的演示态（I4）。
  *
  * 演示的是**规则层**那一半 —— 它不花 token、不联网，演示出来是诚实的。
@@ -612,6 +701,161 @@ export const demoAutoSnapshot: AssistAutoSnapshot = {
       title: '启动服务',
       detail: '5 / 6 健康',
       at: '2026-09-21 10:33:40',
+    },
+  ],
+}
+
+/**
+ * 复核卡片 + 「直接用它」那张不阻塞的选择卡片长什么样（I7）。给截图脚本用
+ * （`HUNTER_DEMO_PAGE=auto-review`）。
+ *
+ * **里面的数字都是从测试机真实跑出来的那一次抄过来的**（见 I7-迭代报告第三节），
+ * 不是随手编的 —— 演示数据也不该出现一个真实系统里不可能出现的值。
+ */
+export const demoAutoReview: AssistAutoSnapshot = {
+  running: true,
+  summary: {
+    solved: 0,
+    open: 1,
+    tokens: 2_146,
+    rounds: 1,
+    maxRounds: 10,
+    elapsedMs: 18_400,
+    phase: '正在解决：找不到 Docker',
+  },
+  events: [
+    {
+      id: 1,
+      parent: null,
+      kind: 'step',
+      status: 'failed',
+      title: '检查 Docker',
+      detail: '这台机器上找不到 docker 可执行文件。',
+      elapsedMs: 410,
+      at: '2026-09-21 18:20:02',
+    },
+    {
+      id: 2,
+      parent: null,
+      kind: 'issue',
+      status: 'warn',
+      title: '发现问题：找不到 Docker',
+      detail: '这台机器上找不到 docker 可执行文件。',
+      tech: ['错误码 E_DOCKER_MISSING｜这台机器上找不到 docker 可执行文件。'],
+      at: '2026-09-21 18:20:02',
+    },
+    {
+      id: 3,
+      parent: 2,
+      kind: 'analyze',
+      status: 'ok',
+      title: '分析中…',
+      detail: '查了 5 个端口 · 本机还有 1 套 Hunter',
+      elapsedMs: 1_240,
+      at: '2026-09-21 18:20:03',
+    },
+    {
+      id: 4,
+      parent: 2,
+      kind: 'analyze',
+      status: 'ok',
+      title: '找到原因',
+      detail:
+        '这台机器上一个 Docker 都没有（内置清单里 14 个位置全找过了）。装一套完全放在 ~/.hunter/runtime 里的运行时：4 个组件、合计 94.9 MiB，不要管理员密码、不改系统任何地方、设置里可一键卸载。',
+      at: '2026-09-21 18:20:03',
+    },
+    {
+      id: 5,
+      parent: 2,
+      kind: 'review',
+      status: 'ok',
+      title: '复核：放行',
+      detail:
+        '所有改动都落在 ~/.hunter/runtime 内，不触及用户已有的数据卷、网络设置或其他 compose 项目；理由与证据里「一个 docker 位置都没探到」一致。',
+      tokens: 2_146,
+      elapsedMs: 3_910,
+      tech: [
+        '第二个模型，单独的提示词，只判「会不会伤到你已有的东西」「对不对得上证据」',
+        '复核通过 ≠ 可以执行：守卫与你的确认这两道照样要过',
+      ],
+      at: '2026-09-21 18:20:07',
+    },
+    {
+      id: 6,
+      parent: 2,
+      kind: 'action',
+      status: 'ok',
+      title: '这一步不再问你',
+      detail: '你在授权页上勾了「电脑上没有 Docker 时允许 AI 为你安装」',
+      tech: [
+        '动作 install_runtime（需要你同意）。想改回「每次都问」：设置页把那一项取消勾选，或者改 launcher.toml 的 [assist] allow_install_runtime = false',
+      ],
+      at: '2026-09-21 18:20:07',
+    },
+    {
+      id: 7,
+      parent: 2,
+      kind: 'action',
+      status: 'running',
+      title: '正在下载容器运行时（4 个组件，合计 94.9 MiB）',
+      detail: '38% · 已下载 36.1 MiB / 94.9 MiB',
+      at: '2026-09-21 18:20:22',
+    },
+  ],
+}
+
+/**
+ * 「你电脑上已经在运行另一套 Hunter」那张**不阻塞**的选择卡片（I7）。
+ * `HUNTER_DEMO_PAGE=auto-takeover-offer`。
+ */
+export const demoAutoTakeoverOffer: AssistAutoSnapshot = {
+  running: true,
+  summary: {
+    solved: 1,
+    open: 0,
+    tokens: 0,
+    rounds: 0,
+    maxRounds: 10,
+    elapsedMs: 9_400,
+    phase: '挑下载源、算端口、写配置',
+  },
+  events: [
+    {
+      id: 1,
+      parent: null,
+      kind: 'step',
+      status: 'ok',
+      title: '检查 Docker',
+      detail: 'Docker Engine 29.8.1 正在运行',
+      elapsedMs: 254,
+      at: '2026-09-21 18:30:02',
+    },
+    {
+      id: 2,
+      parent: null,
+      kind: 'step',
+      status: 'running',
+      title: '挑下载源、算端口、写配置',
+      detail: '正在测速…',
+      at: '2026-09-21 18:30:03',
+    },
+    {
+      id: 3,
+      parent: 2,
+      kind: 'needUser',
+      status: 'waiting',
+      title: '你电脑上已经在运行另一套 Hunter',
+      detail:
+        'hunter-community（5 个容器，占着端口 3100、3921、5442、6479、8100）。不点也行 —— 默认就是「和它并存」，下面这一步已经在跑了。',
+      tech: [
+        '并存的做法：新装的这一套换一组空闲端口。启动器不会停它、不会删它、不会改它的配置。',
+        '「hunter-community」的 compose 文件在 ~/hunter-community，所以接管之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）',
+      ],
+      choices: [
+        { value: 'coexist', label: '和它并存（推荐，不动它）', primary: true },
+        { value: 'takeover:hunter-community', label: '直接用「hunter-community」，不再装一套', primary: false },
+      ],
+      at: '2026-09-21 18:30:04',
     },
   ],
 }

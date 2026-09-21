@@ -56,6 +56,12 @@ use crate::config::LauncherConfig;
 use crate::err::{AppError, AppResult, Code};
 use crate::flow::{self, AppState, InstallOptions};
 
+/// 「需要你」卡片的答案从哪儿来：`(问题, 按钮) -> 用户选的 value`。
+///
+/// 界面版不用它（那边走事件 + `assist_auto_answer`）；命令行版在 stdin 是终端时
+/// 给一个「打印问题 + 读一行」的实现（I7 · 待办池 P1-25）。
+pub type AnswerReader = Box<dyn Fn(&str, &[Choice]) -> Option<String> + Send + Sync>;
+
 /// 单个问题最多来回几次。I4 实测 3 轮常常刚摸到答案，给 4。
 pub const MAX_ROUNDS_PER_ISSUE: usize = 4;
 /// 整次安装最多几个回合。防止在多个问题之间来回兜圈。
@@ -111,6 +117,10 @@ pub struct Outcome {
     pub elapsed_ms: u64,
     /// 装好之后打开哪个地址（真实端口）
     pub url: Option<String>,
+    /// 用户中途选了「直接用你已经有的那一套」时，这里是那个 compose 项目名（I7）。
+    /// 有值时 `ok` 也是 true —— 事情办成了，只是办法不是「再装一套」
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takeover: Option<String>,
 }
 
 // ── 需要用户点一下 ────────────────────────────────────────────────────────
@@ -119,7 +129,7 @@ pub struct Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AskWhy {
-    /// 要装新软件（本轮只会问，不会装 —— `install_runtime` 排在 I6）
+    /// 要装新软件（I7 起真的会装，见 `install_runtime`）
     InstallSoftware,
     /// 要动这台机器上已有的 Hunter
     TouchExisting,
@@ -139,11 +149,38 @@ pub struct Handle {
     pub bus: Arc<Bus>,
     ask: Arc<Mutex<Option<Arc<Ask>>>>,
     cancel: Arc<AtomicBool>,
+    takeover: Arc<Mutex<Option<String>>>,
+    /// 「你电脑上已经有一套」那张**不阻塞**卡片的事件 id。
+    /// 用户点了任意一个按钮就把它收尾，免得它一直挂着「等待中」
+    offer: Arc<Mutex<Option<u64>>>,
 }
+
+/// 前端点「直接用它，不再装一套」时回传的值前缀（I7）。
+pub const TAKEOVER_PREFIX: &str = "takeover:";
 
 impl Handle {
     /// 用户点了「需要你」卡片上的按钮。没有正在等的提问时返回 false。
+    ///
+    /// **「直接用它」这一个是例外**：那张卡片不阻塞（见 [`Orchestrator::report_other_installs`]），
+    /// 安装本来就在往下跑，所以它走的是另一条通路 —— 记下项目名，
+    /// 总指挥在下一个步骤开始前读到它就改道。
     pub fn answer(&self, value: &str) -> bool {
+        if let Some(project) = value.strip_prefix(TAKEOVER_PREFIX) {
+            let project = project.trim().to_string();
+            if project.is_empty() {
+                return false;
+            }
+            if let Ok(mut g) = self.takeover.lock() {
+                *g = Some(project.clone());
+            }
+            self.close_offer(&format!("记下了：改用「{project}」"));
+            return true;
+        }
+        if value == "coexist" {
+            // 「和它并存」本来就是默认 —— 点它只是把话说死，安装照原样往下跑
+            self.close_offer("你选了「和它并存」，安装照原样继续（本来也是这么跑的）");
+            return true;
+        }
         let g = self.ask.lock().ok().and_then(|g| g.clone());
         let Some(ask) = g else { return false };
         if let Ok(mut a) = ask.answer.lock() {
@@ -155,6 +192,14 @@ impl Handle {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// 把那张不阻塞的选择卡片收尾（只收一次）。
+    fn close_offer(&self, detail: &str) {
+        let id = self.offer.lock().ok().and_then(|mut g| g.take());
+        if let Some(id) = id {
+            self.bus.finish(id, Status::Ok, detail, None);
+        }
     }
 }
 
@@ -173,6 +218,11 @@ pub struct Orchestrator {
     phase: String,
     cancel: Arc<AtomicBool>,
     ask: Arc<Mutex<Option<Arc<Ask>>>>,
+    /// 用户点了「直接用它，不再装一套」时，这里会有那个项目名（I7）。
+    /// 总指挥在每个步骤开始前看一眼 —— 有值就改道去接管，不再往下装
+    takeover: Arc<Mutex<Option<String>>>,
+    /// 那张不阻塞的选择卡片的事件 id（见 [`Handle::close_offer`]）
+    offer: Arc<Mutex<Option<u64>>>,
     /// `Step::Prepare` 算出来的那一份。拉取那一步直接用它，
     /// **不要再 prepare 一遍** —— 那会白跑一次镜像源测速与 compose 下载
     prep: Option<flow::PrepareResult>,
@@ -193,6 +243,15 @@ pub struct Orchestrator {
     /// 规则：**同一条原话只换一次源**；换完原话一个字都没变，就判定「与源无关」，
     /// 规则层让路，把现场连同原话交给诊断员（模型）。
     switched_registry: std::collections::HashSet<String>,
+    /// 命令行下「需要你」卡片的回答从哪儿来（I7 · 待办池 P1-25 的结论）。
+    ///
+    /// `None` = 没人能答（CI、管道、后台任务），按 `interactive` 那条走。
+    /// `Some(f)` = 调用方给了一条读答案的路 —— headless 在 **stdin 是终端**时
+    /// 会给一个「打印问题 + 读一行」的闭包。
+    ///
+    /// 为什么不直接在这里读 stdin：总指挥跑在界面进程里时，stdin 可能根本不存在；
+    /// 「从哪儿读」是调用方的事，这里只负责「问」。
+    answer_reader: Option<AnswerReader>,
     /// 有没有人能回答「需要你」卡片。
     ///
     /// 界面里是 true（用户看得见那两个按钮）；`--auto` 命令行里是 false ——
@@ -215,10 +274,13 @@ impl Orchestrator {
             phase: "准备开始".into(),
             cancel,
             ask: Arc::new(Mutex::new(None)),
+            takeover: Arc::new(Mutex::new(None)),
+            offer: Arc::new(Mutex::new(None)),
             prep: None,
             reported_others: Mutex::new(false),
             failed_actions: std::collections::HashSet::new(),
             switched_registry: std::collections::HashSet::new(),
+            answer_reader: None,
             interactive: true,
         }
     }
@@ -226,6 +288,12 @@ impl Orchestrator {
     /// 命令行下没有人能点按钮，调用方要如实说一声。
     pub fn set_interactive(&mut self, v: bool) {
         self.interactive = v;
+    }
+
+    /// 给一条「读答案」的路（I7）。设了它就等于 `interactive = true`。
+    pub fn set_answer_reader(&mut self, f: AnswerReader) {
+        self.answer_reader = Some(f);
+        self.interactive = true;
     }
 
     /// 跨线程的句柄：界面线程要能看事件树、回答提问、喊停，
@@ -236,6 +304,8 @@ impl Orchestrator {
             bus: self.bus.clone(),
             ask: self.ask.clone(),
             cancel: self.cancel.clone(),
+            takeover: self.takeover.clone(),
+            offer: self.offer.clone(),
         }
     }
 
@@ -284,6 +354,11 @@ impl Orchestrator {
             if self.cancelled() {
                 return self.fail(Code::Unknown, "安装被取消了。");
             }
+            // 用户在「你电脑上已经有一套」那张卡片上点了「直接用它」——
+            // 那就别再装了（I7）。这一步是**改道**不是失败
+            if let Some(o) = self.maybe_takeover() {
+                return o;
+            }
             if let Err(e) = self.run_step_with_repair(state, &mut opts, step) {
                 // 最终页上要给一条能照着做的出路，而不是只丢一个错误码
                 let msg = match manual_step(&e) {
@@ -294,6 +369,17 @@ impl Orchestrator {
                 };
                 return self.fail(e.code, &msg);
             }
+        }
+
+        // 装完了才点「直接用它」—— 那就**如实说没有改道**，不要让那张卡片
+        // 留着一句「这就改道」却什么都没发生
+        if let Some(late) = self.takeover.lock().ok().and_then(|mut g| g.take()) {
+            self.bus.emit(
+                EventDraft::new(Kind::Action, format!("「直接用 {late}」这一下点晚了"))
+                    .status(Status::Skipped)
+                    .detail("这次安装已经跑完了，所以没有改道 —— 两套现在都在，互不影响")
+                    .tech("想改成管理原有的那一套：设置页 →「容器运行时」下面那一节，或者命令行 `--takeover use <项目名> -y`"),
+            );
         }
 
         // **从磁盘重读**：修复动作（remap_ports / switch_registry / raise_timeouts）
@@ -325,6 +411,7 @@ impl Orchestrator {
             tokens: self.tokens,
             elapsed_ms: self.t0.elapsed().as_millis() as u64,
             url: Some(url),
+            takeover: None,
         }
     }
 
@@ -346,6 +433,7 @@ impl Orchestrator {
             tokens: self.tokens,
             elapsed_ms: self.t0.elapsed().as_millis() as u64,
             url: None,
+            takeover: None,
         }
     }
 
@@ -401,7 +489,7 @@ impl Orchestrator {
                         return Err(e);
                     }
                     // 修复回合：侦察 → 诊断 → 守卫 → 执行
-                    match self.repair(state, opts, step, &e) {
+                    match self.repair(state, opts, step, &e, issue_rounds) {
                         Ok(true) => continue, // 下一圈的 run_step 就是验证
                         Ok(false) => return Err(e),
                         Err(re) => {
@@ -483,6 +571,15 @@ impl Orchestrator {
                     .map(|g| g.clone())
                     .unwrap_or_default();
                 if !changed.is_empty() {
+                    // 预检阶段自己把端口换掉了 —— **这就是解决掉一个问题**（I7）。
+                    //
+                    // 0.1.6 在用户 Mac 上的现场：5 个端口全被 hunter-fresh 占着，
+                    // 启动器换了一组新的、装成功了，总览那一行却写「已自动解决 0 个问题」。
+                    // 从代码角度那是因为 `solved` 只在「某一步失败又重跑成功」时才加；
+                    // 从用户角度，他明明看见启动器发现问题、处理掉了。
+                    // 用户是对的：**没等到报错就解决掉，不该因此不算数。**
+                    self.solved += 1;
+                    self.tick(&self.phase.clone());
                     // 端口换过就明说换到哪、原来被谁占着（真实值，不是「某个程序」）
                     let e = self.bus.emit(
                         EventDraft::new(Kind::Resolved, "为这次安装换了一组空闲端口")
@@ -607,41 +704,126 @@ impl Orchestrator {
 
     // ── 侦察员 ────────────────────────────────────────────────────────────
 
-    /// 本机上别的 Hunter —— 一次安装里只报一次。
+    /// 本机上别的 Hunter —— 一次安装里只报一次，并给出那两个结论式按钮（I7）。
+    ///
+    /// ## 这张卡片**不阻塞**
+    ///
+    /// 默认处置一直是「换一组空闲端口，两套并存」，那是推荐做法，也是不点任何
+    /// 按钮时会发生的事 —— 所以没有理由把安装停在这里等一次点击
+    /// （「授权之后零点击」是这一整套的底线）。卡片上把这句话**写出来**：
+    /// 不点也行，下面已经在跑了。
+    ///
+    /// 用户如果确实想「直接用它」，点了之后 [`Handle::answer`] 把项目名记下来，
+    /// 总指挥在下一个步骤开始前读到就改道（[`Orchestrator::maybe_takeover`]）。
     fn report_other_installs(&self, parent: u64) {
         if self.reported_others.lock().map(|g| *g).unwrap_or(true) {
             return;
         }
-        let pubs = crate::ports::docker_published();
-        let others = crate::ports::other_hunter_installs(&pubs);
+        let cands = crate::takeover::candidates();
         if let Ok(mut g) = self.reported_others.lock() {
             *g = true;
         }
-        if others.is_empty() {
+        if cands.is_empty() {
             return;
         }
-        let who: Vec<String> = others
-            .iter()
-            .map(|o| {
-                format!(
-                    "{}（{} 个容器，占着端口 {}）",
-                    o.project,
-                    o.containers.len(),
-                    o.ports
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join("、")
-                )
-            })
-            .collect();
-        self.bus.emit(
-            EventDraft::new(Kind::Issue, "你电脑上已经在运行另一套 Hunter")
-                .under(parent)
-                .status(Status::Warn)
-                .detail(who.join("；"))
-                .tech("处置：新装的这一套换一组空闲端口，两套并存。启动器不会停它、不会删它。"),
+        let who: Vec<String> = cands.iter().map(|o| o.one_line()).collect();
+        let mut choices = vec![Choice {
+            value: "coexist".into(),
+            label: "和它并存（推荐，不动它）".into(),
+            primary: true,
+        }];
+        // 只给**管得起来**的那几个「直接用它」的按钮。读不到 compose 文件的那种
+        // 接管过来也只能看，不如不给按钮、把原因说出来
+        for c in &cands {
+            choices.push(Choice {
+                value: format!("{TAKEOVER_PREFIX}{}", c.project),
+                label: format!("直接用「{}」，不再装一套", c.project),
+                primary: false,
+            });
+        }
+        let mut d = EventDraft::new(Kind::NeedUser, "你电脑上已经在运行另一套 Hunter")
+            .under(parent)
+            .status(Status::Waiting)
+            .detail(format!(
+                "{}。不点也行 —— 默认就是「和它并存」，下面这一步已经在跑了。",
+                who.join("；")
+            ))
+            .tech("并存的做法：新装的这一套换一组空闲端口。启动器不会停它、不会删它、不会改它的配置。")
+            .choices(choices);
+        for c in &cands {
+            if c.manageable() {
+                d = d.tech(format!(
+                    "「{}」的 compose 文件在 {}，所以接管之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）",
+                    c.project,
+                    crate::redact::mask_home(&c.working_dir)
+                ));
+            } else {
+                d = d.tech(format!(
+                    "「{}」的容器上没有 working_dir 标签，读不到它的 compose 文件 —— \
+                     接管之后只能看状态与日志，停 / 重启做不了",
+                    c.project
+                ));
+            }
+        }
+        let id = self.bus.emit(d);
+        if let Ok(mut g) = self.offer.lock() {
+            *g = Some(id);
+        }
+    }
+
+    /// 用户点过「直接用它」了吗。点过就**改道**：记进设置，不再往下装。
+    fn maybe_takeover(&mut self) -> Option<Outcome> {
+        let want = self.takeover.lock().ok().and_then(|mut g| g.take())?;
+        let ev = self.bus.emit(
+            EventDraft::new(Kind::Action, format!("改为管理你已有的「{want}」"))
+                .status(Status::Running),
         );
+        // 走正规通路：动作表 → 守卫 → 审计。`confirmed = true` 的依据是
+        // 用户**亲手点了那个按钮**，不是我们替他决定的
+        let call = Call::with("reuse_existing_hunter", "project", &want);
+        match actions::execute_as(&call, self.mode, true, Proposer::User) {
+            Ok(o) => {
+                self.bus.finish(ev, Status::Ok, &first_line(&o.text), None);
+                let cfg = LauncherConfig::load();
+                let url = if cfg.takeover.web_port > 0 {
+                    Some(format!("http://localhost:{}", cfg.takeover.web_port))
+                } else {
+                    None
+                };
+                self.bus.emit(
+                    EventDraft::new(Kind::Step, "完成")
+                        .status(Status::Ok)
+                        .detail(match &url {
+                            Some(u) => format!("启动器现在管理「{want}」，打开 {u} 就能用"),
+                            None => format!("启动器现在管理「{want}」（读不到它的 web 端口）"),
+                        }),
+                );
+                self.tick("完成");
+                crate::linfo!("用户选择接管本机已有的 {want}，本次不再安装");
+                Some(Outcome {
+                    ok: true,
+                    code: None,
+                    message: None,
+                    solved: self.solved,
+                    rounds: self.rounds,
+                    tokens: self.tokens,
+                    elapsed_ms: self.t0.elapsed().as_millis() as u64,
+                    url,
+                    takeover: Some(want),
+                })
+            }
+            Err(e) => {
+                // 接不管就如实说，并**继续照原样装** —— 不把用户卡在这里
+                self.bus.finish(
+                    ev,
+                    Status::Failed,
+                    &format!("{}（这次仍然按「和它并存」继续装）", e.msg),
+                    None,
+                );
+                crate::lwarn!("接管 {want} 没成功：{}", e.msg);
+                None
+            }
+        }
     }
 
     /// 采一份证据（零 token）。**这是 0.1.4 最缺的东西** ——
@@ -657,7 +839,7 @@ impl Orchestrator {
         }
         Evidence {
             report,
-            others: crate::ports::other_hunter_installs(&survey.published),
+            others: crate::takeover::candidates(),
             stale: compose::stale_own_containers(),
             port_lines,
             cred_helpers: crate::dockercfg::helper_status(),
@@ -676,6 +858,7 @@ impl Orchestrator {
         opts: &mut InstallOptions,
         step: Step,
         e: &AppError,
+        issue_rounds: usize,
     ) -> AppResult<bool> {
         self.rounds += 1;
         self.tick(&format!("正在解决：{}", e.code.title()));
@@ -714,34 +897,88 @@ impl Orchestrator {
             );
         }
 
-        // 第一层：确定性规则
-        let plan = self.rule_plan(step, e, &ev);
-        let (calls, why, by) = match plan {
-            Some((c, w)) => (c, w, Proposer::Rule),
-            None => {
-                // 第二层：模型兜底
-                match self.ask_model(issue, step, e, &ev) {
-                    Some((c, w)) => (c, w, Proposer::Model),
-                    None => {
-                        // 规则与模型都没辙了。要不要请用户出手在函数末尾统一判，
-                        // 免得同一个问题问两遍
-                        self.bus.emit(
-                            EventDraft::new(Kind::Failed, "这个问题我解决不了")
-                                .under(issue)
-                                .status(Status::Failed)
-                                .detail("没有可以安全执行的办法"),
-                        );
-                        if let Some((what, cmd)) = manual_step(e) {
-                            return Ok(self.ask_manual(issue, &what, &cmd));
-                        }
-                        return Ok(false);
-                    }
+        // 第一层规则 → 第二层模型 → **复核员**（只有含 Sensitive 的计划才走）。
+        //
+        // 复核被否决时退回诊断员，**并且把否决理由一起交给它**——
+        // 不带理由地重问一遍，模型多半会原样再提一次同一个计划。
+        // 整个循环最多两趟：第二趟还被否决就不再猜了。
+        let mut skip_rules = false;
+        let (calls, why, by) = 'plan: loop {
+            let first = if skip_rules {
+                None
+            } else {
+                self.rule_plan(step, e, &ev)
+            };
+            let got = match first {
+                Some((c, w)) => Some((c, w, Proposer::Rule)),
+                None => self
+                    .ask_model(issue, step, e, &ev)
+                    .map(|(c, w)| (c, w, Proposer::Model)),
+            };
+            let Some((calls, why, by)) = got else {
+                // 规则与模型都没辙了。要不要请用户出手在函数末尾统一判，
+                // 免得同一个问题问两遍
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "这个问题我解决不了")
+                        .under(issue)
+                        .status(Status::Failed)
+                        .detail("没有可以安全执行的办法"),
+                );
+                if let Some((what, cmd)) = manual_step(e) {
+                    return Ok(self.ask_manual(issue, &what, &cmd));
                 }
+                return Ok(false);
+            };
+            if calls.is_empty() {
+                return Ok(false);
+            }
+            if !super::reviewer::needs_review(&calls) {
+                break 'plan (calls, why, by);
+            }
+            let v = self.review(issue, &calls, &why, &ev);
+            if v.approve {
+                break 'plan (calls, why, by);
+            }
+            // 否决。理由进证据，下一趟诊断员看得到
+            let note = format!(
+                "复核员否决了上一个计划（{}）：{}",
+                calls
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+                v.reasons.join("；")
+            );
+            crate::lwarn!("{note}");
+            ev.notes.push(format!(
+                "{note}。换一个不会碰到这些东西的办法，或者如实说做不到。"
+            ));
+            if skip_rules {
+                // 已经重来过一趟了，第二趟还被否决 —— 不再猜
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "这个办法没能过复核")
+                        .under(issue)
+                        .status(Status::Failed)
+                        .detail("换了一个办法还是没过，不再继续试了"),
+                );
+                if let Some((what, cmd)) = manual_step(e) {
+                    return Ok(self.ask_manual(issue, &what, &cmd));
+                }
+                return Ok(false);
+            }
+            skip_rules = true;
+            // 退回诊断员**要计一个回合**（否则模型可以靠不停被否决把预算绕过去）
+            self.rounds += 1;
+            if let Some(stop) = self.budget_stop(issue_rounds) {
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "不再继续试了")
+                        .under(issue)
+                        .status(Status::Failed)
+                        .detail(stop),
+                );
+                return Ok(false);
             }
         };
-        if calls.is_empty() {
-            return Ok(false);
-        }
 
         self.bus.emit(
             EventDraft::new(Kind::Analyze, "找到原因")
@@ -758,11 +995,39 @@ impl Orchestrator {
             let Some(spec) = actions::spec(&call.id) else {
                 continue;
             };
-            // 「需要你」的第一种情况：Sensitive 动作在任何档位下都要先问
+            // 「需要你」的第一种情况：Sensitive 动作在任何档位下都要先问 ——
+            // **除非用户在一次授权页上已经对这一件事明确说过「可以」**（I7）。
+            //
+            // 那一项默认勾着，文案是「如果电脑上没有 Docker，允许 AI 为你安装
+            // （装在 ~/.hunter/runtime 里，不改系统，可一键卸载）」。
+            // 已经授权过的事再问一遍不叫谨慎，叫啰嗦。但**要留痕**：
+            // 事件流里照样出一张卡片说明「为什么这次没问你」。
             if self.mode.needs_confirm(spec.level) {
-                let ok = self.ask_user(issue, spec, &call);
-                if !ok {
-                    continue;
+                if self.pre_authorized(&call) {
+                    self.bus.emit(
+                        EventDraft::new(Kind::Action, "这一步不再问你")
+                            .under(issue)
+                            .status(Status::Ok)
+                            .detail("你在授权页上勾了「电脑上没有 Docker 时允许 AI 为你安装」")
+                            .tech(format!(
+                                "动作 {}（{}）。想改回「每次都问」：设置页把那一项取消勾选，\
+                                 或者改 launcher.toml 的 [assist] allow_install_runtime = false",
+                                call.id,
+                                spec.level.cn()
+                            )),
+                    );
+                    guard::audit(
+                        &call.id,
+                        &call.args,
+                        Proposer::User,
+                        Some(spec.level),
+                        "授权页已勾选，免二次确认",
+                    );
+                } else {
+                    let ok = self.ask_user(issue, spec, &call);
+                    if !ok {
+                        continue;
+                    }
                 }
             }
             let t = Instant::now();
@@ -772,7 +1037,20 @@ impl Orchestrator {
             let aev = self
                 .bus
                 .emit(EventDraft::new(Kind::Action, format!("正在处理：{title}")).under(issue));
-            match actions::execute_as(&call, self.mode, true, by) {
+            // `install_runtime` 要下将近 100 MB 再起一台虚拟机，几分钟里界面上
+            // 只有一行「正在处理」是不行的 —— 换成带真实字节数的那一版。
+            // **三道门一道没少**：这之前刚过了 plan（动作表 + 守卫）与档位判定
+            let r = if call.id == "install_runtime" {
+                self.run_install_runtime(issue)
+                    .map(|text| actions::Outcome {
+                        id: call.id.clone(),
+                        ok: true,
+                        text,
+                    })
+            } else {
+                actions::execute_as(&call, self.mode, true, by)
+            };
+            match r {
                 Ok(o) => {
                     self.bus.finish(
                         aev,
@@ -851,6 +1129,27 @@ impl Orchestrator {
         Some((calls, why))
     }
 
+    /// 按内置清单**硬找一遍** docker（待办池 P1-23）。零 token。
+    ///
+    /// 一个细节：用户如果显式把 `use_builtin_paths` 关掉了，这里就**不越过他的设置**
+    /// 去用内置清单 —— 那条设置的语义就是「别用你那份清单」。这时返回 `None`，
+    /// 后面该问模型问模型。
+    fn hard_find_docker(&self) -> Option<String> {
+        crate::runtime::which::invalidate();
+        let pr = crate::runtime::which::docker_probe();
+        if let Some(p) = pr.resolved.clone() {
+            return Some(p);
+        }
+        let policy = crate::runtime::which::Policy::current();
+        if !policy.use_builtin {
+            crate::linfo!("硬找 docker 这一步跳过：用户把内置位置清单关掉了");
+            return None;
+        }
+        // `docker_probe` 用的就是这份清单，走到这里说明一个都没命中。
+        // 再把内置运行时那一份单独看一眼（它可能刚装好、缓存还没失效）
+        crate::runtime::builtin::docker_bin().map(|p| p.to_string_lossy().into_owned())
+    }
+
     fn rule_plan_raw(
         &self,
         step: Step,
@@ -887,17 +1186,58 @@ impl Orchestrator {
                 why.push_str("为这次安装换一组空闲端口，两套并存、互不影响。");
                 Some((calls, why))
             }
-            // ② docker 找不到：多半是 GUI 程序拿不到终端的 PATH（I4 那个 macOS P0）
+            // ② docker 找不到。**两步，顺序不能反**（待办池 P1-23）：
+            //    先按内置清单硬找一遍 —— 找得到就直接写进设置，零 token；
+            //    真的一个都没有，才谈「装一套」。
+            //
+            //    I5 场景 1 实测：这一步交给模型花了 8,632 token，而且它第一轮
+            //    先要了一次 `probe_docker_path`（等于把我们刚做过的事再做一遍）。
             Code::DockerMissing => {
-                let pr = crate::runtime::which::docker_probe();
-                let path = pr.resolved.clone()?;
-                Some((
-                    vec![Call::with("set_docker_path", "path", &path)],
-                    format!(
-                        "docker 其实装着，只是不在这个程序能看到的 PATH 里。按已知位置探到了 {}，写进设置。",
-                        crate::redact::mask_home(&path)
-                    ),
-                ))
+                if let Some(path) = self.hard_find_docker() {
+                    return Some((
+                        vec![Call::with("set_docker_path", "path", &path)],
+                        format!(
+                            "docker 其实装着，只是不在这个程序能看到的 PATH 里。按已知位置探到了 {}，写进设置。",
+                            crate::redact::mask_home(&path)
+                        ),
+                    ));
+                }
+                // 这台机器上真的没有 docker。看看该装还是该点亮已有的
+                match crate::runtime::builtin::decide() {
+                    crate::runtime::builtin::Decision::AlreadyRunning(_) => None,
+                    crate::runtime::builtin::Decision::StartExisting(app) => {
+                        actions::plan(&Call::with("start_runtime", "app", &app)).ok()?;
+                        Some((
+                            vec![
+                                Call::with("start_runtime", "app", &app),
+                                Call::with("wait_daemon", "seconds", "90"),
+                            ],
+                            format!(
+                                "{} 已经装在这台机器上了，只是没启动 —— 把它点起来就行，不用再装一套。",
+                                actions::runtime_label(&app)
+                            ),
+                        ))
+                    }
+                    crate::runtime::builtin::Decision::StartBuiltin => Some((
+                        vec![Call::new("start_builtin_runtime")],
+                        "上次装好的内置运行时还在，把它的虚拟机起起来就行。".to_string(),
+                    )),
+                    crate::runtime::builtin::Decision::Install => {
+                        let items = crate::runtime::manifest::for_host();
+                        Some((
+                            vec![Call::new("install_runtime")],
+                            format!(
+                                "这台机器上一个 Docker 都没有（内置清单里 {} 个位置全找过了）。                                 装一套完全放在 ~/.hunter/runtime 里的运行时：{} 个组件、合计 {}，                                 不要管理员密码、不改系统任何地方、设置里可一键卸载。",
+                                crate::runtime::which::builtin_dirs().len(),
+                                items.len(),
+                                crate::assist::probe::human_bytes(
+                                    crate::runtime::manifest::total_bytes(&items)
+                                )
+                            ),
+                        ))
+                    }
+                    crate::runtime::builtin::Decision::Unsupported(_) => None,
+                }
             }
             // ③ 装了没起：把它点起来再等
             Code::DaemonDown => {
@@ -996,6 +1336,39 @@ impl Orchestrator {
             }
             _ => None,
         }
+    }
+
+    // ── 复核员（第二个模型角色，I7） ─────────────────────────────────────
+
+    /// 计划里含 `Sensitive` 动作时走这一趟。事件流里单独一张「复核」卡片。
+    ///
+    /// 复核这件事本身要花 token，所以也吃同一份预算；预算到头 / 没 key /
+    /// AI 关着的时候**不是默认放行**，而是「复核做不成」—— 那一条随后会落到
+    /// 「需要你」卡片上，由用户自己拍板。
+    fn review(
+        &mut self,
+        parent: u64,
+        calls: &[Call],
+        why: &str,
+        ev: &Evidence,
+    ) -> super::reviewer::Verdict {
+        let v = if self.mode == Mode::Off {
+            super::reviewer::Verdict::unavailable("AI 那一层在设置里关着")
+        } else if self.tokens >= MAX_TOKENS {
+            super::reviewer::Verdict::unavailable(&format!(
+                "这次安装已经用掉 {} token，到上限了",
+                self.tokens
+            ))
+        } else {
+            match self.key.clone() {
+                Some(k) => super::reviewer::review(calls, why, &ev.to_prompt(), &k),
+                None => super::reviewer::Verdict::unavailable("还没有可用的 hunter key"),
+            }
+        };
+        self.tokens += v.tokens;
+        super::reviewer::emit_card(&self.bus, parent, &v);
+        self.tick(&self.phase.clone());
+        v
     }
 
     // ── 诊断员 · 第二层（模型兜底） ──────────────────────────────────────
@@ -1187,20 +1560,12 @@ impl Orchestrator {
                 .status(Status::Waiting)
                 .detail(format!("请在终端里执行：{cmd}"))
                 .tech("这一条要管理员权限。启动器不会替你提权，也不会把它塞进动作表。")
-                .choices(vec![
-                    Choice {
-                        value: "yes".into(),
-                        label: "我执行完了，继续".into(),
-                        primary: true,
-                    },
-                    Choice {
-                        value: "no".into(),
-                        label: "先不弄了".into(),
-                        primary: false,
-                    },
-                ]),
+                .choices(choices_manual()),
         );
-        let yes = self.wait_answer();
+        let yes = self.wait_answer(
+            &format!("{what}（请在终端里执行：{cmd}）"),
+            &choices_manual(),
+        );
         self.bus.finish(
             ev,
             if yes { Status::Ok } else { Status::Skipped },
@@ -1229,7 +1594,10 @@ impl Orchestrator {
 
     /// 挂一个提问并阻塞等答案。**不设超时** —— 悄悄超时然后自己决定，
     /// 正好是这一轮要修掉的那种行为。
-    fn wait_answer(&self) -> bool {
+    fn wait_answer(&self, question: &str, choices: &[Choice]) -> bool {
+        if let Some(r) = &self.answer_reader {
+            return r(question, choices).as_deref() == Some("yes");
+        }
         if !self.interactive {
             return false;
         }
@@ -1258,6 +1626,210 @@ impl Orchestrator {
         answer.as_deref() == Some("yes")
     }
 
+    /// 这个 `Sensitive` 动作用户在授权页上提前批过吗（I7）。
+    ///
+    /// **只有 `install_runtime` 这一个**。`reuse_existing_hunter` 动的是用户
+    /// 自己装的那一套，不在这个口子里 —— 那种事没有「一次授权、以后不问」的道理。
+    fn pre_authorized(&self, call: &Call) -> bool {
+        if call.id != "install_runtime" {
+            return false;
+        }
+        LauncherConfig::load().assist.allow_install_runtime
+    }
+
+    /// `install_runtime` 的带事件版本：下载进度、校验、起虚拟机，全是**真实值**。
+    ///
+    /// 走的是同一份 [`crate::runtime::builtin`]；不同的只是把进度喂给事件总线
+    /// 而不是日志。执行前仍然过 [`actions::plan`] 与守卫（下面那句 `execute_as`
+    /// 走完整通路），这里只负责「一边装一边说」。
+    fn run_install_runtime(&mut self, parent: u64) -> AppResult<String> {
+        // **三道门一道都不能少。** 这一条走的是自己的执行体（要实时进度），
+        // 所以动作表校验与审计在这里补上 —— 不能因为「换了个执行入口」
+        // 就绕过 actions::execute_as 里那一套
+        let call = Call::new("install_runtime");
+        let plan = match actions::plan(&call) {
+            Ok(p) => p,
+            Err(e) => {
+                guard::audit(
+                    &call.id,
+                    &call.args,
+                    Proposer::Orchestrator,
+                    None,
+                    &format!("拒绝：{}", e.msg),
+                );
+                return Err(e);
+            }
+        };
+        guard::audit(
+            &call.id,
+            &call.args,
+            Proposer::Orchestrator,
+            Some(plan.level),
+            "开始执行（已过动作表与授权判定）",
+        );
+        let finish = |r: &AppResult<String>| {
+            guard::audit(
+                "install_runtime",
+                &std::collections::BTreeMap::new(),
+                Proposer::Orchestrator,
+                Some(plan.level),
+                &match r {
+                    Ok(t) => format!("成功：{}", first_line(t)),
+                    Err(e) => format!("失败：{}", e.msg),
+                },
+            );
+        };
+        let r = self.run_install_runtime_inner(parent);
+        finish(&r);
+        r
+    }
+
+    fn run_install_runtime_inner(&mut self, parent: u64) -> AppResult<String> {
+        use crate::runtime::builtin;
+        match builtin::decide() {
+            builtin::Decision::AlreadyRunning(who) => {
+                return Ok(format!("{who} 正在运行，一个字节都不用下。"))
+            }
+            builtin::Decision::Unsupported(why) => {
+                return Err(AppError::new(Code::NotImplemented, why))
+            }
+            _ => {}
+        }
+        if LauncherConfig::load().runtime.route() == crate::config::InstallRoute::OrbStack {
+            let bus = self.bus.clone();
+            let ev = bus.emit(
+                EventDraft::new(Kind::Action, "正在装 OrbStack（官方安装包）")
+                    .under(parent)
+                    .status(Status::Running),
+            );
+            let mut say = |line: &str| bus.finish(ev, Status::Running, line, None);
+            let c = self.cancel.clone();
+            let cancel = move || c.load(Ordering::Relaxed);
+            let r = crate::runtime::orbstack::install(&mut say, &cancel);
+            match &r {
+                Ok(t) => self.bus.finish(ev, Status::Ok, &first_line(t), None),
+                Err(e) => self.bus.finish(ev, Status::Failed, &e.msg, None),
+            }
+            return r;
+        }
+
+        let items = crate::runtime::manifest::for_host();
+        let total = crate::runtime::manifest::total_bytes(&items);
+        let bus = self.bus.clone();
+        let dl = bus.emit(
+            EventDraft::new(
+                Kind::Action,
+                format!(
+                    "正在下载容器运行时（{} 个组件，合计 {}）",
+                    items.len(),
+                    crate::assist::probe::human_bytes(total)
+                ),
+            )
+            .under(parent)
+            .status(Status::Running),
+        );
+        let t0 = Instant::now();
+        if !builtin::is_installed() {
+            let b2 = bus.clone();
+            let mut say = |line: &str| {
+                b2.emit(
+                    EventDraft::new(Kind::Action, line)
+                        .under(dl)
+                        .status(Status::Ok),
+                );
+            };
+            let b3 = bus.clone();
+            let mut last = 0u64;
+            let mut bytes = move |got: u64, total: u64| {
+                // 每 4 MB 更新一行，不要一秒刷几十条
+                if got < last + 4 * 1024 * 1024 && got < total {
+                    return;
+                }
+                last = got;
+                let pct = got
+                    .checked_mul(100)
+                    .and_then(|x| x.checked_div(total))
+                    .unwrap_or(0);
+                b3.finish(
+                    dl,
+                    Status::Running,
+                    &format!(
+                        "{pct}% · 已下载 {} / {}",
+                        crate::assist::probe::human_bytes(got),
+                        crate::assist::probe::human_bytes(total)
+                    ),
+                    None,
+                );
+            };
+            let c = self.cancel.clone();
+            let cancel = move || c.load(Ordering::Relaxed);
+            let mut pr = builtin::Progress {
+                say: &mut say,
+                bytes: &mut bytes,
+                cancel: &cancel,
+            };
+            match builtin::install(&mut pr) {
+                Ok(_) => bus.finish(
+                    dl,
+                    Status::Ok,
+                    &format!(
+                        "{} 全部下载并校验通过 · 用时 {}",
+                        crate::assist::probe::human_bytes(total),
+                        fmt_secs(t0.elapsed().as_secs())
+                    ),
+                    Some(t0.elapsed().as_millis() as u64),
+                ),
+                Err(e) => {
+                    bus.finish(dl, Status::Failed, &e.msg, None);
+                    return Err(e);
+                }
+            }
+        } else {
+            bus.finish(dl, Status::Ok, "内置运行时之前已经装好了，直接用", None);
+        }
+
+        let (cpu, mem, disk) = builtin::vm_params();
+        let vm = bus.emit(
+            EventDraft::new(
+                Kind::Action,
+                format!("正在启动虚拟机（{cpu} 核 · {mem} GiB 内存 · {disk} GiB 磁盘）"),
+            )
+            .under(parent)
+            .status(Status::Running),
+        );
+        let t1 = Instant::now();
+        let b4 = bus.clone();
+        let mut say = |line: &str| b4.finish(vm, Status::Running, line, None);
+        let mut nb = |_: u64, _: u64| {};
+        let c = self.cancel.clone();
+        let cancel = move || c.load(Ordering::Relaxed);
+        let mut pr = builtin::Progress {
+            say: &mut say,
+            bytes: &mut nb,
+            cancel: &cancel,
+        };
+        let r = builtin::start(&mut pr);
+        match &r {
+            Ok(t) => bus.finish(
+                vm,
+                Status::Ok,
+                &first_line(t),
+                Some(t1.elapsed().as_millis() as u64),
+            ),
+            Err(e) => bus.finish(vm, Status::Failed, &e.msg, None),
+        }
+        let started = r?;
+        // 钉进设置：下次开启动器不用再探一遍
+        if let Some(d) = builtin::docker_bin() {
+            let mut cfg = LauncherConfig::load();
+            cfg.runtime.docker_path = d.to_string_lossy().into_owned();
+            cfg.save()?;
+            crate::runtime::which::invalidate();
+            crate::runtime::env::invalidate();
+        }
+        Ok(started)
+    }
+
     /// 发一张「需要你」卡片并**阻塞等待**用户点。按钮文案是结论不是问句。
     fn ask_user(&self, parent: u64, spec: &actions::Spec, call: &Call) -> bool {
         let label_yes = format!("好，{}", spec.title);
@@ -1270,7 +1842,7 @@ impl Orchestrator {
                 .choices(vec![
                     Choice {
                         value: "yes".into(),
-                        label: label_yes,
+                        label: label_yes.clone(),
                         primary: true,
                     },
                     Choice {
@@ -1280,6 +1852,18 @@ impl Orchestrator {
                     },
                 ]),
         );
+        let choices = vec![
+            Choice {
+                value: "yes".into(),
+                label: label_yes,
+                primary: true,
+            },
+            Choice {
+                value: "no".into(),
+                label: "不用，我自己来".into(),
+                primary: false,
+            },
+        ];
         guard::audit(
             &call.id,
             &call.args,
@@ -1287,7 +1871,7 @@ impl Orchestrator {
             Some(spec.level),
             "等用户确认",
         );
-        let yes = self.wait_answer();
+        let yes = self.wait_answer(&format!("{}（{}）", spec.title, spec.why), &choices);
         self.bus.finish(
             ev,
             if yes { Status::Ok } else { Status::Skipped },
@@ -1309,11 +1893,34 @@ impl Orchestrator {
     }
 }
 
+/// 「这件事只能你来做」那张卡片上的两个按钮。**一处定义**，
+/// 事件流里发的和命令行里问的是同一份 —— 两边各写一套迟早会对不上。
+pub fn choices_manual() -> Vec<Choice> {
+    vec![
+        Choice {
+            value: "yes".into(),
+            label: "我执行完了，继续".into(),
+            primary: true,
+        },
+        Choice {
+            value: "no".into(),
+            label: "先不弄了".into(),
+            primary: false,
+        },
+    ]
+}
+
 // ── 侦察员采到的证据 ──────────────────────────────────────────────────────
 
 pub struct Evidence {
     pub report: probe::Report,
-    pub others: Vec<crate::ports::OtherInstall>,
+    /// 本机上别的 Hunter 安装。
+    ///
+    /// **用的是 [`crate::takeover::Candidate`] 而不是 [`crate::ports::OtherInstall`]**（I7）：
+    /// 后者只有项目名 / 容器 / 端口，缺了**工作目录**。而 `reuse_existing_hunter`
+    /// 的计划里会写出工作目录 —— 证据里没有它，复核员就会（正确地）判定
+    /// 「这个事实在证据里找不到依据，属于凭空编造」并否决。实测撞到过一次。
+    pub others: Vec<crate::takeover::Candidate>,
     pub stale: Vec<compose::StaleContainer>,
     pub port_lines: Vec<String>,
     /// 本机 docker 凭据助手：`(助手名, 补全后的 PATH 上找到的绝对路径)`（I6）
@@ -1352,17 +1959,43 @@ impl Evidence {
         if self.others.is_empty() {
             s.push_str("这台机器上没有别的 Hunter 安装。\n");
         } else {
-            s.push_str("这台机器上还有别的 Hunter 安装（**不许动它们**）：\n");
+            // 这句话的分寸是**实测调出来的**（I7）：原来写的是「**不许动它们**」，
+            // 结果复核员把它当成了铁律 —— 连「用户亲手点了「直接用它」之后
+            // 只读地接管它」这种计划也一并否决，理由是「证据里写着不许动」。
+            // 那条铁律本来是给**诊断员**的（别提议停掉别人的东西），
+            // 而复核员读的是同一份证据。所以这里把「禁止什么」与
+            // 「唯一的例外是什么」都写清楚，而不是留一句绝对化的话。
+            s.push_str(
+                "这台机器上还有别的 Hunter 安装。**不要提议停掉、删掉、改动它们**；\
+                 默认处置永远是给新安装换一组空闲端口、两套并存。\
+                 唯一的例外是 `reuse_existing_hunter`（改为只读地管理已有的那一套），\
+                 而它必须由用户亲自点过同意才会发生：\n",
+            );
             for o in &self.others {
                 s.push_str(&format!(
-                    "  compose 项目 {} · 容器 {} · 端口 {}\n",
+                    "  compose 项目 {} · 容器 {} · 端口 {} · 工作目录 {} · compose 文件 {} · web 端口 {}\n",
                     o.project,
                     o.containers.join("、"),
                     o.ports
                         .iter()
                         .map(|p| p.to_string())
                         .collect::<Vec<_>>()
-                        .join("、")
+                        .join("、"),
+                    if o.working_dir.is_empty() {
+                        "读不到".to_string()
+                    } else {
+                        crate::redact::mask_home(&o.working_dir)
+                    },
+                    if o.config_files.is_empty() {
+                        "读不到".to_string()
+                    } else {
+                        crate::redact::mask_home(&o.config_files)
+                    },
+                    if o.web_port > 0 {
+                        o.web_port.to_string()
+                    } else {
+                        "读不到".into()
+                    }
                 ));
             }
         }
@@ -1424,7 +2057,7 @@ pub fn error_fingerprint(msg: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-const AUTO_SYSTEM_PROMPT: &str = "\
+pub const AUTO_SYSTEM_PROMPT: &str = "\
 你是 Hunter 启动器里的安装诊断员。启动器正在**全自动**地帮用户装 Hunter（docker compose 起的一套服务），某一步失败了。
 
 你的职责只有一件：看证据，挑动作。规则：
@@ -1432,7 +2065,7 @@ const AUTO_SYSTEM_PROMPT: &str = "\
 2. 你不能写命令、不能让用户去敲命令。想做事只有一条路：调用给你的工具。工具表之外的一律会被启动器拒绝并记进审计日志。
 3. 证据里写「读不到」的就是真的读不到 —— 不要当成 0，也不要假设一个值。**证据里没有的事实一个字都不要写**。
 4. 端口被占时，占用者是谁已经写在证据里了（进程名 / 容器名 / compose 项目名）。不要猜。
-5. 用户电脑上可能已经有别的 Hunter（别的 compose 项目）。**绝对不要提议停掉、删掉、改动它们** —— 正确做法永远是给新安装换一组空闲端口，两套并存。
+5. 用户电脑上可能已经有别的 Hunter（别的 compose 项目）。**绝对不要提议停掉、删掉、改动它们** —— 正确做法永远是给新安装换一组空闲端口，两套并存。工具表里的 reuse_existing_hunter（改为只读地管理已有的那一套）**只有在用户自己明确要求过的时候**才考虑；你不要主动提它。
 6. 不要提议删除用户的文件、删数据卷、清理镜像、改代理 / DNS / hosts / 防火墙、用 sudo。这些动作在工具表里根本不存在，提了也只会被拒绝、白花一轮。
 7. 挑最少的动作。能一步解决的不要挑三步。
 
@@ -1565,10 +2198,13 @@ mod tests {
     fn 端口冲突走规则层且只换自己的端口() {
         let o = orch(Mode::Auto);
         let mut ev = ev_empty();
-        ev.others = vec![crate::ports::OtherInstall {
+        ev.others = vec![crate::takeover::Candidate {
             project: "hunter-fresh".into(),
             containers: vec!["hunter-fresh-api-1".into()],
             ports: vec![8100],
+            working_dir: "/home/u/hunter-fresh".into(),
+            config_files: "/home/u/hunter-fresh/docker-compose.yml".into(),
+            web_port: 3100,
         }];
         let e = AppError::new(Code::PortConflict, "Bind for 0.0.0.0:8100 failed");
         let (calls, why) = o
@@ -1757,14 +2393,27 @@ mod tests {
     fn 证据里带着占用者与其他安装() {
         let mut ev = ev_empty();
         ev.port_lines = vec!["api 8100 被占用 · Docker 容器 hunter-fresh-api-1（compose 项目 hunter-fresh · 0.0.0.0:8100->8000/tcp）".into()];
-        ev.others = vec![crate::ports::OtherInstall {
+        ev.others = vec![crate::takeover::Candidate {
             project: "hunter-fresh".into(),
             containers: vec!["hunter-fresh-api-1".into()],
             ports: vec![8100],
+            working_dir: "/home/u/hunter-fresh".into(),
+            config_files: "/home/u/hunter-fresh/docker-compose.yml".into(),
+            web_port: 3100,
         }];
         let p = ev.to_prompt();
         assert!(p.contains("hunter-fresh"), "{p}");
-        assert!(p.contains("不许动它们"), "{p}");
+        // **工作目录也要在证据里**（I7 实测）：`reuse_existing_hunter` 的计划里会写它，
+        // 证据里没有的话复核员会判「凭空编造」并否决 —— 而且它判得对
+        assert!(p.contains("工作目录"), "{p}");
+        assert!(
+            p.contains("hunter-fresh") && p.contains("compose 文件"),
+            "{p}"
+        );
+        assert!(p.contains("不要提议停掉、删掉、改动它们"), "{p}");
+        // 例外也要写明 —— 不写的话复核员会把「用户亲手同意的接管」也一并否决（I7 实测）
+        assert!(p.contains("reuse_existing_hunter"), "{p}");
+        assert!(p.contains("用户亲自点过同意"), "{p}");
         assert!(p.contains("8100"), "{p}");
     }
 
@@ -1773,5 +2422,135 @@ mod tests {
         for must in ["绝对不要提议停掉", "不要提议删除用户的文件", "sudo"] {
             assert!(AUTO_SYSTEM_PROMPT.contains(must), "提示词里缺：{must}");
         }
+    }
+
+    // ── I7 ────────────────────────────────────────────────────────────────
+
+    /// 授权页勾过的**只有 `install_runtime` 这一个**。
+    /// `reuse_existing_hunter` 动的是用户自己装的那一套，没有「一次授权、以后不问」的道理。
+    #[test]
+    fn 提前批过的只有装运行时那一个() {
+        let o = orch(Mode::Auto);
+        let mut cfg = LauncherConfig::load();
+        let old = cfg.assist.allow_install_runtime;
+        cfg.assist.allow_install_runtime = true;
+        cfg.save().unwrap();
+        assert!(o.pre_authorized(&Call::new("install_runtime")));
+        assert!(
+            !o.pre_authorized(&Call::new("reuse_existing_hunter")),
+            "动用户已有的那一套，永远要当场问"
+        );
+        assert!(!o.pre_authorized(&Call::new("compose_down_own")));
+        // 取消勾选之后连它也要问
+        cfg.assist.allow_install_runtime = false;
+        cfg.save().unwrap();
+        assert!(!o.pre_authorized(&Call::new("install_runtime")));
+        cfg.assist.allow_install_runtime = old;
+        cfg.save().unwrap();
+    }
+
+    /// 复核只对含 `Sensitive` 的计划触发；`Safe` 的计划一个 token 都不该花。
+    #[test]
+    fn 只有_sensitive_计划才触发复核() {
+        assert!(!super::super::reviewer::needs_review(&[
+            Call::new("remap_ports"),
+            Call::new("compose_down_own"),
+        ]));
+        assert!(super::super::reviewer::needs_review(&[Call::new(
+            "install_runtime"
+        )]));
+    }
+
+    /// 没 key 时复核**不是默认放行**，而是「复核做不成」。
+    #[test]
+    fn 没_key_时复核不默认放行() {
+        let mut o = orch(Mode::Auto);
+        let ev = ev_empty();
+        let v = o.review(0, &[Call::new("install_runtime")], "要装一套", &ev);
+        assert!(!v.approve, "没 key 就放行等于这道门不存在");
+        assert!(v.degraded.is_some(), "要说清为什么没复核成");
+        assert_eq!(v.tokens, 0);
+    }
+
+    /// `off` 档下不问模型，复核也不做 —— 但同样**不默认放行**。
+    #[test]
+    fn off_档下复核也不默认放行() {
+        let mut o = orch(Mode::Off);
+        let ev = ev_empty();
+        let v = o.review(0, &[Call::new("install_runtime")], "x", &ev);
+        assert!(!v.approve);
+        assert!(
+            v.degraded.as_deref().unwrap_or("").contains("关着"),
+            "{v:?}"
+        );
+    }
+
+    /// 动作表里 I7 新增的那几条都在，级别也对。
+    #[test]
+    fn i7_的动作在表里且级别正确() {
+        use super::super::guard::Level;
+        for (id, lv) in [
+            ("install_runtime", Level::Sensitive),
+            ("reuse_existing_hunter", Level::Sensitive),
+            ("start_builtin_runtime", Level::Safe),
+            ("uninstall_builtin_runtime", Level::Safe),
+        ] {
+            let sp = actions::spec(id).unwrap_or_else(|| panic!("{id} 不在动作表里"));
+            assert_eq!(sp.level, lv, "{id} 的级别不对");
+        }
+    }
+
+    /// 「没有 Docker」这一条现在**先硬找一遍**，找不到才谈装 ——
+    /// I5 场景 1 那 8,632 token 就花在「把这一步交给模型」上（待办池 P1-23）。
+    #[test]
+    fn 找不到_docker_时规则层自己先硬找一遍() {
+        let o = orch(Mode::Auto);
+        let e = AppError::new(Code::DockerMissing, "找不到 docker");
+        let ev = ev_empty();
+        // 这台机器上有没有 docker 不一定，所以两种结果都接受 ——
+        // 唯一不接受的是「规则层什么都不给、直接把它甩给模型」
+        match o.rule_plan(Step::Docker, &e, &ev) {
+            Some((calls, why)) => {
+                let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+                assert!(
+                    ids.contains(&"set_docker_path")
+                        || ids.contains(&"install_runtime")
+                        || ids.contains(&"start_runtime")
+                        || ids.contains(&"start_builtin_runtime"),
+                    "{ids:?}"
+                );
+                assert!(!why.is_empty());
+                for c in &calls {
+                    assert!(actions::spec(&c.id).is_some(), "表外动作 {}", c.id);
+                }
+            }
+            None => {
+                // 只有在「这个平台装不了内置运行时、也没有可点亮的运行时」时才允许
+                assert!(
+                    !cfg!(target_os = "macos") || crate::runtime::builtin::supported().is_err(),
+                    "macOS 上应该给得出办法"
+                );
+            }
+        }
+    }
+
+    /// 「直接用它」那张卡片**不阻塞**：它的 value 带 `takeover:` 前缀，
+    /// 走的是另一条通路，不经过那个会挂住的 condvar。
+    #[test]
+    fn 接管请求不走阻塞通道() {
+        let o = orch(Mode::Auto);
+        let h = o.handle();
+        // 没有任何正在等的提问，普通回答返回 false
+        assert!(!h.answer("yes"));
+        // 接管请求照样收得下 —— 因为它根本不需要有人在等
+        assert!(h.answer(&format!("{TAKEOVER_PREFIX}hunter-community")));
+        assert_eq!(
+            o.takeover.lock().unwrap().clone(),
+            Some("hunter-community".to_string())
+        );
+        // 空项目名不收
+        assert!(!h.answer(TAKEOVER_PREFIX));
+        // 「和它并存」也收得下（它只是把话说死，什么都不改）
+        assert!(h.answer("coexist"));
     }
 }

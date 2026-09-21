@@ -28,6 +28,7 @@ pub mod auto;
 pub mod events;
 pub mod guard;
 pub mod probe;
+pub mod reviewer;
 pub mod rules;
 
 use std::sync::Mutex;

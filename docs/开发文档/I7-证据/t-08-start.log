@@ -1,0 +1,12 @@
+
+启动被接管的那一套
+──────────────────
+  要启动「hunter-community」吗？
+
+  已启动「hunter-community」。它的数据卷一个都没动。
+hunter-community-opencode-1 Up 12 seconds (healthy)
+hunter-community-web-1 Up 22 seconds (healthy)
+hunter-community-api-1 Up 22 seconds (healthy)
+hunter-community-redis-1 Up 28 seconds (healthy)
+hunter-community-postgres-1 Up 29 seconds (healthy)
+hunter-community-llm-shim-1 Up 29 seconds (healthy)

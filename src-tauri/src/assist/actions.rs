@@ -256,6 +256,39 @@ pub const ACTIONS: &[Spec] = &[
         desc: "在 ~/.hunter/docker-config/ 里生成一份去掉 credsStore / credHelpers / auths 的配置，之后所有 docker 子进程用 DOCKER_CONFIG 指过去。**用户的 ~/.docker/config.json 一个字节都不改**（守卫会拦）。",
         params: &[],
     },
+    // ── I7 动作表（设计文档 §五的最后两条） ─────────────────────────────
+    Spec {
+        id: "install_runtime",
+        level: Level::Sensitive,
+        title: "装一套容器运行时",
+        why: "这台机器上没有 Docker，没有它 Hunter 的六个服务一个都起不来",
+        desc: "在 ~/.hunter/runtime 里装一套完全用户态的容器运行时（Colima + Lima + docker 客户端 + compose 插件），               全部文件按写死的 sha256 校验，不需要管理员密码、不改系统任何地方、可一键卸载。               本机已有 OrbStack / Docker Desktop 在跑时不会执行（会直接用已有的）。没有参数。",
+        params: &[],
+    },
+    Spec {
+        id: "start_builtin_runtime",
+        level: Level::Safe,
+        title: "启动内置运行时的虚拟机",
+        why: "内置运行时装好了，但它的虚拟机没在跑",
+        desc: "对已经装好的内置运行时执行 colima start（profile 固定为 hunter），               并把 DOCKER_HOST 指到它的 socket。没有参数。",
+        params: &[],
+    },
+    Spec {
+        id: "uninstall_builtin_runtime",
+        level: Level::Safe,
+        title: "卸载内置运行时",
+        why: "用户不想要这套内置运行时了，或者要重装一遍",
+        desc: "删掉 colima 的 hunter profile（连同它的虚拟机磁盘）并清空 ~/.hunter/runtime。               只动 ~/.hunter 里的东西，不碰本机别的 Docker。没有参数。",
+        params: &[],
+    },
+    Spec {
+        id: "reuse_existing_hunter",
+        level: Level::Sensitive,
+        title: "改为管理你已经装好的那一套 Hunter",
+        why: "这台机器上已经有一套在跑，再装一套要多占几个 G 和五个端口",
+        desc: "把本机上已有的那个 compose 项目记进设置，启动器改为管理它（看状态、看日志、打开网页），               不再另装一套。**不会**改它的配置、不会删它的卷；停止 / 重启这类操作以后每一次都要用户再确认。               参数 project 必须是侦察员报出来的那几个项目名之一。",
+        params: &[("project", "已有的那个 compose 项目名")],
+    },
     Spec {
         id: "export_feedback_bundle",
         level: Level::Safe,
@@ -518,6 +551,94 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
                 crate::redact::mask_home(&crate::dockercfg::isolated_dir().to_string_lossy())
             ))
         }
+        // ── I7 ──────────────────────────────────────────────────────────
+        "install_runtime" => {
+            let route = crate::config::LauncherConfig::load().runtime.route();
+            match route {
+                crate::config::InstallRoute::Builtin => {
+                    crate::runtime::builtin::supported()
+                        .map_err(|e| AppError::new(Code::NotImplemented, e))?;
+                    let items = crate::runtime::manifest::for_host();
+                    let (cpu, mem, disk) = crate::runtime::builtin::vm_params();
+                    p.summary = Some(format!(
+                        "在 {} 里装 {} 个组件（合计 {}，每个都按写死的 sha256 校验），                         再起一台 {cpu} 核 / {mem} GiB 内存 / {disk} GiB 磁盘的虚拟机。                         不要管理员密码，不动系统任何地方，设置里可一键卸载。",
+                        crate::redact::mask_home(
+                            &crate::paths::runtime_dir().to_string_lossy()
+                        ),
+                        items.len(),
+                        crate::assist::probe::human_bytes(
+                            crate::runtime::manifest::total_bytes(&items)
+                        ),
+                    ));
+                    p.title = "装一套内置的容器运行时（装在 Hunter 自己的文件夹里）".into();
+                }
+                crate::config::InstallRoute::OrbStack => {
+                    let url = crate::runtime::orbstack::download_url()?;
+                    p.summary = Some(format!(
+                        "从官方地址（{}）下 OrbStack 安装镜像，验苹果签名与公证（Team ID {}）之后装到 {}。{}",
+                        crate::http::host_of(url),
+                        crate::runtime::orbstack::TEAM_ID,
+                        crate::redact::mask_home(
+                            &crate::runtime::orbstack::install_dir().to_string_lossy()
+                        ),
+                        crate::runtime::orbstack::FIRST_RUN_NOTE
+                    ));
+                    p.title = "装 OrbStack（官方安装包）".into();
+                }
+            }
+        }
+        "start_builtin_runtime" => {
+            let argv = crate::runtime::builtin::start_argv()?;
+            p.argv = argv;
+        }
+        "uninstall_builtin_runtime" => {
+            p.summary = Some(format!(
+                "删掉 colima 的 {} profile 与 {}（都是启动器自己生成的）",
+                crate::runtime::builtin::PROFILE,
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
+            ));
+        }
+        "reuse_existing_hunter" => {
+            let want = call
+                .args
+                .get("project")
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            // **必须是侦察员真的看到过的那几个之一**。模型编一个项目名出来，
+            // 到这里就断了（I5 那条「参数真实性」原则的又一处应用）
+            let cands = crate::takeover::candidates();
+            let c = cands.iter().find(|c| c.project == want).ok_or_else(|| {
+                AppError::new(
+                    Code::NotImplemented,
+                    if cands.is_empty() {
+                        "这台机器上并没有别的 Hunter 安装，没有可以接管的东西。".to_string()
+                    } else {
+                        format!(
+                            "「{}」不在本机已有的 Hunter 里（看到的是：{}）。",
+                            safe_id(&want),
+                            cands
+                                .iter()
+                                .map(|c| c.project.as_str())
+                                .collect::<Vec<_>>()
+                                .join("、")
+                        )
+                    },
+                )
+            })?;
+            p.summary = Some(format!(
+                "把「{}」记进 launcher.toml，启动器改为管理它{}。不装新的一套，                 不改它的配置，任何情况下都不删它的卷。",
+                c.project,
+                if c.manageable() {
+                    format!(
+                        "（工作目录 {}）",
+                        crate::redact::mask_home(&c.working_dir)
+                    )
+                } else {
+                    "（读不到它的 compose 文件，所以只能看状态与日志）".to_string()
+                }
+            ));
+            p.title = format!("直接用你已经装好的「{}」", c.project);
+        }
         "export_feedback_bundle" => {
             p.summary = Some("把日志与配置脱敏后打包到 ~/.hunter/diagnostics/".into())
         }
@@ -640,15 +761,10 @@ pub fn execute_as(
                 .iter()
                 .filter_map(|s| s.port)
                 .collect();
-            let (ports, changes) =
-                crate::config::resolve_ports(&cfg.hunter.ports, &own, cfg.hunter.web_local_only())?;
+            let (ports, changes) = crate::config::resolve_ports(&cfg.hunter.ports, &own)?;
             cfg.hunter.ports = ports.clone();
             cfg.save()?;
-            crate::config::write_override(
-                &ports,
-                &cfg.hunter.base_prefix,
-                cfg.hunter.web_local_only(),
-            )?;
+            crate::config::write_override(&ports, &cfg.hunter.base_prefix)?;
             if changes.is_empty() {
                 "5 个端口都是空的，没有需要改的。".to_string()
             } else {
@@ -732,6 +848,31 @@ pub fn execute_as(
             cfg.save()?;
             format!("健康检查的等待上限改成 {n} 秒，写进了 launcher.toml。")
         }
+        // ── I7 ──────────────────────────────────────────────────────────
+        "install_runtime" => install_runtime_now()?,
+        "start_builtin_runtime" => {
+            let mut noop = |_: &str| {};
+            let mut nb = |_: u64, _: u64| {};
+            let no_cancel = || false;
+            let mut pr = crate::runtime::builtin::Progress {
+                say: &mut noop,
+                bytes: &mut nb,
+                cancel: &no_cancel,
+            };
+            crate::runtime::builtin::start(&mut pr)?
+        }
+        "uninstall_builtin_runtime" => crate::runtime::builtin::uninstall()?,
+        "reuse_existing_hunter" => {
+            let want = call.args.get("project").map(|s| s.trim()).unwrap_or("");
+            let cands = crate::takeover::candidates();
+            let c = cands.iter().find(|c| c.project == want).ok_or_else(|| {
+                AppError::new(
+                    Code::NotImplemented,
+                    format!("「{}」不在本机已有的 Hunter 里。", safe_id(want)),
+                )
+            })?;
+            crate::takeover::adopt(c)?
+        }
         "export_feedback_bundle" => {
             let path = crate::feedback::export_bundle()?;
             // 这份包要能发出去，路径给全（它本来就在用户自己机器上）
@@ -757,6 +898,72 @@ pub fn execute_as(
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").chars().take(200).collect()
+}
+
+/// `install_runtime` 的真身（I7）。
+///
+/// 这个入口是给**规则层 / 模型 / 命令行**共用的「没有事件总线」版本：
+/// 进度只写日志。界面上那条带实时下载字节数的路走的是
+/// [`crate::assist::auto::Orchestrator::install_runtime_with_events`]。
+fn install_runtime_now() -> AppResult<String> {
+    // **先问一遍本机已有的**。已经有在跑的运行时就一个字节都不下
+    match crate::runtime::builtin::decide() {
+        crate::runtime::builtin::Decision::AlreadyRunning(who) => {
+            return Ok(format!("这台机器上的 {who} 正在运行，不需要再装一套。"))
+        }
+        crate::runtime::builtin::Decision::StartExisting(app) => {
+            return Err(AppError::new(
+                Code::NotImplemented,
+                format!(
+                    "{} 已经装在这台机器上了，只是没启动 —— 该做的是把它点起来（start_runtime），不是再装一套。",
+                    runtime_label(&app)
+                ),
+            ))
+        }
+        crate::runtime::builtin::Decision::Unsupported(why) => {
+            return Err(AppError::new(Code::NotImplemented, why))
+        }
+        crate::runtime::builtin::Decision::StartBuiltin
+        | crate::runtime::builtin::Decision::Install => {}
+    }
+    let route = crate::config::LauncherConfig::load().runtime.route();
+    if route == crate::config::InstallRoute::OrbStack {
+        let mut say = |s: &str| crate::linfo!("装 OrbStack：{s}");
+        let no_cancel = || false;
+        return crate::runtime::orbstack::install(&mut say, &no_cancel);
+    }
+    let mut say = |s: &str| crate::linfo!("装内置运行时：{s}");
+    let mut nb = |got: u64, total: u64| {
+        if total > 0 && got % (16 * 1024 * 1024) < 256 * 1024 {
+            crate::linfo!(
+                "装内置运行时：已下 {} / {}",
+                crate::assist::probe::human_bytes(got),
+                crate::assist::probe::human_bytes(total)
+            );
+        }
+    };
+    let no_cancel = || false;
+    let mut pr = crate::runtime::builtin::Progress {
+        say: &mut say,
+        bytes: &mut nb,
+        cancel: &no_cancel,
+    };
+    if !crate::runtime::builtin::is_installed() {
+        crate::runtime::builtin::install(&mut pr)?;
+    }
+    let started = crate::runtime::builtin::start(&mut pr)?;
+    // 装好之后把 docker 路径钉进设置：下次开启动器就不用再探一遍
+    if let Some(d) = crate::runtime::builtin::docker_bin() {
+        let mut cfg = crate::config::LauncherConfig::load();
+        cfg.runtime.docker_path = d.to_string_lossy().into_owned();
+        cfg.save()?;
+        which::invalidate();
+        crate::runtime::env::invalidate();
+    }
+    Ok(format!(
+        "内置运行时装好并起来了。{started}
+全部文件都在 ~/.hunter/runtime 里，         没有改系统任何地方；不想要了在设置页点「卸载内置运行时」就能清干净。"
+    ))
 }
 
 /// 轮询 `docker version` 直到服务端起来。**不是 sleep 一个固定时长然后宣布成功**。

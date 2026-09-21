@@ -161,6 +161,15 @@ impl Policy {
     /// （I4 测试场景 1）。真机上没人会去设它们。
     pub fn current() -> Self {
         let mut p = crate::config::LauncherConfig::load().runtime.to_policy();
+        // 内置运行时（I7）装好之后，它的 `bin` 排在**所有清单最前面**。
+        //
+        // 为什么排最前：用户机器上可能同时存在一个「装了但没起来」的 OrbStack，
+        // 它的 docker 客户端连不上任何 daemon。既然是我们把内置运行时装起来的，
+        // 就该用我们这一份 —— 而且它的 `DOCKER_HOST` 指向的正是我们起的那台虚拟机。
+        let bi = crate::paths::runtime_bin();
+        if bi.is_dir() {
+            p.extra_dirs.insert(0, bi.to_string_lossy().into_owned());
+        }
         if let Ok(v) = std::env::var("HUNTER_DOCKER_PATH") {
             if !v.is_empty() {
                 p.docker_path = v;

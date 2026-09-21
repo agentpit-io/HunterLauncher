@@ -198,6 +198,11 @@ export interface ServiceStatus {
   health: Health
   /** 宿主端口；llm-shim 不发布端口时为 null（M0 §5.3 的坑 3） */
   port: number | null
+  /**
+   * 这个端口**实际**绑在哪个地址（docker 自己报的 `Publishers[].URL`，不是我们写的配置）。
+   * 读不到就是 null —— 界面显示「还没读到」，不猜（红线 1）。
+   */
+  bind: string | null
   exitCode: number | null
 }
 
@@ -234,6 +239,14 @@ export interface RuntimeStatus {
   running: boolean
   uptimeSeconds: number | null
   webUrl: string | null
+  /**
+   * 网页端口现在是不是**不止本机**能打开。
+   *
+   * 免费版只允许本机访问（用户 2026-09-21 19:05 的决定），所以新装的机器这一项恒为 false。
+   * 为 true 的唯一情形是「这台机器升级前就对局域网开放，升级时有意没动它」——
+   * 那时运行面板出一行提示 + 一个「只允许本机访问」按钮（收紧是单向的）。
+   */
+  webLanExposed: boolean
   services: ServiceStatus[]
   env: EnvRow[]
   /** 运行面板中间那个日志框 */
@@ -264,13 +277,13 @@ export interface LauncherSettings {
   modelName: string
   registryPrefix: string
   /**
-   * web 端口只允许本机访问。**默认 false** —— 也就是绑所有网卡，
-   * 同一网络里的其他设备打开 `http://<这台机器的 IP>:<端口>` 就能直接用。
+   * 网页端口现在是不是**不止本机**能打开。**只读**。
    *
-   * 这是既定设计（总控规则红线 4 把 web 明确排除在「只绑 127.0.0.1」之外），
-   * I2 只是把开关做出来，默认值没动 —— 默认该是哪一个由用户决定（待办池 P1-20）。
+   * 免费版只允许本机访问（用户 2026-09-21 19:05 的决定，待办池 P1-20 已关闭），
+   * 设置页里没有开关，只有一行说明「局域网访问为付费版功能」。
+   * 为 true 时设置页与运行面板各给一个「只允许本机访问」按钮（单向）。
    */
-  webLocalOnly: boolean
+  webLanExposed: boolean
   /** AI 诊断助手。默认开；关掉之后只用确定性规则，一个 token 也不花（I4） */
   assist: boolean
   /** I5 授权档位：auto 自动驾驶 / confirm 逐步确认 / off 关闭 */
@@ -279,6 +292,92 @@ export interface LauncherSettings {
   assistConsentedAt: string
   /** 现在实际用的 docker 路径。只读，拿不到就是 null（界面显示「—」） */
   dockerPath: string | null
+  /** I7：授权页上那一项勾 —— 没有 Docker 时允许 AI 自动装一套 */
+  allowInstallRuntime: boolean
+  /** I7：没有 Docker 时走哪条路。builtin（默认，零点击）/ orbstack（备选） */
+  installRoute: string
+  /** I7：内置运行时装了没有（只读，当场探的） */
+  builtinRuntimeInstalled: boolean
+  /** I7：内置运行时的虚拟机在跑没有（只读） */
+  builtinRuntimeRunning: boolean
+  /** I7：现在在管理哪一套别人的 Hunter。空 = 没有接管（只读） */
+  takeoverProject: string
+}
+
+// ── I7 · 内置运行时 ──────────────────────────────────────────────────────
+
+export interface BuiltinRuntimeItem {
+  component: string
+  version: string
+  file: string
+  sha256: string
+  bytes: number
+  /** 实际从哪个源下的：github / tencent-hk / cache */
+  source: string
+}
+
+export interface BuiltinRuntimeStatus {
+  /** 这个平台支持内置运行时吗 */
+  supported: boolean
+  /** 不支持的原因（支持时为空）。**界面上原样显示，不要自己改写** */
+  unsupportedReason: string
+  installed: boolean
+  running: boolean
+  profile: string
+  dir: string
+  socket: string
+  items: BuiltinRuntimeItem[]
+  installedAt: string
+  /** 清单里这台机器要下多少字节（真实值，来自写死的清单） */
+  downloadBytes: number
+}
+
+// ── I7 · 接管本机已有的那一套 Hunter ─────────────────────────────────────
+
+export interface TakeoverCandidate {
+  project: string
+  containers: string[]
+  ports: number[]
+  /** 读不到就是空 —— 那种情况只能只读监控 */
+  workingDir: string
+  configFiles: string
+  /** 猜不出来就是 0，界面显示「—」 */
+  webPort: number
+}
+
+export interface TakeoverContainerLine {
+  name: string
+  status: string
+  image: string
+  ports: string
+}
+
+export interface TakeoverState {
+  active: boolean
+  /** 有 compose 文件才管得起来；否则只能看 */
+  manageable: boolean
+  project: string
+  workingDir: string
+  since: string
+  webUrl: string
+  containers: TakeoverContainerLine[]
+  /** 读不到状态时的原因。**界面要显示它**，不能只留一片空白 */
+  note: string
+}
+
+export type TakeoverOp = 'stop' | 'start' | 'restart'
+
+// ── I7 · 一键反馈直达 ────────────────────────────────────────────────────
+
+export interface OneClickFeedback {
+  bundlePath: string
+  bundleBytes: number
+  issueUrl: string
+  issueTitle: string
+  issueBody: string
+  /** 出口闸命中的那一处；null = 干净 */
+  scanHit: string | null
+  note: string
 }
 
 // ── AI 诊断助手（I4 §三） ────────────────────────────────────────────────
@@ -509,6 +608,7 @@ export type AssistEventKind =
   | 'analyze'
   | 'action'
   | 'verify'
+  | 'review'
   | 'resolved'
   | 'needUser'
   | 'failed'

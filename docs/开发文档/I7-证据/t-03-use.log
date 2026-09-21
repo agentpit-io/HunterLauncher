@@ -1,0 +1,13 @@
+
+改为管理你已有的那一套
+──────────────────────
+  要接管：hunter-community（6 个容器，占着端口 3100、3921、5442、6479、8100）
+  接管之后启动器不会再装一套，也不会改它的配置、不会删它的卷。
+
+  ✓ 已改为管理你原有的那一套「hunter-community」。启动器不会再装一套，也不会改它的任何配置。
+[takeover]
+project = "hunter-community"
+working_dir = "/home/support/hunter-v120"
+config_files = "/home/support/hunter-v120/docker-compose.yml"
+web_port = 3100
+since = "2026-09-21 18:20:00"

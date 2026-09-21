@@ -11,6 +11,7 @@ import { AutoInstall } from './pages/AutoInstall'
 import { Start } from './pages/Start'
 import { Done } from './pages/Done'
 import { Dashboard } from './pages/Dashboard'
+import { TakeoverPanel } from './pages/TakeoverPanel'
 import { Settings } from './pages/Settings'
 import { Logs } from './pages/Logs'
 import { Feedback } from './pages/Feedback'
@@ -126,6 +127,10 @@ function QuitDialog() {
 
 function Page() {
   const { state } = useStore()
+  // I7：接管态下，运行面板换成「管理你原有的那一套」那一页。
+  // 判据来自 Rust 当场读的 `[takeover] project`，不是界面自己记的状态 ——
+  // 用户可能是在上一次运行里做的选择。
+  const takeover = useAsync(() => ipc.takeoverState(), [])
   switch (pageOf(state)) {
     case 'welcome':
       return <Welcome />
@@ -144,7 +149,7 @@ function Page() {
     case 'done':
       return <Done />
     case 'dashboard':
-      return <Dashboard />
+      return takeover.data?.active ? <TakeoverPanel /> : <Dashboard />
     case 'error':
       return <ErrorPage />
   }

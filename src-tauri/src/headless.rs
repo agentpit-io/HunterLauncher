@@ -52,6 +52,21 @@ pub struct Args {
     /// `--assist-replay <文件>`：把一份存下来的网关响应喂给动作白名单那道闸。
     /// **不发任何网络请求**，纯离线验证安全边界（见 [`cmd_assist_replay`]）。
     pub assist_replay: Option<String>,
+    /// `--review <动作id,…>`：让**复核员**（第二个模型，I7）真的审一遍这个计划。
+    ///
+    /// 为什么要一条命令行入口：复核员只在「计划里含 `Sensitive` 动作」时才触发，
+    /// 而那种现场（没有 Docker、本机已有另一套 Hunter）不是随时能造出来的。
+    /// 这条路走的是**同一个** [`crate::assist::reviewer::review`]、同一段提示词、
+    /// 同一次真实网关调用 —— 不是模拟，会花额度。
+    pub review: Option<String>,
+    /// 跟着 `--review` 用：诊断员给的那句「为什么要这么做」。
+    /// 复核员要拿它跟证据对账，所以它是判定的一半。
+    pub review_why: Option<String>,
+    /// `--takeover <子命令>`：接管本机已有的那一套 Hunter（I7）。
+    /// 子命令：`list` / `status` / `use` / `logs` / `stop` / `start` / `restart` / `release`
+    pub takeover: Option<String>,
+    /// 跟在 `--takeover use` / `--takeover logs` 后面的那个参数（项目名 / 服务名）
+    pub takeover_arg: Option<String>,
     /// `--code <E_XXX>`：告诉诊断助手「我刚才撞上的是这个错误码」。
     ///
     /// 界面版是从状态机里拿这个码的（错误页知道自己是怎么来的），命令行下
@@ -82,6 +97,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         version: false,
         ai: false,
         assist_replay: None,
+        review: None,
+        review_why: None,
+        takeover: None,
+        takeover_arg: None,
         code: None,
         auto: false,
         assist_mode: None,
@@ -148,9 +167,41 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.headless = true;
                 i += 1;
             }
+            "--review" => {
+                a.review = v.get(i + 1).cloned();
+                a.action = Some("review".into());
+                a.headless = true;
+                i += 1;
+            }
+            "--review-why" => {
+                a.review_why = v.get(i + 1).cloned();
+                i += 1;
+            }
+            "--takeover" => {
+                a.takeover = v.get(i + 1).cloned();
+                a.action = Some("takeover".into());
+                a.headless = true;
+                i += 1;
+                // 第三个词不是选项时当成参数（项目名 / 服务名）
+                if let Some(x) = v.get(i + 1) {
+                    if !x.starts_with('-') {
+                        a.takeover_arg = Some(x.clone());
+                        i += 1;
+                    }
+                }
+            }
+            "--feedback" => {
+                a.action = Some("feedback".into());
+                a.headless = true;
+            }
             "--code" => {
                 a.code = v.get(i + 1).cloned();
-                a.action = Some("diagnose".into());
+                // `--code` 只在**还没有别的子命令**时才把动作定成 diagnose：
+                // `--feedback --code E_PULL_FAILED` 里它是参数，不是子命令
+                //（I7 实测：原来它无条件覆盖，于是 --feedback 被顶掉、跑成了诊断）
+                if a.action.is_none() {
+                    a.action = Some("diagnose".into());
+                }
                 a.headless = true;
                 i += 1;
             }
@@ -196,6 +247,14 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --diagnose --ai       再问一轮 AI 诊断助手（会花你的 hunter 额度）
   hunter-launcher --diagnose --code E_PULL_FAILED  按指定错误码跑一遍规则层
   hunter-launcher --assist-replay <文件>  把一份存下来的网关响应喂给动作白名单（离线，不联网）
+  hunter-launcher --review <动作id,…>     让复核员真的审一遍这个计划（会花你的 hunter 额度）
+  hunter-launcher --takeover list         看这台机器上还有哪几套 Hunter 可以接管
+  hunter-launcher --takeover use <项目名> 改为管理它，不再装一套（要 -y）
+  hunter-launcher --takeover status       被接管那一套现在什么情况
+  hunter-launcher --takeover logs [服务]  它的日志（只读，已脱敏）
+  hunter-launcher --takeover stop|start|restart   动它（每一次都要 -y 再确认一遍）
+  hunter-launcher --takeover release      不再管理它（它原地不动）
+  hunter-launcher --feedback              生成脱敏诊断包 + 预填 issue 链接（**不发送**）
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
   hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 只下载）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
@@ -210,6 +269,7 @@ Hunter 启动器 · 命令行模式
   --pull-only         只拉镜像不起容器（网速慢时可以先预下载）
   --auto              AI 自动驾驶安装（等同界面上「授权 AI 自动安装」那一档）
   --assist-mode <档>  auto | confirm | off，不给就用设置里存的那一档
+  --review-why <话>   跟着 --review 用：诊断员给的那句「为什么要这么做」
   -y, --yes           不要任何确认，一路走完
   -h, --help          这段说明
   -V, --version       版本号
@@ -246,6 +306,9 @@ pub fn run(args: &Args) -> i32 {
         Some("restart") => cmd_simple("restart"),
         Some("down") => cmd_simple("down"),
         Some("logs") => cmd_logs(args.tag.as_deref()),
+        Some("review") => cmd_review(&st, args),
+        Some("takeover") => cmd_takeover(args),
+        Some("feedback") => cmd_feedback(args),
         Some("assist-replay") => match args.assist_replay.as_deref() {
             Some(p) => cmd_assist_replay(p),
             None => Err(AppError::new(
@@ -322,13 +385,25 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         None => cfg.assist.mode(),
     };
     println!("  授权档位：{}（{}）", mode.as_str(), mode.cn());
-    if mode == Mode::Confirm {
-        // 命令行下没有人能点确认。不说清楚的话，用户会看着它在第一个改动动作上
-        // 「莫名其妙地失败」——其实是它在等一个永远不会来的回答
+    // I7 · 待办池 P1-25 的结论：**stdin 是终端就真的问，不是终端才按「不」处理。**
+    //
+    // I5 那一版的做法是「命令行下一律按不」，并在这里打一句提醒。那条结论对了一半：
+    // `--auto` 的典型用法（CI、远程脚本、cron）确实没人能答，阻塞等下去就是把进程挂死。
+    // 但人**坐在终端前面**手敲这条命令的情况同样常见 —— 那时候让他答一句
+    // 「y / n」比让他重跑一遍换成 `--assist-mode auto` 讲道理。
+    //
+    // 判据用 `stdin` 是不是终端：管道、重定向、nohup、CI 全都不是，行为与 I5 一致；
+    // 人在终端里敲的就是，于是「逐步确认」在命令行下第一次真的能用了。
+    let stdin_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    if mode == Mode::Confirm && !stdin_is_tty {
+        // 不说清楚的话，用户会看着它在第一个改动动作上「莫名其妙地失败」——
+        // 其实是它在等一个永远不会来的回答
         println!(
-            "  ⚠ 「逐步确认」档在命令行下等不到回答：凡是要你点头的动作都会按「不」处理。\n\
-               要全自动请用 --assist-mode auto。"
+            "  ⚠ 「逐步确认」档在这里等不到回答（stdin 不是终端，多半是 CI 或管道）：\n\
+               凡是要你点头的动作都会按「不」处理。要全自动请用 --assist-mode auto。"
         );
+    } else if stdin_is_tty {
+        println!("  要你拍板的地方会在这里问你（输入 y 或 n 回车）。");
     }
     println!(
         "  预算：单问题 {} 回合 · 整次 {} 回合 · {} token · 单次模型 45 秒",
@@ -344,9 +419,35 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
     };
     let bus = std::sync::Arc::new(Bus::new(Box::new(Stdout::new()), true));
     let mut orch = Orchestrator::new(bus, mode, Some(key), st.cancel.clone());
-    // 命令行下没有人能点「需要你」卡片上的按钮 —— 如实告诉总指挥，
-    // 别让它在那儿等一个永远不会来的回答
-    orch.set_interactive(false);
+    if stdin_is_tty {
+        // 人就在终端前面 —— 把问题打出来、读一行回答（I7 · P1-25）
+        orch.set_answer_reader(Box::new(|question, choices| {
+            use std::io::Write;
+            println!();
+            println!("？ {question}");
+            for c in choices {
+                println!("    {} {}", if c.primary { "›" } else { " " }, c.label);
+            }
+            print!("  你的选择（y = 第一项 / n = 第二项）：");
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                // 读不到（stdin 被关了）就按「不」——**不猜他想要什么**
+                println!("  （读不到回答，按「不」处理）");
+                return Some("no".into());
+            }
+            let ans = match line.trim().to_ascii_lowercase().as_str() {
+                "y" | "yes" | "是" | "好" => "yes",
+                _ => "no",
+            };
+            println!("  已记下：{}", if ans == "yes" { "是" } else { "不" });
+            Some(ans.to_string())
+        }));
+    } else {
+        // 没有人能点「需要你」卡片上的按钮 —— 如实告诉总指挥，
+        // 别让它在那儿等一个永远不会来的回答
+        orch.set_interactive(false);
+    }
     let out = orch.run(st, &opts);
 
     println!();
@@ -362,6 +463,16 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         out.tokens,
         out.elapsed_ms / 1000
     );
+    if let Some(p) = &out.takeover {
+        println!(
+            "\n✓ 没有再装一套 —— 按你的选择，启动器现在管理你已有的「{p}」。{}",
+            match &out.url {
+                Some(u) => format!("打开 {u}"),
+                None => "（读不到它的 web 端口）".to_string(),
+            }
+        );
+        return Ok(());
+    }
     if out.ok {
         println!("\n✓ 装好了。打开 {}", out.url.unwrap_or_default());
         Ok(())
@@ -987,6 +1098,312 @@ fn cmd_assist(st: &AppState, args: &Args) -> AppResult<()> {
 /// 为什么不做成「把网关地址改成本地假服务」：那意味着代码里要留一个能把
 /// `Authorization: Bearer <用户的 key>` 指到任意地址的开关，等于给自己开一道
 /// 泄漏 key 的门。读一个本地文件不碰凭据，也不碰网络。
+/// `--review`：让复核员真的审一遍一个计划（I7）。
+///
+/// 计划里的动作**必须真的在动作表里、参数也必须过校验** —— 这条路不给模型
+/// 任何绕过 [`crate::assist::actions::plan`] 的机会，它只是把「已经过了第一道门的
+/// 计划」送到复核员面前。
+fn cmd_review(st: &AppState, args: &Args) -> AppResult<()> {
+    use crate::assist::{actions::Call, reviewer};
+
+    title("复核员 · 真实调用");
+    let ids: Vec<String> = args
+        .review
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return Err(AppError::new(
+            Code::NotImplemented,
+            "--review 要跟一串动作 id，例如 --review install_runtime".to_string(),
+        ));
+    }
+    // 参数从 `id:键=值` 里取（`--review 'reuse_existing_hunter:project=hunter-community'`）
+    let mut calls = Vec::new();
+    for raw in &ids {
+        let (id, rest) = match raw.split_once(':') {
+            Some((a, b)) => (a, Some(b)),
+            None => (raw.as_str(), None),
+        };
+        let mut c = Call::new(id);
+        if let Some(r) = rest {
+            for kv in r.split(';') {
+                if let Some((k, v)) = kv.split_once('=') {
+                    c.args.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+        }
+        calls.push(c);
+    }
+    println!("  计划里 {} 个动作：", calls.len());
+    for c in &calls {
+        match crate::assist::actions::plan(c) {
+            Ok(p) => println!("    · {}（{}）", p.title, p.level.cn()),
+            Err(e) => println!(
+                "    · {}：**这一条连动作表那一关都没过** —— {}",
+                c.id, e.msg
+            ),
+        }
+    }
+    println!(
+        "  要不要复核：{}",
+        if reviewer::needs_review(&calls) {
+            "要（计划里含「需要你同意」级别的动作）"
+        } else {
+            "不要（全是只读或只动 Hunter 自己的东西）"
+        }
+    );
+
+    let key = read_key(args)?;
+    let why = args
+        .review_why
+        .clone()
+        .unwrap_or_else(|| "（命令行没给理由）".to_string());
+    // 证据用**这台机器上真实采到的**那一份，不是编的。
+    //
+    // 特别注意**不要往里塞一个假的错误码**：第一版这里写死了
+    // `E_DOCKER_MISSING` + 「这台机器上找不到 docker」，而测试机上 docker 好好跑着 ——
+    // 于是复核员（正确地）判定「证据自相矛盾」。证据就该是现场的样子，
+    // 「这一步是因为什么失败的」交给 `--review-why` 说。
+    let report = crate::assist::probe::collect(None, None, None);
+    let survey = crate::ports::Survey::collect();
+    let cfg = st.config();
+    let mut port_lines = Vec::new();
+    for (name, port) in cfg.hunter.ports.as_pairs() {
+        port_lines.push(format!(
+            "{name} {}",
+            survey.verdict(port, &[crate::config::PROJECT]).human()
+        ));
+    }
+    let ev = crate::assist::auto::Evidence {
+        report,
+        others: crate::takeover::candidates(),
+        stale: crate::compose::stale_own_containers(),
+        port_lines,
+        cred_helpers: crate::dockercfg::helper_status(),
+        sub_env: crate::runtime::env::current().one_line(),
+        notes: Vec::new(),
+    };
+
+    println!("\n  诊断员给的理由：{why}");
+    println!("  正在问复核员（独立提示词、不带诊断员的对话历史、不给工具表）…");
+    let t = Instant::now();
+    let v = reviewer::review(&calls, &why, &ev.to_prompt(), &key);
+    println!();
+    println!("  结论：{}", if v.approve { "通过" } else { "否决" });
+    for r in &v.reasons {
+        println!("    · {r}");
+    }
+    println!(
+        "  token {} · 用时 {} ms（墙上时钟 {} ms）",
+        v.tokens,
+        v.elapsed_ms,
+        t.elapsed().as_millis()
+    );
+    if let Some(d) = &v.degraded {
+        println!("  降级：{d}");
+    }
+    println!();
+    println!("  **复核通过不等于可以执行**：守卫与你的确认这两道照样要过。");
+    Ok(())
+}
+
+/// `--takeover <子命令>`（I7）。界面上那一套的命令行等价物。
+///
+/// 改动类的三个（stop / start / restart）与 `use` **都要 `-y`** ——
+/// 那是「二次确认」在命令行下的形态。不给就打印那句确认话并退出，不执行。
+fn cmd_takeover(args: &Args) -> AppResult<()> {
+    use crate::takeover;
+    let sub = args.takeover.as_deref().unwrap_or("status");
+    match sub {
+        "list" => {
+            title("本机上可以接管的 Hunter");
+            let cands = takeover::candidates();
+            if cands.is_empty() {
+                println!("  没有找到别的 Hunter 安装。");
+                return Ok(());
+            }
+            for c in &cands {
+                println!("  · {}", c.one_line());
+                println!(
+                    "      工作目录：{}",
+                    if c.working_dir.is_empty() {
+                        "读不到（接管之后只能看状态与日志）".to_string()
+                    } else {
+                        crate::redact::mask_home(&c.working_dir)
+                    }
+                );
+                println!(
+                    "      web 端口：{}",
+                    if c.web_port > 0 {
+                        c.web_port.to_string()
+                    } else {
+                        "读不到".into()
+                    }
+                );
+            }
+            println!("\n  默认做法是**并存**（新装的换一组空闲端口）。要改成管理它：--takeover use <项目名> -y");
+            Ok(())
+        }
+        "status" => {
+            title("被接管的那一套");
+            let st = takeover::state();
+            if !st.active {
+                println!("  现在没有在管理别的 Hunter（默认就是并存）。");
+                return Ok(());
+            }
+            println!("  compose 项目：{}", st.project);
+            println!(
+                "  工作目录：{}",
+                if st.working_dir.is_empty() {
+                    "读不到"
+                } else {
+                    &st.working_dir
+                }
+            );
+            println!("  接管时间：{}", st.since);
+            println!(
+                "  网页地址：{}",
+                if st.web_url.is_empty() {
+                    "读不到"
+                } else {
+                    &st.web_url
+                }
+            );
+            println!(
+                "  能不能停 / 重启：{}",
+                if st.manageable {
+                    "能"
+                } else {
+                    "不能（读不到它的 compose 文件）"
+                }
+            );
+            if !st.note.is_empty() {
+                println!("  说明：{}", st.note);
+            }
+            println!("  容器：");
+            for c in &st.containers {
+                println!(
+                    "    {} · {} · {} · {}",
+                    c.name,
+                    c.status,
+                    c.image,
+                    if c.ports.is_empty() { "—" } else { &c.ports }
+                );
+            }
+            Ok(())
+        }
+        "use" => {
+            let want = args.takeover_arg.clone().unwrap_or_default();
+            if want.is_empty() {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    "--takeover use 要跟一个项目名".to_string(),
+                ));
+            }
+            title("改为管理你已有的那一套");
+            let cands = takeover::candidates();
+            let Some(c) = cands.iter().find(|c| c.project == want) else {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    format!("「{want}」不在本机已有的 Hunter 里。先跑 --takeover list 看看。"),
+                ));
+            };
+            println!("  要接管：{}", c.one_line());
+            println!("  接管之后启动器不会再装一套，也不会改它的配置、不会删它的卷。");
+            if !args.yes {
+                println!("\n  这是「需要你同意」级别的动作。确认就加 -y 再跑一次。");
+                return Ok(());
+            }
+            let out = crate::assist::actions::execute_as(
+                &crate::assist::actions::Call::with("reuse_existing_hunter", "project", &want),
+                crate::assist::guard::Mode::Confirm,
+                true,
+                crate::assist::guard::Proposer::User,
+            )?;
+            println!("\n  ✓ {}", out.text);
+            Ok(())
+        }
+        "release" => {
+            title("不再管理它");
+            println!("  {}", takeover::release()?);
+            Ok(())
+        }
+        "logs" => {
+            let n = 200;
+            let lines = takeover::logs(args.takeover_arg.as_deref(), n)?;
+            title(&format!("它的日志（最近 {n} 行，已脱敏）"));
+            for l in &lines {
+                println!("  {l}");
+            }
+            if lines.is_empty() {
+                println!("  （没有输出）");
+            }
+            Ok(())
+        }
+        op @ ("stop" | "start" | "restart") => {
+            let o = takeover::Op::parse(op).expect("上面 match 过了");
+            let cfg = crate::config::LauncherConfig::load();
+            title(&format!("{}被接管的那一套", o.cn()));
+            if !cfg.takeover.active() {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    "现在没有在管理别的 Hunter。".to_string(),
+                ));
+            }
+            println!("  {}", o.confirm_text(&cfg.takeover.project));
+            if !args.yes {
+                println!(
+                    "\n  **没有执行**。动的是你自己装的那一套，每一次都要再确认一遍：加 -y 再跑。"
+                );
+                return Ok(());
+            }
+            println!("\n  {}", takeover::run(o, true)?);
+            Ok(())
+        }
+        other => Err(AppError::new(
+            Code::NotImplemented,
+            format!("认不得的子命令「{other}」。看 --help。"),
+        )),
+    }
+}
+
+/// `--feedback`（I7）：生成脱敏诊断包 + 预填 issue 链接。**什么都不发送。**
+fn cmd_feedback(args: &Args) -> AppResult<()> {
+    title("一键反馈 · 生成诊断包与预填 issue");
+    let r = crate::feedback::one_click(
+        args.code.as_deref().unwrap_or(""),
+        args.code.as_deref().map(|_| "").unwrap_or(""),
+    )?;
+    println!("  诊断包：{}（{} 字节）", r.bundle_path, r.bundle_bytes);
+    println!(
+        "  出口闸：{}",
+        match &r.scan_hit {
+            None => "干净（key、邮箱、IP、用户名、主机名都没扫出来）".to_string(),
+            Some(h) => format!("**命中，已挡下**：{h}"),
+        }
+    );
+    println!();
+    println!("  issue 标题：{}", r.issue_title);
+    println!("  issue 正文：");
+    for l in r.issue_body.lines() {
+        println!("    {l}");
+    }
+    println!();
+    if r.scan_hit.is_none() {
+        println!("  链接（**没有自动打开、没有自动提交**）：");
+        println!("  {}", r.issue_url);
+    } else {
+        println!("  出口闸命中，不给链接 —— 请自己整理好再贴。");
+    }
+    println!();
+    println!("  {}", r.note);
+    Ok(())
+}
+
 fn cmd_assist_replay(path: &str) -> AppResult<()> {
     title("动作白名单 · 离线回放");
     let raw = std::fs::read_to_string(path)
@@ -1534,5 +1951,53 @@ mod tests {
         assert!(v.iter().any(|s| s.contains("ghcr")));
         assert!(v.iter().any(|s| s.contains("腾讯云")));
         assert_eq!(default_tag(), "1.2.0");
+    }
+
+    /// `--code` 是**参数**不是子命令：`--feedback --code X` 要跑反馈，不是诊断。
+    /// （I7 实测撞出来的：原来 `--code` 无条件把 action 覆盖成 diagnose）
+    #[test]
+    fn code_不该顶掉已经定下的子命令() {
+        assert_eq!(
+            a(&["--feedback", "--code", "E_PULL_FAILED"])
+                .action
+                .as_deref(),
+            Some("feedback")
+        );
+        assert_eq!(
+            a(&["--feedback", "--code", "E_PULL_FAILED"])
+                .code
+                .as_deref(),
+            Some("E_PULL_FAILED")
+        );
+        // 单独给 --code 时它仍然是「跑一遍诊断」的入口（老行为不变）
+        assert_eq!(
+            a(&["--code", "E_PULL_FAILED"]).action.as_deref(),
+            Some("diagnose")
+        );
+        assert_eq!(
+            a(&["--diagnose", "--code", "E_PULL_FAILED"])
+                .action
+                .as_deref(),
+            Some("diagnose")
+        );
+    }
+
+    /// I7 的三个子命令解析得对。
+    #[test]
+    fn i7_的子命令解析() {
+        let x = a(&["--takeover", "use", "hunter-community", "-y"]);
+        assert_eq!(x.action.as_deref(), Some("takeover"));
+        assert_eq!(x.takeover.as_deref(), Some("use"));
+        assert_eq!(x.takeover_arg.as_deref(), Some("hunter-community"));
+        assert!(x.yes);
+        // 不带参数的子命令不该把后面的选项吞成参数
+        let y = a(&["--takeover", "status", "--key-file", "/k"]);
+        assert_eq!(y.takeover.as_deref(), Some("status"));
+        assert_eq!(y.takeover_arg, None);
+        assert_eq!(y.key_file.as_deref(), Some("/k"));
+        let z = a(&["--review", "install_runtime", "--review-why", "因为"]);
+        assert_eq!(z.action.as_deref(), Some("review"));
+        assert_eq!(z.review.as_deref(), Some("install_runtime"));
+        assert_eq!(z.review_why.as_deref(), Some("因为"));
     }
 }

@@ -1,0 +1,218 @@
+# Hunter 启动器诊断 · 2026-09-21 18:21:53
+启动器 0.1.7 · linux x86_64
+Docker DockerEngine · server Some("29.8.1") · compose Some("v5.5.1")
+docker 定位：/usr/bin/docker（PATH）
+tag 1.2.0 · 源 ghcr.io/agentpit-io
+模型 gateway · 
+web running 健康 Some(3101)
+api running 健康 Some(8101)
+opencode running 健康 Some(3922)
+llm-shim running 健康 None
+postgres running 健康 Some(5443)
+redis running 健康 Some(6480)
+
+## 启动器日志
+2026-09-21 17:55:13 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 17:55:13 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 17:55:13 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 17:55:18 [info] 复核员：否决 · token 3689 · 2826 ms
+2026-09-21 17:55:46 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 17:55:46 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 17:55:46 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 17:55:47 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 17:55:54 [info] 复核员：否决 · token 4495 · 5265 ms
+2026-09-21 17:59:38 [info] headless 模式启动，参数 action=Some("diagnose") registry=None
+2026-09-21 17:59:38 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 17:59:38 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 17:59:39 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 17:59:39 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 17:59:40 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 17:59:44 [info] 诊断助手（规则层）：pull-failed-switch-registry · confident=false · 动作 1 个
+2026-09-21 18:10:18 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 18:10:18 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:10:18 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:10:19 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:10:25 [info] 复核员：否决 · token 4381 · 4674 ms
+2026-09-21 18:19:09 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 18:19:09 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:09 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:10 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:19:15 [info] 复核员：否决 · token 3652 · 3110 ms
+2026-09-21 18:19:15 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 18:19:15 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:15 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:16 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:19:23 [info] 复核员：否决 · token 4436 · 5283 ms
+2026-09-21 18:19:23 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 18:19:23 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:23 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:24 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:19:30 [info] 复核员：否决 · token 3823 · 3908 ms
+2026-09-21 18:19:30 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 18:19:30 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:30 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:30 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:19:50 [info] 复核员：否决 · token 3385 · 17456 ms
+2026-09-21 18:19:50 [info] headless 模式启动，参数 action=Some("review") registry=None
+2026-09-21 18:19:50 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:50 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:50 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:19:58 [info] 复核员：否决 · token 3610 · 5334 ms
+2026-09-21 18:19:59 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:19:59 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:59 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:59 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:19:59 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:59 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:19:59 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:19:59 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:19:59 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:19:59 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:20:00 [info] 诊断助手执行动作 reuse_existing_hunter（Sensitive · confirm）：把「hunter-community」记进 launcher.toml，启动器改为管理它（工作目录 <用户目录>/hunter-v120）。不装新的一套，                 不改它的配置，任何情况下都不删它的卷。
+2026-09-21 18:20:00 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:20:00 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:20:00 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:20:00 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:20:00 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:20:00 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:20:00 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:21:00 [error] headless 失败：/usr/bin/docker compose --project-name hunter-community --project-directory <用户目录>/hunter-v120 -f <用户目录>/hunter-v120/docker-compose.yml logs --no-color --tail 200 超过 60 秒没有返回
+2026-09-21 18:21:00 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:21:01 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:21:01 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:21:01 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:21:01 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:21:22 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:21:22 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:21:22 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:21:22 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-21 18:21:52 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:21:52 [info] headless 模式启动，参数 action=Some("takeover") registry=None
+2026-09-21 18:21:52 [info] headless 模式启动，参数 action=Some("diagnose") registry=None
+2026-09-21 18:21:52 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-21 18:21:52 [info] 子进程 PATH：原样继承（没有需要补的目录）
+2026-09-21 18:21:53 [info] compose 定位：docker compose 插件 v5.5.1
+
+## 容器日志
+postgres-1  | 
+postgres-1  | PostgreSQL Database directory appears to contain a database; Skipping initialization
+postgres-1  | 
+postgres-1  | 2026-09-21 08:20:47.541 UTC [1] LOG:  starting PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit
+postgres-1  | 2026-09-21 08:20:47.541 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+postgres-1  | 2026-09-21 08:20:47.542 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+postgres-1  | 2026-09-21 08:20:47.548 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+postgres-1  | 2026-09-21 08:20:47.572 UTC [27] LOG:  database system was shut down at 2026-09-21 08:20:16 UTC
+postgres-1  | 2026-09-21 08:20:47.587 UTC [1] LOG:  database system is ready to accept connections
+postgres-1  | 2026-09-21 08:25:47.648 UTC [25] LOG:  checkpoint starting: time
+postgres-1  | 2026-09-21 08:25:47.884 UTC [25] LOG:  checkpoint complete: wrote 5 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.209 s, sync=0.008 s, total=0.237 s; sync files=4, longest=0.005 s, average=0.002 s; distance=8 kB, estimate=8 kB; lsn=0/1BB7620, redo lsn=0/1BB75E8
+postgres-1  | 2026-09-21 08:32:03.842 UTC [1013] ERROR:  relation "backtest_user_pool" does not exist at character 29
+postgres-1  | 2026-09-21 08:32:03.842 UTC [1013] STATEMENT:  SELECT DISTINCT symbol FROM backtest_user_pool WHERE enabled
+llm-shim-1  | [shim] listening 0.0.0.0:3999/v1 -> https://hunter.agentpit.io/api/saas/llm/v1
+web-1       | [web-boot] HUNTER_INTERNAL_KEY ← hunter_secrets 卷(长度 63)
+web-1       | [web-boot] JWT_SECRET ← hunter_secrets 卷(长度 64)
+web-1       | 
+web-1       | > start
+web-1       | > next start -p 3000
+web-1       | 
+web-1       |    ▲ Next.js 15.5.16
+web-1       |    - Local:        http://localhost:3000
+web-1       |    - Network:      http://172.19.0.*:3000
+web-1       | 
+web-1       |  ✓ Starting...
+web-1       |  ✓ Ready in 1799ms
+web-1       | (node:25) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+web-1       | (Use `node --trace-warnings ...` to show where the warning was created)
+opencode-1  | [load-secrets] JWT_SECRET 来源=环境变量 长度=64 · HUNTER_INTERNAL_KEY 来源=密钥卷 长度=63
+opencode-1  | [boot] opencode 1.18.12 · mcp timeout 180000ms(默认) · provider hunter-llm → https://hunter.agentpit.io/api/saas/llm/v1
+opencode-1  | [gen-config] 配置来源:环境变量
+opencode-1  | [gen-config]   已写 /opt/opencode-workspace/opencode.json 与 <用户目录>/.config/opencode/opencode.jsonc
+opencode-1  | [gen-config]   provider hunter-llm → https://hunter.agentpit.io/api/saas/llm/v1 · model hunter-chat · apiKey 有
+opencode-1  | [gen-config]   provider/model 写在项目文件(环境变量锁定,向导改不动)
+opencode-1  | opencode server listening on http://0.0.0.0:3901
+api-1       | INFO:     127.0.0.1:35346 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:51682 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:50842 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:56276 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:48456 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:56860 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:59054 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:56562 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:58446 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:50140 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60476 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:41104 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60556 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:54398 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:41224 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:33150 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:33154 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:54824 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60442 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:35460 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:46662 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:59018 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:42348 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:33474 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60718 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:55384 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:48428 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:49420 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:45342 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:55828 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:48936 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:42806 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60166 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:44042 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:34266 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:51854 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:50390 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:56128 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:57386 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:43184 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:39326 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:36018 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:57040 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:58324 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:36284 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:55284 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:51688 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:49228 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:36976 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:48284 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:59120 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:53504 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:53336 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:44530 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60628 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:32990 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:60120 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:57772 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:43906 - "GET /api/health HTTP/1.1" 200 OK
+api-1       | INFO:     127.0.0.1:39302 - "GET /api/health HTTP/1.1" 200 OK
+redis-1     | 1:C 21 Sep 2026 08:20:46.642 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+redis-1     | 1:C 21 Sep 2026 08:20:46.642 * Redis version=7.4.11, bits=64, commit=00000000, modified=0, pid=1, just started
+redis-1     | 1:C 21 Sep 2026 08:20:46.642 # Warning: no config file specified, using the default config. In order to specify a config file use redis-server /path/to/redis.conf
+redis-1     | 1:M 21 Sep 2026 08:20:46.643 * Increased maximum number of open files to 10032 (it was originally set to 1024).
+redis-1     | 1:M 21 Sep 2026 08:20:46.643 * monotonic clock: POSIX clock_gettime
+redis-1     | 1:M 21 Sep 2026 08:20:46.646 * Running mode=standalone, port=6379.
+redis-1     | 1:M 21 Sep 2026 08:20:46.647 * Server initialized
+redis-1     | 1:M 21 Sep 2026 08:20:46.648 * Loading RDB produced by version 7.4.11
+redis-1     | 1:M 21 Sep 2026 08:20:46.648 * RDB age 30 seconds
+redis-1     | 1:M 21 Sep 2026 08:20:46.648 * RDB memory usage when created 0.93 Mb
+redis-1     | 1:M 21 Sep 2026 08:20:46.648 * Done loading RDB, keys loaded: 0, keys expired: 0.
+redis-1     | 1:M 21 Sep 2026 08:20:46.649 * DB loaded from disk: 0.001 seconds
+redis-1     | 1:M 21 Sep 2026 08:20:46.649 * Ready to accept connections tcp
+
+## 诊断结论（确定性规则 · pull-failed-switch-registry）
+镜像没拉下来
+现在用的源是「ghcr」（ghcr.io/agentpit-io）。
+拉不动最常见的原因就是这个源在你的网络里不通 —— 国内直连 ghcr.io 经常超时。
+可以换成「腾讯云 · 香港」（hkccr.ccs.tencentyun.com/agentpit）再试一次。
+
+建议动作：换镜像源到 腾讯云 · 香港（会改动这台机器）
+  为什么：国内直连 ghcr.io 经常超时，换成腾讯云香港的镜像一般就通了
+  会执行：把镜像源切成「腾讯云 · 香港」（hkccr.ccs.tencentyun.com/agentpit），写进 launcher.toml 与 .env
+
+（规则层没有十足把握。界面版里可以点「让 AI 帮我看看」把这份信息送去网关问一轮；
+命令行下不自动调 AI —— 那会花掉你的额度。）
+

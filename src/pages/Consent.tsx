@@ -19,12 +19,15 @@ export function Consent() {
   const { t, send } = useStore()
   const [busy, setBusy] = useState<AssistMode | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // I7：默认勾着。勾了之后「装一套运行时」这件事不再单独弹「需要你」——
+  // 用户在这一页就已经对它明确说过「可以」了，再问一遍不叫谨慎，叫啰嗦。
+  const [allowInstall, setAllowInstall] = useState(true)
 
   async function choose(mode: AssistMode) {
     setBusy(mode)
     setError(null)
     try {
-      await ipc.assistConsent(mode)
+      await ipc.assistConsent(mode, allowInstall)
       send({ type: 'CONSENT_GIVEN' })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -101,6 +104,29 @@ export function Consent() {
           ))}
         </ul>
       </div>
+
+      {/* I7 · 那一项默认勾选的勾。勾着 = 「电脑上没有 Docker 时允许 AI 装一套」。
+          文案里把**装在哪、改不改系统、怎么卸**三件事都写清楚 ——
+          默认勾选的前提是用户看一眼就知道自己同意了什么。 */}
+      <label
+        data-testid="consent-allow-install"
+        className="mt-[16px] flex max-w-[860px] cursor-pointer items-start gap-[10px] rounded-lg border border-line bg-card px-5 py-4"
+      >
+        <input
+          type="checkbox"
+          className="mt-[3px] size-[15px] shrink-0 accent-amber"
+          checked={allowInstall}
+          disabled={busy !== null}
+          onChange={(e) => setAllowInstall(e.target.checked)}
+        />
+        <span className="min-w-0">
+          <span className="block text-md leading-tight text-ink">{t.consent.allowInstallTitle}</span>
+          <span className="mt-[6px] block text-sm leading-[1.5] text-body">{t.consent.allowInstallBody}</span>
+          {!allowInstall && (
+            <span className="mt-[6px] block text-sm leading-[1.5] text-muted">{t.consent.allowInstallOff}</span>
+          )}
+        </span>
+      </label>
 
       <p className="mt-[16px] max-w-[860px] text-sm leading-[1.55] text-muted">{t.consent.footnote}</p>
       {error && <div className="mt-[10px] text-sm text-danger">{error}</div>}

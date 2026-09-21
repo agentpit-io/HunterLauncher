@@ -98,24 +98,26 @@ pub struct HunterSection {
     pub registry_prefix: String,
     pub base_prefix: String,
     pub ports: Ports,
-    /// web 端口绑在哪张网卡上。`all` = 所有网卡（同一网络里的人都能打开）；
-    /// `local` = 只有本机。**默认 `all`**，见下。
+    /// **这一项已经不再决定任何事，只是留着认得出老配置**（I7 · 待办池 P1-20 已关闭）。
     ///
-    /// ## 为什么默认是 `all`，以及为什么这是一个开关而不是一个决定
+    /// ## 为什么它从「开关」退成了「遗迹」
     ///
-    /// 总控规则红线 4 的原话是「除 web 之外的端口一律绑 127.0.0.1」——
-    /// web **被明确排除在外**，也就是说「对外」是既定的产品设计，不是疏忽。
-    ///
-    /// I1 实测了它的后果并记在报告第七节：从另一台机器打
+    /// I1 实测了 web 绑 `0.0.0.0` 的后果并记在报告第七节：从另一台机器打
     /// `http://<这台机器的 IP>:3101`，不需要任何凭证就能进聊天界面、
     /// 调工具、烧掉用户当天的额度（上游 api 保护住了 `/api/setup/*` 那些**配置**接口，
-    /// 但没有保护**使用**界面）。
+    /// 但没有保护**使用**界面）。I2 把开关做出来、默认值没动，问题挂到 P1-20 等用户拍板。
     ///
-    /// 改默认值属于改产品决策，本项目单方面定不了。I2 做的是**把开关做出来**：
-    /// 配置项、设置页的勾选、覆盖文件里的渲染、单测全都齐了，
-    /// 想收紧的用户现在点一下就能收紧；**默认行为一个字节没动**。
-    /// 「默认该是哪一个、已装机器要不要在升级时自动收紧」仍然是待办池 P1-20，
-    /// 等用户决定。
+    /// 用户 2026-09-21 19:05 拍板了，原话：
+    /// **「目前只能本机访问，不考虑同一局域网访问，这个需要升级付费版本才可以。」**
+    ///
+    /// 于是「绑哪里」不再是配置能决定的事：**新生成的覆盖文件里六个服务一律 `127.0.0.1`**。
+    /// 真正的取值由 [`WebBind::detect`] 从**磁盘上那份覆盖文件的现状**读出来，
+    /// 不从这一项读 —— 这样「手改 launcher.toml 重新放开」这条路在代码层面就不存在
+    /// （[`render_override`] 也没有任何入口能渲染出 `0.0.0.0`）。
+    ///
+    /// 这一项保留的唯一理由是：老机器的 `launcher.toml` 里有它，
+    /// 读不回来会让整份配置解析失败、把用户的其他设置一起丢掉。
+    /// 取值不是 `local` 时会在日志里记一条「已忽略」（[`LauncherConfig::warn_legacy_web_bind`]）。
     #[serde(default = "default_web_bind")]
     pub web_bind: String,
     /// 健康检查的等待上限（秒）。方案 §18 的 180 秒是默认值；
@@ -129,23 +131,17 @@ fn default_start_timeout() -> u64 {
     180
 }
 
+/// 新配置的默认值 = 只绑本机（I7 起）。
 fn default_web_bind() -> String {
-    WEB_BIND_ALL.into()
+    WEB_BIND_LOCAL.into()
 }
 
-/// web 绑所有网卡（默认）。
+/// 老配置里「绑所有网卡」的写法。**只用来认出老机器**，不再有任何地方按它渲染。
 pub const WEB_BIND_ALL: &str = "all";
-/// web 只绑本机回环。
+/// web 只绑本机回环。免费版唯一会新生成的取值。
 pub const WEB_BIND_LOCAL: &str = "local";
 
 impl HunterSection {
-    /// web 端口是不是只听本机。认不出来的取值一律按默认（`all`）处理 ——
-    /// 手改配置文件写错一个字不该悄悄改变安全边界的**方向**，
-    /// 而「继续保持现状」比「悄悄收紧」更不容易让人摸不着头脑。
-    pub fn web_local_only(&self) -> bool {
-        self.web_bind == WEB_BIND_LOCAL
-    }
-
     /// 健康检查等多久。手改成离谱的值时夹回 [180, 900]，**不照单全收**。
     pub fn start_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.start_timeout_secs.clamp(180, 900))
@@ -257,10 +253,55 @@ pub struct RuntimeSection {
     /// `use_isolated_docker_config` 这个动作打开（I6）。**用户那份配置一个字节都不动。**
     #[serde(default)]
     pub isolated_docker_config: bool,
+    /// 「这台机器上没有 Docker」时走哪条路（I7）。
+    ///
+    /// * `builtin`（默认）—— 内置运行时（Colima + Lima + docker CLI + compose），
+    ///   全程用户态、零点击、可一键卸载
+    /// * `orbstack` —— OrbStack 官方 dmg。装得更快，但**首次启动会弹系统提示**
+    ///   （欢迎页 / 管理员密码装辅助程序），做不到零点击，所以不是默认
+    ///
+    /// 认不得的值一律按 `builtin` 处理。
+    #[serde(default = "default_install_route")]
+    pub install_route: String,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn default_install_route() -> String {
+    "builtin".into()
+}
+
+/// 没有 Docker 时装哪一套。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallRoute {
+    /// 内置运行时（默认）
+    Builtin,
+    /// OrbStack 官方 dmg（备选）
+    OrbStack,
+}
+
+impl InstallRoute {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "orbstack" => InstallRoute::OrbStack,
+            _ => InstallRoute::Builtin,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InstallRoute::Builtin => "builtin",
+            InstallRoute::OrbStack => "orbstack",
+        }
+    }
+    pub fn cn(self) -> &'static str {
+        match self {
+            InstallRoute::Builtin => "内置运行时（零点击）",
+            InstallRoute::OrbStack => "OrbStack 官方安装包（首次启动需要你点几下）",
+        }
+    }
 }
 
 impl Default for RuntimeSection {
@@ -272,11 +313,15 @@ impl Default for RuntimeSection {
             use_builtin_paths: true,
             use_env_path: true,
             isolated_docker_config: false,
+            install_route: default_install_route(),
         }
     }
 }
 
 impl RuntimeSection {
+    pub fn route(&self) -> InstallRoute {
+        InstallRoute::parse(&self.install_route)
+    }
     pub fn to_policy(&self) -> crate::runtime::which::Policy {
         crate::runtime::which::Policy {
             docker_path: self.docker_path.clone(),
@@ -304,6 +349,20 @@ pub struct AssistSection {
     /// 用户是哪一刻做的授权（上海时间）。没授权过就是空
     #[serde(default)]
     pub consented_at: String,
+    /// 一次授权页上那一项**默认勾选**的勾（I7）：
+    /// 「如果电脑上没有 Docker，允许 AI 为你安装（装在 `~/.hunter/runtime` 里，
+    /// 不改系统，可一键卸载）」。
+    ///
+    /// 勾了 → `install_runtime` 这个 `Sensitive` 动作**不再弹「需要你」卡片**，
+    /// 因为用户已经在授权页上对它明确说过「可以」——「已授权」与「每次都问」
+    /// 是两件事，把已经授权过的事再问一遍不叫谨慎，叫啰嗦。
+    ///
+    /// 没勾 → 照旧走「需要你」卡片。
+    ///
+    /// **注意**：它只对 `install_runtime` 这一个动作生效，别的 `Sensitive` 动作
+    /// （例如 `reuse_existing_hunter`，会动用户已有的那一套）照样每次都问。
+    #[serde(default = "yes")]
+    pub allow_install_runtime: bool,
 }
 
 fn default_assist_mode() -> String {
@@ -330,6 +389,7 @@ impl Default for AssistSection {
             enabled: true,
             mode: default_assist_mode(),
             consented_at: String::new(),
+            allow_install_runtime: true,
         }
     }
 }
@@ -350,6 +410,46 @@ pub struct LauncherConfig {
     pub runtime: RuntimeSection,
     #[serde(default)]
     pub assist: AssistSection,
+    #[serde(default)]
+    pub takeover: TakeoverSection,
+}
+
+/// 「直接用这台机器上已经有的那一套 Hunter」（I7 · `reuse_existing_hunter`）。
+///
+/// 默认是**并存**（`project` 为空）—— 新装的换一组空闲端口，两套互不影响。
+/// 只有用户在「需要你」卡片上亲手点了「直接用它，不再装一套」，这里才会有值。
+///
+/// 接管之后启动器变成那一套的**管理面板**：看状态、看日志、打开网页。
+/// 升级 / 停止 / `down` 这些改动类操作**一律先二次确认**，
+/// 而且任何情况下都不删它的卷（[`crate::takeover`] 里有硬校验，不是靠自觉）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TakeoverSection {
+    /// 被接管的 compose 项目名。空 = 没有接管任何东西（默认）
+    #[serde(default)]
+    pub project: String,
+    /// 它的工作目录（compose 文件所在）。读不出来就是空 —— 那种情况降级成只读监控
+    #[serde(default)]
+    pub working_dir: String,
+    /// 它的 compose 文件（逗号分隔的绝对路径，来自容器标签）
+    #[serde(default)]
+    pub config_files: String,
+    /// 它的 web 端口。读不到就是 0
+    #[serde(default)]
+    pub web_port: u16,
+    /// 什么时候接管的（上海时间）
+    #[serde(default)]
+    pub since: String,
+}
+
+impl TakeoverSection {
+    /// 现在是接管态吗。
+    pub fn active(&self) -> bool {
+        !self.project.trim().is_empty()
+    }
+    /// 有工作目录吗 —— 没有的话只能只读监控（改动类操作一概做不了）。
+    pub fn manageable(&self) -> bool {
+        self.active() && !self.working_dir.trim().is_empty()
+    }
 }
 
 impl LauncherConfig {
@@ -416,7 +516,8 @@ pub struct PortChange {
 /// + 系统监听表，任一说占用即占用。
 ///
 /// `all_interfaces` 这个参数**留着只为兼容老调用点**：探测一律按通配地址来，
-/// 比 `127.0.0.1` 更保守，所以两种取值的结果相同。
+/// 比 `127.0.0.1` 更保守，所以两种取值的结果相同 ——
+/// I7 起 web 也只绑本机了，但探测仍然按通配来（宁可多报一次冲突，不要装到一半才炸）。
 pub fn port_free(port: u16, _all_interfaces: bool) -> bool {
     crate::ports::verdict_now(port, &[PROJECT]).free
 }
@@ -463,12 +564,8 @@ fn next_free(
 ///
 /// I5：`docker ps` 与 `lsof` 在这里**只跑一次**（[`crate::ports::Survey`]），
 /// 五个端口共用同一份现场，不是每个端口各起两个子进程。
-pub fn resolve_ports(
-    want: &Ports,
-    own: &[u16],
-    web_local_only: bool,
-) -> AppResult<(Ports, Vec<PortChange>)> {
-    resolve_ports_with(&crate::ports::Survey::collect(), want, own, web_local_only)
+pub fn resolve_ports(want: &Ports, own: &[u16]) -> AppResult<(Ports, Vec<PortChange>)> {
+    resolve_ports_with(&crate::ports::Survey::collect(), want, own)
 }
 
 /// 同上，但由调用方给现场。总指挥要在一次修复回合里反复算端口，采一次就够。
@@ -476,7 +573,6 @@ pub fn resolve_ports_with(
     sv: &crate::ports::Survey,
     want: &Ports,
     own: &[u16],
-    _web_local_only: bool,
 ) -> AppResult<(Ports, Vec<PortChange>)> {
     let mut taken: Vec<u16> = Vec::new();
     let mut changes = Vec::new();
@@ -908,41 +1004,125 @@ pub fn write_env(input: &EnvInput) -> AppResult<()> {
 
 // ── 覆盖文件 ──────────────────────────────────────────────────────────────
 
+// ── web 端口绑在哪（I7 · 用户 2026-09-21 19:05 拍板） ─────────────────────
+
+/// web 端口的宿主绑定地址。
+///
+/// ## 只有两种可能，而且只有一种是**新生成**得出来的
+///
+/// | 取值 | 谁会给出 | 渲染成 |
+/// |---|---|---|
+/// | [`WebBind::Local`] | 新装、收紧之后、以及任何读不出现状的情况 | `127.0.0.1:<port>:3000` |
+/// | [`WebBind::LegacyLan`] | **只有** [`WebBind::detect`]，而且只在「这台机器当前确实已经对局域网开放」时 | `<port>:3000`（沿用现状） |
+///
+/// 免费版不提供「放开到局域网」这件事（付费版功能），所以：
+/// **没有任何一条路径能从 `Local` 走回 `LegacyLan`** ——
+/// `detect` 的依据是磁盘上那份覆盖文件，一旦被收紧写成 `127.0.0.1`，
+/// 它以后就永远只会返回 `Local`。收紧是单向的，这一条靠代码保证，不靠文案。
+///
+/// 为什么不从 `launcher.toml` 的 `hunter.web_bind` 读：那是用户手改得到的东西。
+/// 用户的决定是「免费版只能本机访问」，那么手改配置文件也不该能绕过去。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebBind {
+    /// 只有这台电脑能打开
+    Local,
+    /// 老机器留下的现状：web 还绑在所有网卡上。**升级时不悄悄改动它**，
+    /// 运行面板出一行提示 + 一个「一键收紧」（用户 2026-09-21 19:05 的决定）
+    LegacyLan,
+}
+
+impl WebBind {
+    /// 从**磁盘上那份覆盖文件的现状**判断，不看配置、不看命令行。
+    ///
+    /// 判断依据是覆盖文件里 web 那一行的映射有没有 `127.0.0.1:` 前缀：
+    /// * 文件不存在（没装过 / 刚被删）→ `Local`（新装一律本机）
+    /// * 读得到、web 那一行**没有**本机前缀 → `LegacyLan`（这台机器当前真的对外）
+    /// * 读得到、有本机前缀 → `Local`
+    /// * 读得到、但里面根本找不到 web 那一行（被手改坏了）→ `Local`（收紧的方向不会错）
+    pub fn detect() -> Self {
+        match std::fs::read_to_string(paths::override_file()) {
+            Ok(s) => Self::from_override_text(&s),
+            Err(_) => Self::Local,
+        }
+    }
+
+    /// [`WebBind::detect`] 的纯函数内核，单测直接喂文本。
+    pub fn from_override_text(text: &str) -> Self {
+        // web 那一行长这样（本机）：  web:\n    ports: !override ["127.0.0.1:3101:3000"]
+        // 或者这样（老机器对外）：    web:\n    ports: !override ["3101:3000"]
+        let mut in_web = false;
+        for line in text.lines() {
+            let t = line.trim_start();
+            if t.starts_with('#') {
+                continue;
+            }
+            // 服务名那一行：缩进两格、以冒号结尾
+            if line.starts_with("  ") && !line.starts_with("    ") && t.ends_with(':') {
+                in_web = t == "web:";
+                continue;
+            }
+            if in_web && t.starts_with("ports:") {
+                return if t.contains("127.0.0.1:") {
+                    Self::Local
+                } else {
+                    Self::LegacyLan
+                };
+            }
+        }
+        Self::Local
+    }
+
+    /// 界面 / 日志里要不要提「这台机器现在对局域网开着」
+    pub fn lan_exposed(self) -> bool {
+        self == Self::LegacyLan
+    }
+}
+
 /// 生成 `docker-compose.launcher.yml`。
 ///
 /// 两件事：
-/// 1. **除 web 之外的端口一律绑 `127.0.0.1`**（红线 4）。`!override` 标签是必须的 ——
-///    compose 对 `ports` 默认做追加合并，不加标签会变成「既听 0.0.0.0 又听 127.0.0.1」（M0 §3.4 实测）。
+/// 1. **所有发布出来的端口一律绑 `127.0.0.1`**（红线 4 · I7 起连 web 也收进来）。
+///    `!override` 标签是必须的 —— compose 对 `ports` 默认做追加合并，
+///    不加标签会变成「既听 0.0.0.0 又听 127.0.0.1」（M0 §3.4 实测）。
+///    唯一的例外是 `bind == WebBind::LegacyLan`，那是**沿用老机器的现状**，
+///    不是一个新做出来的决定（见 [`WebBind`]）。
 /// 2. 用国内源时把 `postgres` / `redis` 的 `image:` 也改写过去。
 ///    另外四个服务的镜像地址由 `.env` 的 `HUNTER_REGISTRY` 控制，不用在这里写。
-pub fn render_override(ports: &Ports, base_prefix: &str, web_local_only: bool) -> String {
+pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> String {
     let mut s = String::new();
     s.push_str(
         "# ~/.hunter/app/docker-compose.launcher.yml\n\
          # 由 Hunter 启动器生成 · 请勿手改（改了下次启动会被覆盖）\n\
-         # 作用：1) 把除 web 之外的端口全部收回 127.0.0.1（总控规则红线 4）\n\
+         # 作用：1) 把**所有**发布端口收回 127.0.0.1（总控规则红线 4 · I7 起连 web 也收进来）\n\
          #       2) 落实端口冲突改写后的值\n\
-         #       3) 按设置决定 web 端口绑所有网卡还是只绑本机\n\
-         #       4) 用国内镜像源时改写 postgres / redis 的镜像地址\n\
+         #       3) 用国内镜像源时改写 postgres / redis 的镜像地址\n\
          #\n\
          # `!override` 标签是必须的：compose 默认对 ports 做**追加**合并，不加这个标签会变成\n\
          # 「既监听 0.0.0.0 又监听 127.0.0.1」，红线 4 就白写了（M0 §3.4 已实测验证）。\n\
          services:\n",
     );
-    // web 是唯一一个可以对外的端口（红线 4 把它明确排除在「只绑本机」之外）。
-    // 设置页里勾上「只允许本机访问」之后这里会多一个 127.0.0.1: 前缀，默认不勾。
-    if web_local_only {
-        s.push_str("  # 设置里勾了「只允许这台电脑访问」：web 也收回本机\n");
-        s.push_str(&format!(
-            "  web:\n    ports: !override [\"127.0.0.1:{}:3000\"]\n",
-            ports.web
-        ));
-    } else {
-        s.push_str("  # 默认：web 绑所有网卡，同一网络里的其他设备也能打开（见设置页的说明）\n");
-        s.push_str(&format!(
-            "  web:\n    ports: !override [\"{}:3000\"]\n",
-            ports.web
-        ));
+    // I7：web 也收回本机。用户 2026-09-21 19:05 的原话是
+    // 「目前只能本机访问，不考虑同一局域网访问，这个需要升级付费版本才可以。」
+    // 唯一会渲染成对外的情况是 LegacyLan —— 那不是一个决定，是**沿用老机器的现状**，
+    // 免得升级把用户昨天还在用的地址突然关掉（同一条决定的第三点）。
+    match bind {
+        WebBind::Local => {
+            s.push_str("  # web 也只绑本机：免费版不提供局域网访问（付费版功能）\n");
+            s.push_str(&format!(
+                "  web:\n    ports: !override [\"127.0.0.1:{}:3000\"]\n",
+                ports.web
+            ));
+        }
+        WebBind::LegacyLan => {
+            s.push_str("  # 沿用这台机器升级前的现状：web 还绑在所有网卡上。\n");
+            s.push_str(
+                "  # 新版本默认只允许本机访问 —— 运行面板上点「只允许本机访问」就能收紧（单向）。\n",
+            );
+            s.push_str(&format!(
+                "  web:\n    ports: !override [\"{}:3000\"]\n",
+                ports.web
+            ));
+        }
     }
     s.push_str(&format!(
         "  api:\n    ports: !override [\"127.0.0.1:{}:8000\"]\n",
@@ -974,10 +1154,42 @@ pub fn render_override(ports: &Ports, base_prefix: &str, web_local_only: bool) -
     s
 }
 
-pub fn write_override(ports: &Ports, base_prefix: &str, web_local_only: bool) -> AppResult<()> {
+/// `launcher.toml` 里手写的 `hunter.web_bind` 已经不起作用了 —— 但**不能悄悄不起作用**。
+/// 每次生成覆盖文件时，只要那一项不是 `local`，就在日志里记一条说清楚被忽略了、为什么。
+///
+/// 唯一不记的情况是 `bind == LegacyLan`：那台机器的 web 本来就还对外，
+/// 「已忽略」这句话在那儿是假的（红线 1）。
+fn warn_legacy_web_bind(bind: WebBind) {
+    if bind == WebBind::LegacyLan {
+        return;
+    }
+    let raw = LauncherConfig::load().hunter.web_bind;
+    if raw != WEB_BIND_LOCAL {
+        crate::lwarn!(
+            "launcher.toml 里 hunter.web_bind = \"{raw}\" 已被忽略：\
+             免费版只允许本机访问（局域网访问是付费版功能），\
+             覆盖文件里六个服务一律按 127.0.0.1 生成。"
+        );
+    }
+}
+
+/// 写覆盖文件。**绑定地址不接受参数** —— 由 [`WebBind::detect`] 从磁盘现状读，
+/// 调用方（安装、升级、改设置）都无法指定它。要收紧走 [`write_override_local`]。
+pub fn write_override(ports: &Ports, base_prefix: &str) -> AppResult<()> {
+    write_override_with(ports, base_prefix, WebBind::detect())
+}
+
+/// 显式收紧成「只有这台电脑」。**只有「一键收紧」这一个入口调它**，而且是单向的：
+/// 写完之后 `detect()` 以后永远返回 `Local`，没有任何函数能写回去。
+pub fn write_override_local(ports: &Ports, base_prefix: &str) -> AppResult<()> {
+    write_override_with(ports, base_prefix, WebBind::Local)
+}
+
+fn write_override_with(ports: &Ports, base_prefix: &str, bind: WebBind) -> AppResult<()> {
+    warn_legacy_web_bind(bind);
     paths::ensure_dirs()?;
     let p = paths::override_file();
-    std::fs::write(&p, render_override(ports, base_prefix, web_local_only))
+    std::fs::write(&p, render_override(ports, base_prefix, bind))
         .map_err(|e| AppError::new(Code::ConfigWrite, format!("写 {} 失败：{e}", p.display())))?;
     paths::chmod_600(&p)?;
     Ok(())
@@ -1308,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn 覆盖文件只有_web_对外其余都绑本机() {
+    fn 覆盖文件里五个发布端口全部绑本机() {
         let ports = Ports {
             web: 3101,
             api: 8101,
@@ -1316,15 +1528,20 @@ mod tests {
             postgres: 5443,
             redis: 6480,
         };
-        let s = render_override(&ports, "docker.io/library", false);
-        assert!(s.contains("ports: !override [\"3101:3000\"]"), "{s}");
-        for (p, c) in [(8101, 8000), (3922, 3901), (5443, 5432), (6480, 6379)] {
+        let s = render_override(&ports, "docker.io/library", WebBind::Local);
+        for (p, c) in [
+            (3101, 3000),
+            (8101, 8000),
+            (3922, 3901),
+            (5443, 5432),
+            (6480, 6379),
+        ] {
             assert!(
                 s.contains(&format!("!override [\"127.0.0.1:{p}:{c}\"]")),
                 "{p} 没有绑到 127.0.0.1：\n{s}"
             );
         }
-        // 红线 4 的反向断言：除 web 那一行外不能出现任何裸端口映射
+        // 红线 4 的反向断言（I7 起连 web 也算）：一行裸端口映射都不许有
         // （只看真正的映射行，注释里提到 !override 的那几行不算）
         let mapping_lines: Vec<&str> = s
             .lines()
@@ -1332,17 +1549,18 @@ mod tests {
             .collect();
         assert_eq!(mapping_lines.len(), 5, "五个服务各一行：{mapping_lines:?}");
         for line in mapping_lines {
-            assert!(
-                line.contains("127.0.0.1:") || line.contains("\"3101:3000\""),
-                "这一行没绑本机：{line}"
-            );
+            assert!(line.contains("127.0.0.1:"), "这一行没绑本机：{line}");
         }
+        // 上游那六个服务里 llm-shim 一个端口也不发布，所以「六个服务全部只绑本机」
+        // 在覆盖文件里就是这五行 —— 剩下那一个没得可绑。
+        assert!(!s.contains("llm-shim"), "llm-shim 本来就不发布端口：\n{s}");
     }
 
-    /// 待办池 P1-20 的开关。**默认必须还是对外**（那是既定设计，改默认要用户拍板），
-    /// 勾上之后 web 才多一个 127.0.0.1 前缀。
+    /// 用户 2026-09-21 19:05 的决定：免费版**只允许本机访问**。
+    /// 这一条钉住「配置文件不再能放开它」—— `render_override` 只有 `WebBind` 一个入口，
+    /// 而 `WebBind::LegacyLan` 只能由 `detect()` 从磁盘现状给出。
     #[test]
-    fn web_只允许本机时覆盖文件多一个本机前缀() {
+    fn 老机器的现状沿用而新装一律本机() {
         let ports = Ports {
             web: 3101,
             api: 8101,
@@ -1350,25 +1568,54 @@ mod tests {
             postgres: 5443,
             redis: 6480,
         };
-        let open = render_override(&ports, "docker.io/library", false);
-        assert!(open.contains("ports: !override [\"3101:3000\"]"), "{open}");
-        assert!(
-            !open.contains("127.0.0.1:3101:3000"),
-            "默认不该收紧：{open}"
-        );
-
-        let local = render_override(&ports, "docker.io/library", true);
+        let local = render_override(&ports, "docker.io/library", WebBind::Local);
         assert!(
             local.contains("ports: !override [\"127.0.0.1:3101:3000\"]"),
             "{local}"
         );
-        // 收紧之后五行全是本机
-        for line in local
-            .lines()
-            .filter(|l| l.trim_start().starts_with("ports: !override"))
-        {
-            assert!(line.contains("127.0.0.1:"), "这一行没绑本机：{line}");
+        // 沿用老现状时 web 那一行是裸的，其余四行照样本机
+        let legacy = render_override(&ports, "docker.io/library", WebBind::LegacyLan);
+        assert!(
+            legacy.contains("ports: !override [\"3101:3000\"]"),
+            "{legacy}"
+        );
+        for (p, c) in [(8101, 8000), (3922, 3901), (5443, 5432), (6480, 6379)] {
+            assert!(
+                legacy.contains(&format!("!override [\"127.0.0.1:{p}:{c}\"]")),
+                "{p} 没有绑到 127.0.0.1：\n{legacy}"
+            );
         }
+
+        // detect 的闭环：本机那一份读回来是 Local，老那一份读回来是 LegacyLan，
+        // 于是「收紧」写出去之后就再也回不去了（单向）。
+        assert_eq!(WebBind::from_override_text(&local), WebBind::Local);
+        assert_eq!(WebBind::from_override_text(&legacy), WebBind::LegacyLan);
+    }
+
+    /// `detect` 认不出来的时候必须往**收紧**那一头倒。
+    #[test]
+    fn 读不出现状时一律按只绑本机() {
+        // 空文件、没有 web 那一行、被手改坏了 —— 一律 Local
+        for t in [
+            "",
+            "services:\n  api:\n    ports: !override [\"127.0.0.1:8101:8000\"]\n",
+            "services:\n  web:\n    image: whatever\n",
+            "# 只有注释\n#   web:\n#     ports: !override [\"3101:3000\"]\n",
+            "乱七八糟的东西",
+        ] {
+            assert_eq!(
+                WebBind::from_override_text(t),
+                WebBind::Local,
+                "认不出来时必须收紧：{t:?}"
+            );
+        }
+        // 注释行里出现裸映射不算数（上面第四条已经覆盖），真正的那一行才算
+        assert_eq!(
+            WebBind::from_override_text(
+                "services:\n  # web 也只绑本机\n  web:\n    ports: !override [\"127.0.0.1:3101:3000\"]\n"
+            ),
+            WebBind::Local
+        );
     }
 
     /// I2 的 GUI 回归撞到的那个 P0（详见 `secretgen` 的模块头）：
@@ -1481,23 +1728,36 @@ mod tests {
         assert!(e2.msg.contains("少了"), "{}", e2.msg);
     }
 
+    /// I7：`web_bind` 退成遗迹之后，**它的取值不该再影响任何输出**。
     #[test]
-    fn web_bind_的默认值是对外() {
+    fn 手改_web_bind_也放不开局域网() {
         let h = HunterSection::default();
-        assert_eq!(h.web_bind, WEB_BIND_ALL);
-        assert!(
-            !h.web_local_only(),
-            "默认必须是对外（总控规则红线 4 的既定设计）"
-        );
-        // 老的 launcher.toml 里根本没有这一项，读回来也得是默认值
-        let c: LauncherConfig = toml::from_str("[hunter]\ntag = \"1.2.0\"\nregistry_id = \"ghcr\"\nregistry_prefix = \"ghcr.io/agentpit-io\"\nbase_prefix = \"docker.io/library\"\n[hunter.ports]\nweb = 3100\napi = 8100\nopencode = 3921\npostgres = 5442\nredis = 6479\n").expect("老配置要读得回来");
-        assert!(!c.hunter.web_local_only(), "升级上来的机器不该被悄悄收紧");
-        // 写错了也按默认走，不悄悄改变方向
-        let h2 = HunterSection {
-            web_bind: "loacl".into(),
-            ..Default::default()
-        };
-        assert!(!h2.web_local_only());
+        assert_eq!(h.web_bind, WEB_BIND_LOCAL, "新配置的默认值是只绑本机");
+
+        // 老的 launcher.toml 里根本没有这一项 / 写着 all / 写着 0.0.0.0 / 拼错了 ——
+        // 四种都要读得回来（读不回来会把用户的其他设置一起丢掉），
+        // 而且**四种渲染出来的东西一模一样**：web 也绑 127.0.0.1。
+        let base = "[hunter]\ntag = \"1.2.0\"\nregistry_id = \"ghcr\"\nregistry_prefix = \"ghcr.io/agentpit-io\"\nbase_prefix = \"docker.io/library\"\n";
+        let tail = "[hunter.ports]\nweb = 3100\napi = 8100\nopencode = 3921\npostgres = 5442\nredis = 6479\n";
+        let expect = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
+        for line in [
+            "".to_string(),
+            format!("web_bind = \"{WEB_BIND_ALL}\"\n"),
+            "web_bind = \"0.0.0.0\"\n".to_string(),
+            "web_bind = \"loacl\"\n".to_string(),
+        ] {
+            let c: LauncherConfig =
+                toml::from_str(&format!("{base}{line}{tail}")).expect("老配置要读得回来");
+            assert_eq!(
+                render_override(&c.hunter.ports, &c.hunter.base_prefix, WebBind::Local),
+                expect,
+                "web_bind = {line:?} 不该改变渲染结果"
+            );
+        }
+
+        // 而且 `HunterSection` 上**不再有**任何「是不是只绑本机」的方法可供调用 ——
+        // 唯一的来源是 `WebBind::detect()`，它读的是磁盘现状。这一条靠编译保证：
+        // 如果哪天有人把 `web_local_only()` 加回来，上面那些调用点会重新出现。
     }
 
     /// I2 自审：会原样写进 `.env` 的值里不许有换行 —— 一个换行等于多定义一个环境变量。
@@ -1535,7 +1795,7 @@ mod tests {
     #[test]
     fn 国内源下_postgres_与_redis_也换成镜像地址() {
         let ports = Ports::default();
-        let s = render_override(&ports, "hkccr.ccs.tencentyun.com/agentpit", false);
+        let s = render_override(&ports, "hkccr.ccs.tencentyun.com/agentpit", WebBind::Local);
         assert!(
             s.contains("image: hkccr.ccs.tencentyun.com/agentpit/postgres:16-alpine"),
             "{s}"
@@ -1545,7 +1805,7 @@ mod tests {
             "{s}"
         );
         // GHCR 下则保持官方库的写法
-        let s2 = render_override(&ports, "docker.io/library", false);
+        let s2 = render_override(&ports, "docker.io/library", WebBind::Local);
         assert!(s2.contains("image: postgres:16-alpine"), "{s2}");
         assert!(
             !s2.contains("docker.io/library/postgres"),
@@ -1616,7 +1876,7 @@ mod tests {
             redis: 6479,
         };
         let sv = crate::ports::Survey::empty();
-        let (got, changes) = resolve_ports_with(&sv, &want, &[], false).unwrap();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[]).unwrap();
         assert_ne!(got.api, pa, "被占的端口必须换掉");
         assert!(changes.iter().any(|c| c.service == "api" && c.wanted == pa));
         // 五个端口互不相同
@@ -1640,7 +1900,7 @@ mod tests {
             redis: free + 4,
         };
         let sv = crate::ports::Survey::empty();
-        let (got, changes) = resolve_ports_with(&sv, &want, &[], false).unwrap();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[]).unwrap();
         if changes.is_empty() {
             assert_eq!(got, want);
         }
@@ -1662,12 +1922,12 @@ mod tests {
 
         // 不告诉它这是自己的 → 换端口
         let sv = crate::ports::Survey::empty();
-        let (got, changes) = resolve_ports_with(&sv, &want, &[], false).unwrap();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[]).unwrap();
         assert_ne!(got.api, p);
         assert!(!changes.is_empty());
 
         // 告诉它这是自己的 → 原样保留，也不产生「端口已改」的提示
-        let (got, changes) = resolve_ports_with(&sv, &want, &[p], false).unwrap();
+        let (got, changes) = resolve_ports_with(&sv, &want, &[p]).unwrap();
         assert_eq!(got.api, p, "自己占着的端口应当原样保留");
         assert!(
             changes.iter().all(|c| c.service != "api"),
@@ -1741,7 +2001,7 @@ mod tests {
         let ports = Ports::default();
         LauncherConfig::default().save().expect("写 launcher.toml");
         write_env(&input(&ports, "gateway")).expect("写 .env");
-        write_override(&ports, "docker.io/library", false).expect("写覆盖文件");
+        write_override(&ports, "docker.io/library").expect("写覆盖文件");
         write_compose("services: {}\n").expect("写 compose");
         crate::flow::write_version_file("1.2.0");
 

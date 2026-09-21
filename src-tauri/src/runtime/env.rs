@@ -57,6 +57,9 @@ pub struct SubEnv {
     pub added: Vec<String>,
     /// 给子进程的 `DOCKER_CONFIG`；`None` = 原样继承调用方的
     pub docker_config: Option<String>,
+    /// 给子进程的 `DOCKER_HOST`（I7 内置运行时起的那台虚拟机的 socket）；
+    /// `None` = 原样继承（用本机默认的 `/var/run/docker.sock`）
+    pub docker_host: Option<String>,
 }
 
 impl SubEnv {
@@ -71,10 +74,14 @@ impl SubEnv {
                 self.added.join("、")
             )
         };
-        match &self.docker_config {
+        let mut head = match &self.docker_config {
             Some(d) => format!("{head}；DOCKER_CONFIG={}", crate::redact::mask_home(d)),
             None => head,
+        };
+        if let Some(h) = &self.docker_host {
+            head.push_str(&format!("；DOCKER_HOST={}", crate::redact::mask_home(h)));
         }
+        head
     }
 }
 
@@ -130,6 +137,10 @@ fn usable(dir: &str) -> bool {
 /// 不在这里另抄一份 —— 抄一份就一定会有哪天只改了一边。
 pub fn candidate_dirs() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    // ⓪ 内置运行时（I7）：docker、colima 在 `runtime/bin`，limactl 在 `runtime/dist/lima/bin`。
+    //    colima 起虚拟机时会去 `$PATH` 上找 limactl —— 这正是「谁的 PATH」那一课的
+    //    第三次应用（I4 是启动器找 docker，I6 是 docker 找凭据助手，这次是 colima 找 limactl）
+    out.extend(super::builtin::path_dirs());
     let probe = which::docker_probe();
     // ① docker 自己在哪，它的插件与助手十有八九就在旁边
     if let Some(p) = probe.resolved.as_deref() {
@@ -186,6 +197,7 @@ pub fn build_path(base: &str, candidates: &[String], exists: &dyn Fn(&str) -> bo
         path: dirs.join(&sep().to_string()),
         added,
         docker_config: None,
+        docker_host: None,
     }
 }
 
@@ -193,8 +205,18 @@ pub fn build_path(base: &str, candidates: &[String], exists: &dyn Fn(&str) -> bo
 fn compute() -> SubEnv {
     let base = std::env::var("PATH").unwrap_or_default();
     let mut e = build_path(&base, &candidate_dirs(), &usable);
-    e.docker_config =
-        crate::dockercfg::isolated_dir_if_enabled().map(|p| p.to_string_lossy().into_owned());
+    // 内置运行时装着时用它自己那一份配置（compose 作为 CLI 插件就在里面），
+    // 否则才看「隔离 docker 配置」这个开关。两者都没有就原样继承。
+    e.docker_config = if super::builtin::is_installed() {
+        Some(
+            crate::paths::runtime_docker_config()
+                .to_string_lossy()
+                .into_owned(),
+        )
+    } else {
+        crate::dockercfg::isolated_dir_if_enabled().map(|p| p.to_string_lossy().into_owned())
+    };
+    e.docker_host = super::builtin::docker_host();
     e
 }
 
@@ -240,6 +262,9 @@ pub fn apply(cmd: &mut std::process::Command) {
     }
     if let Some(d) = &e.docker_config {
         cmd.env("DOCKER_CONFIG", d);
+    }
+    if let Some(h) = &e.docker_host {
+        cmd.env("DOCKER_HOST", h);
     }
 }
 

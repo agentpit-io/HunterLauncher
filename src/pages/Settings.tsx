@@ -163,6 +163,11 @@ export function Settings() {
           </div>
         </Card>
 
+        {/* I7 · 容器运行时：没有 Docker 时走哪条路，以及内置运行时的现状与卸载。
+            这一节里的每个数字（装了什么版本、多少字节、从哪个源下的）都来自
+            Rust 当场读的 `installed.json`，界面不生成任何数字（红线 1）。 */}
+        <RuntimeCard settings={d} t={t} onPatch={patch} onDone={() => s.reload()} />
+
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionPrivacy}</div>
           <div className="mt-[16px] flex flex-col gap-[6px]">
@@ -235,6 +240,179 @@ export function Settings() {
 }
 
 /**
+ * 容器运行时（I7）。
+ *
+ * 两件事：①「电脑上没有 Docker 时走哪条路」——默认内置运行时（零点击），
+ * 备选 OrbStack（首次启动会弹系统提示，做不到零点击，这里如实写明）；
+ * ② 内置运行时装了没有、装了什么、以及**一键卸载**。
+ */
+function RuntimeCard({
+  settings,
+  t,
+  onPatch,
+  onDone,
+}: {
+  settings: LauncherSettings | null
+  t: ReturnType<typeof useStore>['t']
+  onPatch: (p: Partial<LauncherSettings>) => Promise<void>
+  onDone: () => void
+}) {
+  const [nonce, setNonce] = useState(0)
+  const st = useAsync(() => ipc.builtinRuntimeStatus(), [nonce])
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function uninstall() {
+    setBusy(true)
+    setErr(null)
+    setMsg(null)
+    try {
+      setMsg(await ipc.builtinRuntimeUninstall())
+      setNonce((n) => n + 1)
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      setConfirming(false)
+    }
+  }
+
+  const d = st.data
+  return (
+    <Card>
+      <div className="text-md font-medium text-ink">{t.settings.sectionRuntime}</div>
+      <div className="mt-[6px] text-sm leading-[1.6] text-muted">{t.settings.runtimeHint}</div>
+
+      <div className="mt-[14px] flex flex-col gap-[8px]">
+        {(
+          [
+            ['builtin', t.settings.routeBuiltin, t.settings.routeBuiltinHint],
+            ['orbstack', t.settings.routeOrbstack, t.settings.routeOrbstackHint],
+          ] as const
+        ).map(([value, label, hint]) => {
+          const on = (settings?.installRoute ?? 'builtin') === value
+          return (
+            <button
+              key={value}
+              type="button"
+              data-testid={`settings-install-route-${value}`}
+              onClick={() => void onPatch({ installRoute: value })}
+              className={`flex items-start gap-[10px] rounded-md border px-[14px] py-[11px] text-left transition-colors ${
+                on ? 'border-amber bg-amber-soft' : 'border-line bg-card hover:bg-hover'
+              }`}
+            >
+              <span
+                className={`mt-[4px] size-[12px] shrink-0 rounded-full border ${
+                  on ? 'border-amber bg-amber' : 'border-line-strong'
+                }`}
+                aria-hidden
+              />
+              <span className="min-w-0">
+                <span className="block text-md leading-tight text-ink">{label}</span>
+                <span className="mt-[4px] block text-xs leading-[1.5] text-muted">{hint}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      <label className="mt-[12px] flex cursor-pointer items-start gap-[10px]">
+        <input
+          type="checkbox"
+          data-testid="settings-allow-install-runtime"
+          className="mt-[3px] size-[15px] shrink-0 accent-amber"
+          checked={settings?.allowInstallRuntime ?? true}
+          onChange={(e) => void onPatch({ allowInstallRuntime: e.target.checked })}
+        />
+        <span className="min-w-0">
+          <span className="block text-md leading-tight text-ink">{t.consent.allowInstallTitle}</span>
+          <span className="mt-[4px] block text-xs leading-[1.5] text-muted">{t.settings.allowInstallHint}</span>
+        </span>
+      </label>
+
+      {/* 内置运行时的现状。**不支持时把原因原样显示出来**，不含糊成一句「不可用」 */}
+      <div className="mt-[16px]" data-testid="settings-builtin-runtime">
+        {st.loading && <div className="text-sm text-muted">{t.common.loading}</div>}
+        {st.error && <div className="text-sm text-danger">{st.error.message}</div>}
+        {d && !d.supported && (
+          <div className="rounded-md border border-line bg-card px-[14px] py-[11px] text-sm leading-[1.6] text-muted">
+            {d.unsupportedReason}
+          </div>
+        )}
+        {d && d.supported && !d.installed && (
+          <div className="rounded-md border border-line bg-card px-[14px] py-[11px] text-sm leading-[1.6] text-muted">
+            {t.settings.builtinNotInstalled(d.dir, fmtBytes(d.downloadBytes))}
+          </div>
+        )}
+        {d && d.installed && (
+          <div className="rounded-md border border-line bg-card px-[14px] py-[11px]">
+            <div className="flex flex-wrap items-baseline gap-x-[14px] gap-y-[4px]">
+              <span className="text-md text-ink">{t.settings.builtinInstalled}</span>
+              <span className="text-sm text-body">
+                {d.running ? t.settings.builtinRunning : t.settings.builtinStopped}
+              </span>
+              {d.installedAt && <span className="font-mono text-xs text-muted">{d.installedAt}</span>}
+            </div>
+            <ul className="mt-[8px] flex flex-col gap-[3px]">
+              {d.items.map((it) => (
+                <li key={it.file} className="font-mono text-xs leading-[1.6] text-dim">
+                  {it.component} {it.version} · {fmtBytes(it.bytes)} · {it.source} · sha256 {it.sha256.slice(0, 12)}…
+                </li>
+              ))}
+            </ul>
+            <div className="mt-[8px] font-mono text-xs text-muted">{d.dir}</div>
+            <div className="mt-[12px] flex flex-wrap items-center gap-[10px]">
+              {!confirming ? (
+                <Button
+                  size="sm"
+                  data-testid="settings-uninstall-runtime"
+                  disabled={busy}
+                  onClick={() => setConfirming(true)}
+                >
+                  {t.settings.uninstallRuntime}
+                </Button>
+              ) : (
+                <>
+                  <span className="text-sm leading-[1.5] text-body">{t.settings.uninstallConfirm}</span>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    data-testid="settings-uninstall-runtime-yes"
+                    disabled={busy}
+                    onClick={() => void uninstall()}
+                  >
+                    {busy ? t.common.working : t.settings.uninstallYes}
+                  </Button>
+                  <Button size="sm" disabled={busy} onClick={() => setConfirming(false)}>
+                    {t.common.cancel}
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+        {msg && (
+          <div className="mt-[10px] break-all text-sm leading-[1.5] text-amber-text" data-testid="settings-runtime-msg">
+            {msg}
+          </div>
+        )}
+        {err && <div className="mt-[10px] break-all text-sm text-danger">{err}</div>}
+      </div>
+    </Card>
+  )
+}
+
+/** 字节数 → 人话。**只在这里做格式化，数字本身来自 Rust。** */
+function fmtBytes(n: number): string {
+  if (n <= 0) return '—'
+  const mb = n / (1024 * 1024)
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GiB` : `${mb.toFixed(1)} MiB`
+}
+
+/**
  * 镜像源：显示两个候选源的**真实探测结果**，并且允许手动固定（里程碑 M3 第 3 项）。
  * 自定义前缀这一档是给自建仓库的内网用户的 —— 填了就不测速（不知道仓库路径，探不了）。
  */
@@ -255,6 +433,23 @@ function RegistryCard({
 }) {
   const { t } = useStore()
   const [custom, setCustom] = useState('')
+  // I7：只有「升级前就对局域网开放」的老机器会用到这两个 state
+  const [tightening, setTightening] = useState(false)
+  const [tightenMsg, setTightenMsg] = useState('')
+
+  async function onTighten() {
+    setTightening(true)
+    setTightenMsg('')
+    try {
+      setTightenMsg(await ipc.tightenWebBind())
+      // 收紧之后 webLanExposed 变成 false，那段说明与按钮会一起消失
+      await onPatch({})
+    } catch (e) {
+      setTightenMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTightening(false)
+    }
+  }
 
   return (
     <Card>
@@ -306,27 +501,46 @@ function RegistryCard({
         </div>
       </Field>
 
-      {/* 谁能打开 Hunter（待办池 P1-20 的开关）。
-          默认「同一网络里的设备都可以」—— 这是既定设计（总控规则红线 4 把 web 明确排除在
-          「只绑 127.0.0.1」之外），I2 只把开关做出来，**默认值一个字节没动**。
-          改完要重新起容器才生效，下面那句提示写清楚了。 */}
+      {/* 谁能打开 Hunter（待办池 P1-20 · 用户 2026-09-21 19:05 拍板后**不再是开关**）。
+          原话：「目前只能本机访问，不考虑同一局域网访问，这个需要升级付费版本才可以。」
+          所以这里是一行只读的说明 + 一句付费版提示，**点不动、也不写配置**。
+          唯一的例外是升级上来的老机器（升级前就对局域网开放，本轮有意没动它）：
+          多出一段说明与一个「只允许本机访问」按钮，收紧是单向的。 */}
       <div className="mt-[14px] border-t border-line pt-[14px]">
         <div className="text-md text-ink-2">{t.settings.webAccess}</div>
-        <div className="mt-[10px]">
-          <SegmentedControl<string>
-            value={settings?.webLocalOnly ? 'local' : 'all'}
-            testIdPrefix="web-access"
-            onChange={(v) => void onPatch({ webLocalOnly: v === 'local' })}
-            options={[
-              { id: 'all', label: t.settings.webAccessAll },
-              { id: 'local', label: t.settings.webAccessLocal },
-            ]}
-          />
+        <div
+          className="mt-[10px] inline-flex items-center rounded-[6px] border border-line px-[12px] py-[6px] text-md text-ink"
+          data-testid="web-access-value"
+        >
+          {t.settings.webAccessValue}
         </div>
         <div className="mt-[10px] text-xs leading-[1.5] text-muted">{t.settings.webAccessHint}</div>
-        <div className="mt-[6px] text-xs leading-[1.5] text-amber-text">
-          {t.settings.webAccessApply}
+        <div className="mt-[6px] text-xs leading-[1.5] text-muted" data-testid="web-access-paid">
+          {t.settings.webAccessPaid}
         </div>
+        {settings?.webLanExposed && (
+          <div className="mt-[10px] rounded-[6px] border border-amber/40 bg-amber/5 p-[12px]">
+            <div className="text-xs leading-[1.5] text-amber-text">{t.settings.webAccessLegacy}</div>
+            <div className="mt-[10px] flex items-center gap-[10px]">
+              <Button
+                size="sm"
+                data-testid="web-access-tighten"
+                disabled={tightening}
+                onClick={() => void onTighten()}
+              >
+                {tightening ? t.settings.webAccessTightening : t.settings.webAccessTighten}
+              </Button>
+              <span className="text-xs leading-[1.5] text-muted">
+                {t.settings.webAccessTightenNote}
+              </span>
+            </div>
+            {tightenMsg && (
+              <div className="mt-[8px] text-xs leading-[1.5] text-ink-2" data-testid="web-access-tighten-msg">
+                {tightenMsg}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.saving}</div>}

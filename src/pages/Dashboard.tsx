@@ -41,7 +41,21 @@ export function Dashboard() {
   const [showMissing, setShowMissing] = useState(false)
   // 后台每 24 小时查一次启动器自己的版本（方案 §10）。查到就在面板顶上挂一条
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdate | null>(null)
+  // I7：一键把网页端口收回本机。只有升级上来的老机器会用到
+  const [tightening, setTightening] = useState(false)
   const d = rt.data
+
+  async function onTighten() {
+    setTightening(true)
+    try {
+      setNote(await ipc.tightenWebBind())
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTightening(false)
+      rt.reload()
+    }
+  }
 
   // 托盘也能启动 / 停止 / 重启容器，面板要跟着变。
   // 事件来的时候刷一次，另外每 10 秒兜底刷一次（容器自己挂掉不会有事件）。
@@ -178,6 +192,35 @@ export function Dashboard() {
               thousands(quota.limitDaily),
               quotaReset,
             )}
+          </div>
+        </div>
+      )}
+
+      {/* I7：这台机器的网页端口现在对局域网开着（只会出现在升级上来的老机器上）。
+          用户 2026-09-21 19:05 的决定第三点：升级**不自动改动**已有配置，
+          但要在这里说一句现状，并给一个「只允许本机访问」。收紧是单向的。
+          依据是 docker 报的真实绑定地址，不是配置（红线 1）。 */}
+      {d?.webLanExposed && (
+        <div
+          className="mt-[14px] shrink-0 rounded-md border border-amber/40 bg-amber/5 px-4 py-2.5"
+          data-testid="web-lan-banner"
+        >
+          <div className="flex items-center justify-between gap-[14px]">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-amber-text">{t.dashboard.lanTitle}</div>
+              <div className="mt-[4px] text-sm leading-[1.45] text-body">{t.dashboard.lanBody}</div>
+              <div className="mt-[4px] text-xs leading-[1.45] text-muted">
+                {t.dashboard.lanOneWay}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              data-testid="web-lan-tighten"
+              disabled={tightening}
+              onClick={() => void onTighten()}
+            >
+              {tightening ? t.dashboard.lanTighteningNote : t.dashboard.lanTighten}
+            </Button>
           </div>
         </div>
       )}

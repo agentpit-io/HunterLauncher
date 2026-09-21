@@ -66,6 +66,8 @@ const zhCN = {
       '检查你电脑上的 Docker、端口、磁盘、网络是否就绪',
       '为 Hunter 挑空闲端口、切换更快的下载源、重试失败的下载',
       '启动 Docker（如果它装了但没开）',
+      // I7：用户 2026-09-21 19:05 的决定 —— 免费版只允许本机访问
+      '把 Hunter 的六个服务端口全部绑在这台电脑上（127.0.0.1），同一网络里的其他设备打不开',
       '只在 Hunter 自己的文件夹 ~/.hunter 里创建和修改文件',
     ],
     neverTitle: 'AI 绝不会做的（写在程序里，AI 想做也做不了）',
@@ -78,10 +80,15 @@ const zhCN = {
     ],
     askTitle: '遇到这三种情况会先问你',
     ask: [
-      '需要安装新软件（例如 Docker）',
+      '需要安装新软件（例如 Docker）——下面那一项勾着时这一条不再问',
       '需要动你电脑上已有的 Hunter',
       '需要花费超过本次的额度上限',
     ],
+    // I7：一次授权页上那一项默认勾选的勾
+    allowInstallTitle: '如果电脑上没有 Docker，允许 AI 为你安装',
+    allowInstallBody:
+      '装在 Hunter 自己的文件夹 ~/.hunter/runtime 里，不改系统任何地方、不需要管理员密码，设置页里点一下就能卸干净。勾着的话这件事不再单独问你；取消勾选就还是先问。',
+    allowInstallOff: '不勾也能装 —— 到时候会出一张卡片问你一句。',
     autoBtn: '授权 AI 自动安装（推荐）',
     confirmBtn: '我想每一步自己确认',
     off: '不用 AI，只按固定规则装',
@@ -89,9 +96,37 @@ const zhCN = {
     footnote:
       '这次授权只对本次安装与之后的自动修复有效，随时可以在「设置 → AI 助手」里改。AI 每做一件事都会写进 ~/.hunter/logs/assist-audit.log，你可以自己查。',
   },
+  // I7 · 接管态运行面板
+  takeover: {
+    title: '正在管理你原有的 Hunter',
+    subline: (project: string, up: number, total: number) =>
+      `${project} · ${up} / ${total} 个容器在运行`,
+    banner:
+      '这一套是你自己装的，不是启动器装的。启动器只负责帮你看状态、看日志、打开网页；停止 / 启动 / 重启每一次都会再问你一遍，任何情况下都不会删它的数据卷，也不会改它的配置。',
+    open: '打开 Hunter',
+    containers: '容器',
+    noContainers: 'docker 里找不到属于它的容器。',
+    project: 'compose 项目',
+    workDir: '工作目录',
+    noWorkDir: '读不到（所以停止 / 重启做不了，只能看）',
+    since: '接管时间',
+    actions: '能做的事',
+    actionsHint: '下面三个都是改动类操作，点了之后还会再问你一次。',
+    readOnlyHint:
+      '读不到它的 compose 文件在哪（容器上没有 working_dir 标签），所以只能看状态与日志。要停 / 重启它，请回到你当初起它的那个目录去做。',
+    viewLogs: '看日志',
+    logsTitle: '它的日志（最近 200 行，已脱敏）',
+    stop: '停止',
+    start: '启动',
+    restart: '重启',
+    release: '不再管理它',
+    confirmYes: '确定，就这么做',
+  },
   auto: {
     title: 'AI 正在帮你安装',
     intro: '下面每一行都是真的在发生的事。顺利的话你什么都不用点；只有三种情况会来问你。',
+    reviewBadge: '复核',
+    reviewNote: '第二个模型独立看了一遍这个计划，只判「会不会伤到你已有的东西」「说的话对不对得上证据」。它放行也不代表就能执行 —— 守卫和你的确认这两道照样要过。',
     starting: '正在启动安装流程…',
     workingPlain: 'AI 正在帮你安装',
     working: (phase: string) => `AI 正在帮你安装 · ${phase}`,
@@ -262,15 +297,15 @@ const zhCN = {
       '容器在后台跑，关掉启动器不会停掉它们',
       '升级、停止、看日志都在运行面板里',
       '配置在 ~/.hunter/，可以手改',
-      // 这一条是 I1 实测之后加的：web 端口按设计绑在所有网卡上（总控规则红线 4 把 web
-      // 排除在「只绑 127.0.0.1」之外），所以同一网络里的人打这个地址就能直接用，
-      // 不需要任何凭证，也会消耗你的额度。不告诉用户等于让他自己撞上。
-      '这个地址绑在本机所有网卡上：同一网络里的人打开它就能直接用，并且用的是你的额度。只想自己用就去设置页把「谁能打开 Hunter」改成「只有这台电脑」',
+      // I7：六个服务的端口全部只绑本机（用户 2026-09-21 19:05 的决定）。
+      // I1 实测过对外的后果 —— 同一网络里的人不需要任何凭证就能进来烧额度，
+      // 现在这条路从覆盖文件那一层就堵掉了。
+      '这个地址只绑在这台电脑上：同一网络里的其他设备打不开它',
     ],
-    // 设置里已经收紧成「只有这台电脑」时，上面最后那一条要换成这一句 ——
-    // 照着原样显示就成了假话（红线 1）
-    tipLocalOnly:
-      '这个地址只绑在本机：别的设备打不开它。想让手机也能用就去设置页把「谁能打开 Hunter」改回来',
+    // 升级上来的老机器（升级前就对局域网开放，本轮有意没动）显示这一句 ——
+    // 照着上面那条原样显示就成了假话（红线 1）
+    tipLanExposed:
+      '这台机器的网页端口在升级前就对局域网开放：同一网络里的人打开它就能直接用，用的是你的额度。运行面板上点「只允许本机访问」就能收紧（收紧后不能再放开）',
   },
   dashboard: {
     running: 'Hunter 运行中',
@@ -313,6 +348,13 @@ const zhCN = {
     times: '次',
     ownModel: '自带模型',
     keyMissing: 'api 自报没有读到 hunter key（/api/health 的 hunter_api_key = missing）。工具调用会 403，检查 ~/.hunter/app/.env 后重启容器。',
+    // I7：升级上来的老机器才会看到这一条（新装的一律只绑本机，见 done.tips）
+    lanTitle: '当前网页对局域网开放',
+    lanBody:
+      '同一网络里的其他设备打开这个地址就能直接用，不需要任何口令，用的是你的额度。新版本默认只允许本机访问 —— 升级时没有动你的配置，可以在这里收紧。',
+    lanTighten: '只允许本机访问',
+    lanTighteningNote: '正在重建 web 容器…',
+    lanOneWay: '收紧之后不能再放开（局域网访问是付费版功能）。',
   },
   settings: {
     sectionAssist: 'AI 助手',
@@ -342,6 +384,26 @@ const zhCN = {
     title: '设置',
     sectionGeneral: '通用',
     sectionDeploy: '部署',
+    // I7 · 容器运行时
+    sectionRuntime: '容器运行时',
+    runtimeHint:
+      'Hunter 的六个服务跑在容器里，所以这台电脑上得有一套容器运行时。已经装了 OrbStack / Docker Desktop / Colima 的话，启动器直接用它，下面这两条都用不上。',
+    routeBuiltin: '内置运行时（推荐，全程不用你点）',
+    routeBuiltinHint:
+      '把 Colima + Lima + docker 客户端 + compose 装进 ~/.hunter/runtime，版本与校验和写死在程序里、下完逐个核对。不改系统任何地方、不需要管理员密码，不想要了下面点一下就能卸干净。',
+    routeOrbstack: 'OrbStack 官方安装包（需要你点几下）',
+    routeOrbstackHint:
+      '从官方地址下 dmg、验苹果签名与公证之后装进「应用程序」。装得更快，但第一次打开 OrbStack 时，macOS 与它自己会弹欢迎页、可能还要你输一次管理员密码 —— 那是系统与 OrbStack 的交互，启动器不会替你点。另外：OrbStack 个人使用免费，商用需要另外授权。',
+    allowInstallHint:
+      '取消勾选之后，真碰上「这台电脑没有 Docker」时会先出一张卡片问你一句，而不是直接装。',
+    builtinNotInstalled: (dir: string, size: string) =>
+      `还没有装内置运行时。真需要的时候会装到 ${dir}，大约要下 ${size}。`,
+    builtinInstalled: '内置运行时已安装',
+    builtinRunning: '虚拟机正在运行',
+    builtinStopped: '虚拟机没在运行',
+    uninstallRuntime: '卸载内置运行时',
+    uninstallConfirm: '会删掉它的虚拟机磁盘与 ~/.hunter/runtime 整个目录（Hunter 的数据卷不受影响）。确定吗？',
+    uninstallYes: '确定，卸载',
     sectionPrivacy: '隐私',
     sectionAbout: '关于',
     language: '界面语言',
@@ -352,11 +414,17 @@ const zhCN = {
     registryHint: '两个候选源都做过真实探测：能拉到 manifest 的才会显示耗时，探不到的标「不可用」。耗时是从这台机器测的。',
     registryDown: '不可用',
     webAccess: '谁能打开 Hunter',
-    webAccessLocal: '只有这台电脑',
-    webAccessAll: '同一网络里的设备都可以',
+    webAccessValue: '只有这台电脑',
+    // 免费版不提供切换 —— 这一行是说明，不是开关（用户 2026-09-21 19:05 的决定）
+    webAccessPaid: '局域网访问（同一网络的其他设备打开）为付费版功能。',
     webAccessHint:
-      '默认是「同一网络里的设备都可以」—— 手机、平板打开 http://这台机器的IP:端口 就能用，不需要任何口令，用的也是你的额度。只想自己用就切到「只有这台电脑」。',
-    webAccessApply: '改完要重新起一次容器才生效：运行面板上点「重启」。',
+      'Hunter 的六个服务端口全部绑在 127.0.0.1 上：只有这台电脑的浏览器能打开它，同一网络里的其他人打不开，也烧不到你的额度。',
+    // 升级上来的老机器才会看到下面这三条
+    webAccessLegacy:
+      '这台机器的网页端口在升级前就对局域网开放（同一网络里的设备能打开）。新版本默认只允许本机访问 —— 升级时没有动你的配置，要不要收紧由你决定。',
+    webAccessTighten: '只允许本机访问',
+    webAccessTightenNote: '收紧之后不能再放开（局域网访问是付费版功能）。会重建一次 web 容器，几秒钟。',
+    webAccessTightening: '正在重建 web 容器…',
     saving: '正在保存…',
     hunterTag: 'Hunter 版本',
     workDir: '工作目录',
@@ -527,6 +595,16 @@ const zhCN = {
     title: '出错了',
     codeLabel: '错误码',
     detailLabel: '详细信息',
+    sendToDev: '发送诊断给开发者',
+    sendToDevTitle: '这些内容会被发出去，先看一眼',
+    sendToDevIntro:
+      '诊断包已经生成在你自己的机器上，启动器没有把它发给任何人。下面是要预填进 GitHub issue 的标题与正文 —— 点「打开 GitHub」之后你还可以再改，提交与否完全由你决定。',
+    issueTitleLabel: '标题',
+    issueBodyLabel: '正文',
+    revealBundle: '打开诊断包所在文件夹',
+    openIssue: '打开 GitHub 提 issue',
+    scanHit: (what: string) =>
+      `出口闸在要发出去的文字里扫到了敏感内容，已经挡住：${what}。这条路先不给「打开 GitHub」的按钮 —— 请把上面的诊断包手动整理后再贴。`,
     oneClickFeedback: '一键反馈',
     viewLogs: '查看日志',
     codes: {
@@ -538,7 +616,7 @@ const zhCN = {
       E_PULL_FAILED: { title: '镜像拉取失败', hint: '已重试 3 次仍然失败。可以换一个镜像源，或者从离线包导入。' },
       E_PORT_IN_USE: { title: '端口被占用', hint: '启动器已经自动改用别的端口，不需要你操作。' },
       E_PORT_CONFLICT: { title: 'Docker 说端口已经被占了', hint: '启动器已经重新探过端口并换了一组空闲的。要是还撞上，多半是这台机器上另有程序在抢同一个端口，下面写了它是谁。' },
-      E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，**你的 ~/.docker/config.json 不会被改动**。' },
+      E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，你的 ~/.docker/config.json 一个字节都不会被改动。' },
       E_START_TIMEOUT: { title: '启动超时', hint: '180 秒内没有等到全部服务健康。下面写明了是哪个服务没就绪。' },
       E_PROXY_BLOCK: { title: '容器连不上网', hint: '代理的 TUN 模式经常导致这个问题。给 Docker 配上 NO_PROXY，或者临时关掉代理。' },
       E_UPDATE_FAILED: { title: '升级失败', hint: '已经回滚到升级前的版本。把诊断包发给我们能更快定位。' },

@@ -401,8 +401,15 @@ fn do_upgrade(
 
     // ④ 让 compose 自己解析一遍，顺便复核红线 4
     let rendered = compose::config_check_json()?;
-    flow::verify_bindings(&rendered)?;
-    note("docker compose config 校验通过，端口绑定仍然符合红线 4");
+    let bind = crate::config::WebBind::detect();
+    flow::verify_bindings(&rendered, bind)?;
+    note(if bind.lan_exposed() {
+        // 用户 2026-09-21 19:05 的决定第三点：升级**不自动改动**已有配置。
+        // 但不能不说 —— 说清楚现状与怎么收紧，运行面板上还有一个按钮。
+        "docker compose config 校验通过。这台机器的网页端口升级前就对局域网开放，本次没有改动它；         新版本默认只允许本机访问，运行面板上点「只允许本机访问」就能收紧（收紧后不能再放开）。"
+    } else {
+        "docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）"
+    });
 
     // ⑤ 拉新镜像
     let prep = prepare_pull(&cfg, target, note)?;

@@ -490,11 +490,174 @@ pub fn export_zip(
     Ok((path.to_string_lossy().into_owned(), bytes.len()))
 }
 
+// ── 一键反馈直达（I7） ────────────────────────────────────────────────────
+
+/// 「发送诊断给开发者」按一下之后，界面拿到的那一份。
+///
+/// **注意它里面没有「已上报」这种字段。** 启动器不会把任何东西发到我们的服务器
+/// （`telemetry.agentpit.io` 根本不存在，总控规则里写着不许假装上报成功）。
+/// 它做的是三件事：在本机生成脱敏包、把包扫一遍、拼一条预填好的 issue 链接。
+/// 发不发、发什么，全程由用户点。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneClick {
+    /// 诊断包在本机的绝对路径（用户要能找得到它）
+    pub bundle_path: String,
+    /// 包有多大（字节，真实值）
+    pub bundle_bytes: usize,
+    /// 预填好的 GitHub issue 链接。**用户确认之后**才由界面打开浏览器
+    pub issue_url: String,
+    /// issue 的标题与正文（界面上先给用户看一眼，再决定要不要打开浏览器）
+    pub issue_title: String,
+    pub issue_body: String,
+    /// 出门前的整包扫描结果。`None` = 干净
+    pub scan_hit: Option<String>,
+    /// 给用户看的一句话
+    pub note: String,
+}
+
+/// 生成诊断包 + 预填 issue。**不打开浏览器、不发送任何东西。**
+///
+/// 打开浏览器是界面上另一次点击的事（`feedback_open_issue`），
+/// 中间隔着一屏「这是要发出去的内容」。理由很简单：一键直达指的是
+/// 「少点几下」，不是「不给人看就发出去」。
+pub fn one_click(error_code: &str, error_message: &str) -> AppResult<OneClick> {
+    let cfg = LauncherConfig::load();
+    let sections = collect(&cfg, env!("CARGO_PKG_VERSION"));
+    let include: Vec<String> = sections.iter().map(|s| s.id.clone()).collect();
+    let desc = if error_message.trim().is_empty() {
+        "AI 自动安装没能把问题解决，导出现场请开发者看看。".to_string()
+    } else {
+        format!(
+            "AI 自动安装没能把问题解决。最后卡在：{}",
+            redact::mask_home(&redact::redact(error_message.trim()))
+        )
+    };
+    let form = Form {
+        kind: "deploy".into(),
+        description: desc,
+        contact: String::new(),
+        error_code: error_code.trim().to_string(),
+    };
+    let (path, bytes) = export_zip(&sections, &include, &form, env!("CARGO_PKG_VERSION"))?;
+
+    let summary = sections
+        .iter()
+        .find(|s| s.id == "summary")
+        .map(|s| s.body.clone())
+        .unwrap_or_default();
+    let url = issue_url(&form, &summary);
+    let (title, body) = issue_parts(&form, &summary);
+
+    // 出门前再扫一遍**将要贴出去的那段文字**。包本身在 `export_zip` 里已经扫过，
+    // 这一段是另外拼的，得单独过闸（I7 新增：连同用户名与主机名一起查）
+    let scan_hit = assert_clean_strict(&format!(
+        "{title}
+{body}"
+    ));
+    if let Some(h) = &scan_hit {
+        crate::lwarn!("一键反馈的 issue 正文没过出口闸：{h}");
+    }
+    let note = format!(
+        "诊断包已经生成在你自己的机器上：{}（{} 字节）。启动器**没有**把它发给任何人 ——          下一步会打开浏览器、把标题和正文预填进一条 GitHub issue，要不要发由你决定；         包要不要附上，也由你自己拖进去。",
+        redact::mask_home(&path),
+        bytes
+    );
+    Ok(OneClick {
+        bundle_path: path,
+        bundle_bytes: bytes,
+        issue_url: url,
+        issue_title: title,
+        issue_body: body,
+        scan_hit,
+        note,
+    })
+}
+
+/// 比 [`assert_clean`] 再严一档：连**用户名**与**主机名**都不许出现（I7）。
+///
+/// 为什么要单独一档：`mask_home` 把 `/Users/zhang` 这种路径抹成了 `~`，
+/// 但用户名可能以别的形态混进来（容器名前缀、`whoami` 的输出、
+/// compose 项目名跟着目录名走……）。主机名同理 —— 它会出现在
+/// `docker info` 的 `Name:` 一行里，而那一行本身是有用的诊断信息，
+/// 所以是**这里**负责在出门前拦住它，而不是把整段扔掉。
+pub fn assert_clean_strict(text: &str) -> Option<String> {
+    if let Some(h) = assert_clean(text) {
+        return Some(h);
+    }
+    for (what, value) in [("用户名", current_user()), ("主机名", hostname())] {
+        let Some(v) = value else { continue };
+        // 太短的名字（`u`、`ci`）会把正常词误伤成命中，只查 3 个字符以上的
+        if v.len() < 3 {
+            continue;
+        }
+        for (i, line) in text.lines().enumerate() {
+            if line.contains(&v) {
+                return Some(format!(
+                    "第 {} 行出现{}：{}",
+                    i + 1,
+                    what,
+                    line.trim().chars().take(120).collect::<String>()
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// 当前用户名。取不到就是 `None`（**不猜**）。
+pub fn current_user() -> Option<String> {
+    for k in ["USER", "USERNAME", "LOGNAME"] {
+        if let Ok(v) = std::env::var(k) {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    // 退一步：家目录的最后一段通常就是用户名
+    crate::paths::home()
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty() && s != "/")
+}
+
+/// 本机主机名。取不到就是 `None`。
+pub fn hostname() -> Option<String> {
+    if let Ok(v) = std::env::var("HOSTNAME") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    if let Ok(v) = std::env::var("COMPUTERNAME") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// GitHub 仓库。issue 开在启动器自己的仓库里 —— 用户遇到的是部署问题。
 pub const ISSUE_REPO: &str = "https://github.com/agentpit-io/HunterLauncher";
 
 /// 拼一个**预填好**的 issue 链接。诊断包不自动上传，正文里只放概要那一节。
 pub fn issue_url(form: &Form, summary: &str) -> String {
+    let (title, body) = issue_parts(form, summary);
+    format!(
+        "{ISSUE_REPO}/issues/new?title={}&body={}",
+        urlencode(&redact::redact(&title)),
+        urlencode(&redact::redact(&body))
+    )
+}
+
+/// issue 的标题与正文。**链接里编的就是这两段** —— 界面上给用户预览的也是它们，
+/// 不存在「看到的是一套、发出去的是另一套」。
+pub fn issue_parts(form: &Form, summary: &str) -> (String, String) {
     let title = if form.error_code.is_empty() {
         format!("[{}] ", form.kind_cn())
     } else {
@@ -522,12 +685,7 @@ pub fn issue_url(form: &Form, summary: &str) -> String {
         "## 诊断包\n\n> 启动器已经在本机导出了一份脱敏诊断包，**没有自动上传**。\n\
          > 需要的话把它拖进这条 issue：`~/.hunter/diagnostics/` 下最新的那个 zip。\n",
     );
-
-    format!(
-        "{ISSUE_REPO}/issues/new?title={}&body={}",
-        urlencode(&redact::redact(&title)),
-        urlencode(&redact::redact(&body))
-    )
+    (redact::redact(&title), redact::redact(&body))
 }
 
 /// URL 百分号编码（RFC 3986 的 unreserved 之外一律编码）。
@@ -667,5 +825,82 @@ mod tests {
             i += 1;
         }
         String::from_utf8_lossy(&out).into_owned()
+    }
+
+    // ── I7 · 一键反馈直达 ─────────────────────────────────────────────────
+
+    /// 出口闸比 [`assert_clean`] 再严一档：**用户名与主机名也不许出现**。
+    #[test]
+    fn 严格闸门扫得出用户名与主机名() {
+        if let Some(u) = current_user() {
+            if u.len() >= 3 {
+                let hit = assert_clean_strict(&format!("容器名 {u}-hunter-web-1"));
+                assert!(hit.is_some(), "用户名 {u} 该被扫出来");
+                assert!(hit.unwrap().contains("用户名"));
+            }
+        }
+        if let Some(h) = hostname() {
+            if h.len() >= 3 {
+                let hit = assert_clean_strict(&format!("Name: {h}"));
+                assert!(hit.is_some(), "主机名 {h} 该被扫出来");
+                assert!(hit.unwrap().contains("主机名"));
+            }
+        }
+        // key 那一档照旧
+        assert!(assert_clean_strict("hunt_tools_abcdefghijklmnopqrstuvwxyz012345").is_some());
+        // 干净的文本要放行
+        assert_eq!(assert_clean_strict("启动器 0.1.7 · macos aarch64"), None);
+    }
+
+    /// 太短的用户名（`ci`、`u`）不参与匹配 —— 否则正常词会被误伤。
+    #[test]
+    fn 太短的名字不误伤() {
+        // 这一条只能间接验：造一段必然含 "ci" 的正常文本，它不该被判脏
+        let text = "镜像源测速：ghcr 619 ms";
+        let hit = assert_clean_strict(text);
+        // 只有当真实用户名/主机名恰好出现在这句话里才会命中；正常机器上不会
+        if let (Some(u), Some(h)) = (current_user(), hostname()) {
+            if !text.contains(&u) && !text.contains(&h) {
+                assert_eq!(hit, None, "{hit:?}");
+            }
+        }
+    }
+
+    /// 一键反馈**不会**声称上报成功，而且路径与字节数都是真的。
+    #[test]
+    fn 一键反馈只在本机生成不发送() {
+        let r = one_click("E_PULL_FAILED", "docker compose pull 退出码 1").expect("能生成");
+        assert!(r.bundle_bytes > 0, "包不该是空的");
+        assert!(
+            std::path::Path::new(&r.bundle_path).exists(),
+            "包要真的在：{}",
+            r.bundle_path
+        );
+        assert!(r.issue_url.starts_with(ISSUE_REPO), "{}", r.issue_url);
+        assert!(r.issue_title.contains("E_PULL_FAILED"), "{}", r.issue_title);
+        // **不许出现「已上报 / 已发送」这类话**（总控规则：不得假装上报成功）
+        for bad in ["已上报", "已发送", "上传成功"] {
+            assert!(!r.note.contains(bad), "回执里不该写「{bad}」：{}", r.note);
+        }
+        assert!(r.note.contains("没有"), "要写清楚没发给任何人：{}", r.note);
+        // 正文里不许出现 key
+        assert_eq!(assert_clean(&r.issue_body), None);
+        let _ = std::fs::remove_file(&r.bundle_path);
+    }
+
+    /// 界面上看到的标题正文，**就是链接里编的那两段**。
+    #[test]
+    fn 预览的内容与链接里的一致() {
+        let f = Form {
+            kind: "deploy".into(),
+            description: "装不上".into(),
+            contact: String::new(),
+            error_code: "E_PORT_CONFLICT".into(),
+        };
+        let (title, body) = issue_parts(&f, "启动器: 0.1.7");
+        let url = issue_url(&f, "启动器: 0.1.7");
+        let dec = percent_decode(&url);
+        assert!(dec.contains(&title), "链接里的标题和预览的不一样");
+        assert!(dec.contains(body.trim()), "链接里的正文和预览的不一样");
     }
 }

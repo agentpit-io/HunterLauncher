@@ -97,7 +97,12 @@ export function AutoInstall() {
     return m
   }, [events])
 
-  const waiting = events.find((e) => e.status === 'waiting' && (e.choices?.length ?? 0) > 0)
+  // 取**最后**一张还在等的卡片，不是第一张。
+  // I7 加了一张「你电脑上已经有一套 Hunter」的**不阻塞**卡片：它可能一直挂着
+  // （用户不点也没关系，默认就是并存），如果取第一张，后面真正拦住安装的那张
+  // 就永远显示不出来 —— 用户会盯着一张无关的卡片以为卡住了。
+  const waitingAll = events.filter((e) => e.status === 'waiting' && (e.choices?.length ?? 0) > 0)
+  const waiting = waitingAll.length > 0 ? waitingAll[waitingAll.length - 1] : undefined
 
   return (
     <WizardLayout title={t.auto.title} intro={t.auto.intro}>
@@ -204,23 +209,35 @@ function Node({
   return (
     <div style={{ paddingLeft: depth * 22 }}>
       <div
-        data-testid={`auto-event-${e.id}`}
+        data-testid={e.kind === 'review' ? `auto-review-${e.id}` : `auto-event-${e.id}`}
         className={`flex items-start gap-[10px] rounded-md border px-[14px] py-[9px] ${
           e.status === 'failed'
             ? 'border-danger/40 bg-danger-soft'
             : e.status === 'waiting'
               ? 'border-amber/60 bg-amber-soft'
-              : e.status === 'warn'
-                ? 'border-warning/35 bg-card'
-                : 'border-line bg-card'
+              : // I7：复核卡片单独一种样式 —— 它是「另一个模型在挑毛病」，
+                // 不是安装流程里的一步，混在一起看不出来
+                e.kind === 'review'
+                ? 'border-info/55 bg-info-soft'
+                : e.status === 'warn'
+                  ? 'border-warning/35 bg-card'
+                  : 'border-line bg-card'
         }`}
       >
         <span className={`mt-[6px] size-[8px] shrink-0 rounded-full ${DOT[e.status]}`} aria-hidden />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-[12px]">
+            {e.kind === 'review' && (
+              <span className="rounded-sm bg-info/25 px-[6px] py-[1px] text-xs leading-[1.6] text-info">
+                {t.auto.reviewBadge}
+              </span>
+            )}
             <span className="text-md leading-[1.35] text-ink">{e.title}</span>
             {e.detail && <span className="text-sm leading-[1.4] text-body">{e.detail}</span>}
           </div>
+          {e.kind === 'review' && (
+            <div className="mt-[4px] text-xs leading-[1.5] text-muted">{t.auto.reviewNote}</div>
+          )}
           {(hasTech || e.elapsedMs !== undefined || e.tokens !== undefined) && (
             <div className="mt-[4px] flex items-center gap-[12px]">
               {hasTech && (

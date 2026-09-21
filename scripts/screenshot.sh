@@ -21,7 +21,10 @@ SETTLE="${SETTLE:-9}"
 
 # I5：向导改成「欢迎 → key → 一次授权 → 选模型 → 自动安装 → 完成」，
 # 「拉取镜像」那一页没有了，换成 consent 与 auto 两页（见 src/state/machine.ts 文件头）
-PAGES=(welcome key consent model auto auto-need-user docker docker-missing start done dashboard dashboard-quota-exhausted settings logs feedback update error)
+# I7 新增三页：auto-review（复核卡片）、auto-takeover-offer（「直接用它」那张不阻塞的卡片）、
+# takeover（接管态的运行面板）
+# I7 又新增两页：dashboard-lan / settings-lan（升级上来、网页端口还对局域网开着的老机器）
+PAGES=(welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

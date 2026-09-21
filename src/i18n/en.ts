@@ -68,6 +68,7 @@ const en: Dict = {
       'Check Docker, ports, disk and network on your machine',
       'Pick free ports, switch to a faster download mirror, retry failed downloads',
       'Start Docker (if it is installed but not running)',
+      'Bind all six Hunter service ports to this computer only (127.0.0.1) — no other device on the network can open them',
       'Create and modify files only inside Hunter\'s own folder ~/.hunter',
     ],
     neverTitle: 'What it will never do (enforced in code, not by prompt)',
@@ -80,10 +81,14 @@ const en: Dict = {
     ],
     askTitle: 'It will ask you first in these three cases',
     ask: [
-      'New software needs to be installed (e.g. Docker)',
+      'New software needs to be installed (e.g. Docker) — not asked while the box below is ticked',
       'An existing Hunter on your machine would be touched',
       'This run would go over its token budget',
     ],
+    allowInstallTitle: 'If this computer has no Docker, let the AI install one for you',
+    allowInstallBody:
+      "It goes into Hunter's own folder ~/.hunter/runtime — nothing system-wide is changed, no admin password is needed, and one click in Settings removes it completely. While this is ticked you will not be asked about it again; untick it and you will.",
+    allowInstallOff: 'Leaving it unticked is fine — you will get a card asking you at the time.',
     autoBtn: 'Let the AI install it (recommended)',
     confirmBtn: 'Ask me before every change',
     off: 'No AI, fixed rules only',
@@ -91,9 +96,36 @@ const en: Dict = {
     footnote:
       'This applies to this installation and later automatic fixes; change it any time under Settings → AI assistant. Every action is appended to ~/.hunter/logs/assist-audit.log.',
   },
+  takeover: {
+    title: 'Managing your existing Hunter',
+    subline: (project: string, up: number, total: number) =>
+      `${project} · ${up} / ${total} containers running`,
+    banner:
+      'This stack is yours, not one the launcher installed. The launcher only shows its status and logs and opens its web page; stop / start / restart will ask you again every single time, its data volumes are never deleted, and its configuration is never changed.',
+    open: 'Open Hunter',
+    containers: 'Containers',
+    noContainers: 'No containers belonging to it were found in docker.',
+    project: 'compose project',
+    workDir: 'Working directory',
+    noWorkDir: 'Not readable (so stop / restart are unavailable — view only)',
+    since: 'Taken over at',
+    actions: 'What you can do',
+    actionsHint: 'All three change things, so each one asks you once more first.',
+    readOnlyHint:
+      'Its compose file location cannot be read (the containers carry no working_dir label), so only status and logs are available. To stop or restart it, go back to the directory you started it from.',
+    viewLogs: 'View logs',
+    logsTitle: 'Its logs (last 200 lines, redacted)',
+    stop: 'Stop',
+    start: 'Start',
+    restart: 'Restart',
+    release: 'Stop managing it',
+    confirmYes: 'Yes, do it',
+  },
   auto: {
     title: 'The AI is installing Hunter',
     intro: 'Every line below is something that actually happened. Normally you click nothing; only three cases need you.',
+    reviewBadge: 'Review',
+    reviewNote: 'A second model read this plan on its own and only judged two things: whether it could harm anything you already have, and whether its reasoning matches the evidence. Its approval alone does not let anything run — the guard and your confirmation still apply.',
     starting: 'Starting the installation…',
     workingPlain: 'AI is installing',
     working: (phase: string) => `AI is installing · ${phase}`,
@@ -272,10 +304,10 @@ const en: Dict = {
       'Containers run in the background — closing the launcher does not stop them',
       'Upgrade, stop and logs all live in the run panel',
       'Configuration is in ~/.hunter/ and can be edited by hand',
-      'This address is bound to every network interface: anyone on the same network can open it and use it — on your quota. Switch "Who can open Hunter" to "this computer only" in Settings if you want it to yourself',
+      'This address is bound to this computer only: no other device on the same network can open it',
     ],
-    tipLocalOnly:
-      'This address is bound to this machine only: no other device can open it. Change "Who can open Hunter" in Settings to let your phone in',
+    tipLanExposed:
+      'This machine had the web port open to the local network before the upgrade: anyone on the same network can open it and use it — on your quota. Hit "This computer only" on the run panel to tighten it (tightening cannot be undone)',
   },
   dashboard: {
     running: 'Hunter is running',
@@ -314,6 +346,12 @@ const en: Dict = {
     ownModel: 'Own model',
     keyMissing:
       'The api container reports it has no hunter key (/api/health says hunter_api_key = missing). Tool calls will 403 — check ~/.hunter/app/.env and restart the containers.',
+    lanTitle: 'The web page is open to your local network',
+    lanBody:
+      'Any other device on the same network can open this address and use it with no password, on your quota. The new version allows this computer only — the upgrade did not touch your configuration; you can tighten it here.',
+    lanTighten: 'This computer only',
+    lanTighteningNote: 'Recreating the web container…',
+    lanOneWay: 'Cannot be undone (local-network access is a paid-plan feature).',
   },
   settings: {
     sectionAssist: 'AI assistant',
@@ -343,6 +381,26 @@ const en: Dict = {
     title: 'Settings',
     sectionGeneral: 'General',
     sectionDeploy: 'Deployment',
+    sectionRuntime: 'Container runtime',
+    runtimeHint:
+      "Hunter's six services run in containers, so this computer needs a container runtime. If OrbStack / Docker Desktop / Colima is already installed, the launcher just uses it and neither option below applies.",
+    routeBuiltin: 'Built-in runtime (recommended, no clicks needed)',
+    routeBuiltinHint:
+      'Puts Colima + Lima + the docker client + compose into ~/.hunter/runtime. Versions and checksums are pinned in the program and every file is verified after download. Nothing system-wide is changed, no admin password is needed, and one click below removes it completely.',
+    routeOrbstack: 'Official OrbStack installer (needs a few clicks from you)',
+    routeOrbstackHint:
+      "Downloads the official dmg, verifies Apple's signature and notarization, then installs it into Applications. Faster to install, but the first time OrbStack opens, macOS and OrbStack itself will show a welcome screen and may ask for your admin password — that is between you and them; the launcher will not click it for you. Also: OrbStack is free for personal use and requires a licence for commercial use.",
+    allowInstallHint:
+      'Untick this and you will get a card asking first when this computer turns out to have no Docker, instead of it being installed straight away.',
+    builtinNotInstalled: (dir: string, size: string) =>
+      `The built-in runtime is not installed. If it is ever needed it goes into ${dir} and downloads about ${size}.`,
+    builtinInstalled: 'Built-in runtime installed',
+    builtinRunning: 'VM is running',
+    builtinStopped: 'VM is not running',
+    uninstallRuntime: 'Remove built-in runtime',
+    uninstallConfirm:
+      "This deletes its VM disk and the whole ~/.hunter/runtime directory (Hunter's own data volumes are untouched). Sure?",
+    uninstallYes: 'Yes, remove it',
     sectionPrivacy: 'Privacy',
     sectionAbout: 'About',
     language: 'Language',
@@ -354,11 +412,15 @@ const en: Dict = {
       'Both candidates are probed for real: only sources whose manifest actually resolves show a timing. Timings are measured from this machine.',
     registryDown: 'unavailable',
     webAccess: 'Who can open Hunter',
-    webAccessLocal: 'This computer only',
-    webAccessAll: 'Anyone on the same network',
+    webAccessValue: 'This computer only',
+    webAccessPaid: 'Local-network access (opening it from another device on the same network) is a paid-plan feature.',
     webAccessHint:
-      'Defaults to "anyone on the same network" — a phone or tablet can open http://<this machine IP>:<port> with no password at all, spending your quota. Switch to "this computer only" if you want it to yourself.',
-    webAccessApply: 'Takes effect after the containers restart: hit Restart on the dashboard.',
+      'All six Hunter service ports are bound to 127.0.0.1: only a browser on this computer can open them, so nobody else on the network can reach it or spend your quota.',
+    webAccessLegacy:
+      'This machine had the web port open to the local network before the upgrade. The new version allows this computer only — the upgrade did NOT touch your configuration, so tightening is your call.',
+    webAccessTighten: 'This computer only',
+    webAccessTightenNote: 'Cannot be undone (local-network access is a paid-plan feature). Recreates the web container — a few seconds.',
+    webAccessTightening: 'Recreating the web container…',
     saving: 'Saving…',
     hunterTag: 'Hunter version',
     workDir: 'Working directory',
@@ -530,6 +592,16 @@ const en: Dict = {
     title: 'Something went wrong',
     codeLabel: 'Error code',
     detailLabel: 'Details',
+    sendToDev: 'Send diagnostics to the developers',
+    sendToDevTitle: 'This is what would go out — take a look first',
+    sendToDevIntro:
+      'The diagnostics bundle has been written to your own machine; the launcher has not sent it to anyone. Below is the title and body that would be pre-filled into a GitHub issue — you can still edit it after opening, and whether to submit is entirely up to you.',
+    issueTitleLabel: 'Title',
+    issueBodyLabel: 'Body',
+    revealBundle: 'Show the bundle in the file manager',
+    openIssue: 'Open GitHub and file an issue',
+    scanHit: (what: string) =>
+      `The outbound gate found something sensitive in the text that would be sent and blocked it: ${what}. The "Open GitHub" button is withheld here — please review the bundle above and paste it manually.`,
     oneClickFeedback: 'Report this',
     viewLogs: 'View logs',
     codes: {
@@ -541,7 +613,7 @@ const en: Dict = {
       E_PULL_FAILED: { title: 'Image pull failed', hint: 'Retried 3 times without success. Switch registry, or import an offline bundle.' },
       E_PORT_IN_USE: { title: 'Port already in use', hint: 'The launcher already remapped to a free port — nothing for you to do.' },
       E_PORT_CONFLICT: { title: 'Docker refused the port', hint: 'The launcher re-probed and moved to a free port. If it still collides, another program on this machine is grabbing the same port — it is named below.' },
-      E_CRED_HELPER: { title: 'Docker cannot find its own credential helper', hint: 'Your ~/.docker/config.json sets credsStore, but that docker-credential-* binary is not on the PATH the launcher can see. Hunter pulls public images, which need no login — the launcher writes its own config without a credential helper; **your ~/.docker/config.json is left untouched**.' },
+      E_CRED_HELPER: { title: 'Docker cannot find its own credential helper', hint: 'Your ~/.docker/config.json sets credsStore, but that docker-credential-* binary is not on the PATH the launcher can see. Hunter pulls public images, which need no login — the launcher writes its own config without a credential helper; your ~/.docker/config.json is left untouched, byte for byte.' },
       E_START_TIMEOUT: { title: 'Start timed out', hint: 'Not all services became healthy within 180 seconds. The one that stalled is named below.' },
       E_PROXY_BLOCK: { title: 'Containers have no network', hint: 'TUN-mode proxies usually cause this. Configure NO_PROXY for Docker, or turn the proxy off.' },
       E_UPDATE_FAILED: { title: 'Upgrade failed', hint: 'Already rolled back to the previous version. A diagnostic bundle helps us pin it down.' },
