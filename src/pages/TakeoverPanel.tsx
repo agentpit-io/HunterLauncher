@@ -153,8 +153,10 @@ export function TakeoverPanel() {
               {
                 label: t.takeover.workDir,
                 value: d?.workingDir || null,
-                // 读不到工作目录不是「加载中」，是**真的没有** —— 说清后果
-                reason: t.takeover.noWorkDir,
+                // 还没读到 ≠ 读不到。**只有真的拿回来了、而且是空的**，
+                // 才写那句「读不到（所以停止 / 重启做不了）」——
+                // 加载中就说加载中，不要把「还没问完」说成「问不出来」
+                reason: st.loading ? t.common.loading : t.takeover.noWorkDir,
               },
               { label: t.takeover.since, value: d?.since || null, reason: '—' },
             ]}
