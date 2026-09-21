@@ -1,0 +1,5 @@
+{"action":"autopilot_start","args":{},"at":"2026-09-21 11:46:11","by":"user","level":null,"result":"授权档位 off"}
+{"action":"autopilot_start","args":{},"at":"2026-09-21 11:46:48","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"remove_own_stale_containers","args":{},"at":"2026-09-21 11:47:00","by":"rule","level":"Safe","result":"成功：清掉了 6 个残留容器：hunter-opencode-1、hunter-web-1、hunter-api-1、hunter-postgres-1、hunter-redis-1、hunter-llm-shim-1"}
+{"action":"compose_down_own","args":{},"at":"2026-09-21 11:47:00","by":"rule","level":"Safe","result":"成功：退出码 Some(0)"}
+{"action":"remap_ports","args":{},"at":"2026-09-21 11:47:01","by":"rule","level":"Safe","result":"成功：web：3101 → 3102"}

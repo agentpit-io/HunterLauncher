@@ -1,0 +1,2 @@
+{"action":"autopilot_start","args":{},"at":"2026-09-21 12:01:29","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"switch_registry","args":{"registry":"tencent"},"at":"2026-09-21 12:01:33","by":"rule","level":"Safe","result":"成功：镜像源已切成「腾讯云 · 香港」（hkccr.ccs.tencentyun.com/agentpit）。下一次拉取会从这里拉。"}

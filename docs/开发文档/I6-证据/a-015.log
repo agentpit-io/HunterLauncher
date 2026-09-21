@@ -1,0 +1,77 @@
+
+Hunter 启动器 · AI 自动驾驶安装
+────────────────────────────────────────────
+工作目录 /home/support/.hunter
+  从 /home/support/.hunter-launcher-test/key 读到一把 key（hunt_tools_****）
+  ✓ key 有效
+  授权档位：auto（自动驾驶）
+  预算：单问题 4 回合 · 整次 10 回合 · 60000 token · 单次模型 45 秒
+
+[总览] 开始安装 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+… 检查 Docker
+[总览] 检查 Docker · 已自动解决 0 个问题 · 回合 0/10 · token 0
+✓ 检查 Docker　Docker Engine 29.8.1 正在运行
+… 挑下载源、算端口、写配置
+[总览] 挑下载源、算端口、写配置 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+   ! 你电脑上已经在运行另一套 Hunter　hunter-community（6 个容器，占着端口 3100、3921、5442、6479、8100）
+   ✓ 正在测速候选镜像源…
+   ✓   可用 GHCR · GitHub · 318 ms
+   ✓   可用 腾讯云 · 香港 · 1638 ms
+   ✓ 选定：GHCR · GitHub
+   ✓ compose：已按 tag v1.2.0 下载并校验（23990 字节）
+   ✓ 已写 <用户目录>/.hunter/app/.env（权限 600）与覆盖文件；端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480
+   ✓ docker compose config 校验通过，且除 web 外的端口都绑在 127.0.0.1
+   ✓ 六个镜像合计约 849 MB（linux/amd64 压缩后，来自 manifest）
+✓ 挑下载源、算端口、写配置　下载源 GHCR · GitHub · 端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480
+… 下载组件
+[总览] 下载组件 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+… 下载组件　六个镜像，正在拉取…
+× 下载组件　docker compose pull 退出码 1。原话：
+[总览] 正在解决：镜像拉取失败 · 已自动解决 0 个问题 · 回合 1/10 · token 0
+! 发现问题：组件下载失败　docker compose pull 退出码 1。原话：
+   … 分析中…
+   ✓ 分析中…　查了 5 个端口 · 本机还有 1 套 Hunter
+   ✓ 找到原因　当前这个下载源拉不动，刚测过「腾讯云 · 香港」是通的，换过去重来。
+   … 正在处理：换镜像源到 腾讯云 · 香港
+   ✓ 正在处理：换镜像源到 腾讯云 · 香港　镜像源已切成「腾讯云 · 香港」（hkccr.ccs.tencentyun.com/agentpit）。下一次拉取会从这里拉。
+   … 正在处理：退避之后重新拉镜像
+   × 正在处理：退避之后重新拉镜像　docker compose pull 退出码 1。原话：error getting credentials - err: exec: "docker-credential-fakehelper": executable file not found in $PATH, out: ``
+   … 重新试一次刚才失败的那一步　下载组件
+… 下载组件
+[总览] 下载组件 · 已自动解决 0 个问题 · 回合 1/10 · token 0
+… 下载组件　六个镜像，正在拉取…
+× 下载组件　docker compose pull 退出码 1。原话：
+[总览] 正在解决：镜像拉取失败 · 已自动解决 0 个问题 · 回合 2/10 · token 0
+! 发现问题：组件下载失败　docker compose pull 退出码 1。原话：
+   … 分析中…
+   ✓ 分析中…　查了 5 个端口 · 本机还有 1 套 Hunter
+   ✓ 找到原因　当前这个下载源拉不动，刚测过「GHCR · GitHub」是通的，换过去重来。
+   … 正在处理：换镜像源到 GHCR · GitHub
+   ✓ 正在处理：换镜像源到 GHCR · GitHub　镜像源已切成「GHCR · GitHub」（ghcr.io/agentpit-io）。下一次拉取会从这里拉。
+   … 重新试一次刚才失败的那一步　下载组件
+… 下载组件
+[总览] 下载组件 · 已自动解决 0 个问题 · 回合 2/10 · token 0
+… 下载组件　六个镜像，正在拉取…
+× 下载组件　docker compose pull 退出码 1。原话：
+[总览] 正在解决：镜像拉取失败 · 已自动解决 0 个问题 · 回合 3/10 · token 0
+! 发现问题：组件下载失败　docker compose pull 退出码 1。原话：
+   … 分析中…
+   ✓ 分析中…　查了 5 个端口 · 本机还有 1 套 Hunter
+   ✓ 找到原因　当前这个下载源拉不动，刚测过「腾讯云 · 香港」是通的，换过去重来。
+   … 正在处理：换镜像源到 腾讯云 · 香港
+   ✓ 正在处理：换镜像源到 腾讯云 · 香港　镜像源已切成「腾讯云 · 香港」（hkccr.ccs.tencentyun.com/agentpit）。下一次拉取会从这里拉。
+   … 重新试一次刚才失败的那一步　下载组件
+… 下载组件
+[总览] 下载组件 · 已自动解决 0 个问题 · 回合 3/10 · token 0
+… 下载组件　六个镜像，正在拉取…
+× 下载组件　docker compose pull 退出码 1。原话：
+× 不再继续试了　同一个问题已经试了 4 回合还没解决，不再继续猜了。
+× 没能自动装好　docker compose pull 退出码 1。原话：
+[总览] 失败 · 已自动解决 0 个问题 · 回合 3/10 · token 0
+
+事件流：/home/support/.hunter/logs/assist-events.jsonl
+审计日志：/home/support/.hunter/logs/assist-audit.log
+统计：自动解决 0 个问题 · 3 个修复回合 · 0 token · 用时 121 秒
+
+✗ E_PULL_FAILED: docker compose pull 退出码 1。原话：
+  日志：/home/support/.hunter/logs/launcher.log
