@@ -78,10 +78,15 @@ const zhCN = {
     ],
     askTitle: '遇到这三种情况会先问你',
     ask: [
-      '需要安装新软件（例如 Docker）',
+      '需要安装新软件（例如 Docker）——下面那一项勾着时这一条不再问',
       '需要动你电脑上已有的 Hunter',
       '需要花费超过本次的额度上限',
     ],
+    // I7：一次授权页上那一项默认勾选的勾
+    allowInstallTitle: '如果电脑上没有 Docker，允许 AI 为你安装',
+    allowInstallBody:
+      '装在 Hunter 自己的文件夹 ~/.hunter/runtime 里，不改系统任何地方、不需要管理员密码，设置页里点一下就能卸干净。勾着的话这件事不再单独问你；取消勾选就还是先问。',
+    allowInstallOff: '不勾也能装 —— 到时候会出一张卡片问你一句。',
     autoBtn: '授权 AI 自动安装（推荐）',
     confirmBtn: '我想每一步自己确认',
     off: '不用 AI，只按固定规则装',
@@ -89,9 +94,37 @@ const zhCN = {
     footnote:
       '这次授权只对本次安装与之后的自动修复有效，随时可以在「设置 → AI 助手」里改。AI 每做一件事都会写进 ~/.hunter/logs/assist-audit.log，你可以自己查。',
   },
+  // I7 · 接管态运行面板
+  takeover: {
+    title: '正在管理你原有的 Hunter',
+    subline: (project: string, up: number, total: number) =>
+      `${project} · ${up} / ${total} 个容器在运行`,
+    banner:
+      '这一套是**你自己装的**，不是启动器装的。启动器只负责帮你看状态、看日志、打开网页；停止 / 启动 / 重启每一次都会再问你一遍，任何情况下都不会删它的数据卷，也不会改它的配置。',
+    open: '打开 Hunter',
+    containers: '容器',
+    noContainers: 'docker 里找不到属于它的容器。',
+    project: 'compose 项目',
+    workDir: '工作目录',
+    noWorkDir: '读不到（所以停止 / 重启做不了，只能看）',
+    since: '接管时间',
+    actions: '能做的事',
+    actionsHint: '下面三个都是改动类操作，点了之后还会再问你一次。',
+    readOnlyHint:
+      '读不到它的 compose 文件在哪（容器上没有 working_dir 标签），所以只能看状态与日志。要停 / 重启它，请回到你当初起它的那个目录去做。',
+    viewLogs: '看日志',
+    logsTitle: '它的日志（最近 200 行，已脱敏）',
+    stop: '停止',
+    start: '启动',
+    restart: '重启',
+    release: '不再管理它',
+    confirmYes: '确定，就这么做',
+  },
   auto: {
     title: 'AI 正在帮你安装',
     intro: '下面每一行都是真的在发生的事。顺利的话你什么都不用点；只有三种情况会来问你。',
+    reviewBadge: '复核',
+    reviewNote: '第二个模型独立看了一遍这个计划，只判「会不会伤到你已有的东西」「说的话对不对得上证据」。它放行也不代表就能执行 —— 守卫和你的确认这两道照样要过。',
     starting: '正在启动安装流程…',
     workingPlain: 'AI 正在帮你安装',
     working: (phase: string) => `AI 正在帮你安装 · ${phase}`,
@@ -342,6 +375,26 @@ const zhCN = {
     title: '设置',
     sectionGeneral: '通用',
     sectionDeploy: '部署',
+    // I7 · 容器运行时
+    sectionRuntime: '容器运行时',
+    runtimeHint:
+      'Hunter 的六个服务跑在容器里，所以这台电脑上得有一套容器运行时。已经装了 OrbStack / Docker Desktop / Colima 的话，启动器直接用它，下面这两条都用不上。',
+    routeBuiltin: '内置运行时（推荐，全程不用你点）',
+    routeBuiltinHint:
+      '把 Colima + Lima + docker 客户端 + compose 装进 ~/.hunter/runtime，版本与校验和写死在程序里、下完逐个核对。不改系统任何地方、不需要管理员密码，不想要了下面点一下就能卸干净。',
+    routeOrbstack: 'OrbStack 官方安装包（需要你点几下）',
+    routeOrbstackHint:
+      '从官方地址下 dmg、验苹果签名与公证之后装进「应用程序」。装得更快，但**第一次打开 OrbStack 时 macOS 与它自己会弹欢迎页、可能还要你输一次管理员密码** —— 那是系统与 OrbStack 的交互，启动器不会替你点。另外：OrbStack 个人使用免费，商用需要另外授权。',
+    allowInstallHint:
+      '取消勾选之后，真碰上「这台电脑没有 Docker」时会先出一张卡片问你一句，而不是直接装。',
+    builtinNotInstalled: (dir: string, size: string) =>
+      `还没有装内置运行时。真需要的时候会装到 ${dir}，大约要下 ${size}。`,
+    builtinInstalled: '内置运行时已安装',
+    builtinRunning: '虚拟机正在运行',
+    builtinStopped: '虚拟机没在运行',
+    uninstallRuntime: '卸载内置运行时',
+    uninstallConfirm: '会删掉它的虚拟机磁盘与 ~/.hunter/runtime 整个目录（Hunter 的数据卷不受影响）。确定吗？',
+    uninstallYes: '确定，卸载',
     sectionPrivacy: '隐私',
     sectionAbout: '关于',
     language: '界面语言',
@@ -527,6 +580,16 @@ const zhCN = {
     title: '出错了',
     codeLabel: '错误码',
     detailLabel: '详细信息',
+    sendToDev: '发送诊断给开发者',
+    sendToDevTitle: '这些内容会被发出去，先看一眼',
+    sendToDevIntro:
+      '诊断包已经生成在你自己的机器上，启动器没有把它发给任何人。下面是要预填进 GitHub issue 的标题与正文 —— 点「打开 GitHub」之后你还可以再改，提交与否完全由你决定。',
+    issueTitleLabel: '标题',
+    issueBodyLabel: '正文',
+    revealBundle: '打开诊断包所在文件夹',
+    openIssue: '打开 GitHub 提 issue',
+    scanHit: (what: string) =>
+      `出口闸在要发出去的文字里扫到了敏感内容，已经挡住：${what}。这条路先不给「打开 GitHub」的按钮 —— 请把上面的诊断包手动整理后再贴。`,
     oneClickFeedback: '一键反馈',
     viewLogs: '查看日志',
     codes: {

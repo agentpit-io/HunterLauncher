@@ -54,6 +54,41 @@ pub fn diagnostics_dir() -> PathBuf {
 pub fn updates_dir() -> PathBuf {
     root().join("updates")
 }
+/// 内置容器运行时装在这里（I7）。**整棵树都是启动器自己生成的**，
+/// 所以「卸载内置运行时」允许整个删掉 —— 它在 `~/.hunter` 里，守卫放行。
+pub fn runtime_dir() -> PathBuf {
+    root().join("runtime")
+}
+/// 内置运行时的可执行文件（docker / colima）。
+pub fn runtime_bin() -> PathBuf {
+    runtime_dir().join("bin")
+}
+/// 解压出来的整包（lima 要求 `bin/limactl` 与 `share/lima` 保持相对位置）。
+pub fn runtime_dist() -> PathBuf {
+    runtime_dir().join("dist")
+}
+/// 下载中转（校验通过才往外搬）。
+pub fn runtime_cache() -> PathBuf {
+    runtime_dir().join("cache")
+}
+/// `LIMA_HOME`：虚拟机的磁盘镜像就在这里面。
+pub fn lima_home() -> PathBuf {
+    runtime_dir().join("lima")
+}
+/// `COLIMA_HOME`：colima 的 profile 与 docker.sock。
+pub fn colima_home() -> PathBuf {
+    runtime_dir().join("colima")
+}
+/// 内置运行时自己的 `DOCKER_CONFIG`（compose 作为 CLI 插件放在它的 `cli-plugins` 下）。
+/// **和用户的 `~/.docker` 没有任何关系。**
+pub fn runtime_docker_config() -> PathBuf {
+    runtime_dir().join("docker-config")
+}
+/// 装了什么版本（卸载与「设置页显示」都读它）。
+pub fn runtime_manifest() -> PathBuf {
+    runtime_dir().join("installed.json")
+}
+
 pub fn launcher_toml() -> PathBuf {
     root().join("launcher.toml")
 }
@@ -99,7 +134,7 @@ pub fn ensure_dirs() -> AppResult<()> {
     // 测试机上的 umask 是 002，于是 `~/.hunter/app` 这几个实际是 775。
     // 根目录 700 已经挡住了遍历，所以这只是纵深防御的一层；但「工作目录里的东西
     // 只有属主能碰」要么是真的，要么就别写在文档里。
-    chmod_dir_700(&root())?;
+    chmod_700(&root())?;
     for d in [
         app_dir(),
         logs_dir(),
@@ -108,13 +143,13 @@ pub fn ensure_dirs() -> AppResult<()> {
         diagnostics_dir(),
         updates_dir(),
     ] {
-        chmod_dir_700(&d)?;
+        chmod_700(&d)?;
     }
     Ok(())
 }
 
 /// 把目录权限收成 700。
-fn chmod_dir_700(path: &std::path::Path) -> AppResult<()> {
+pub fn chmod_700(path: &std::path::Path) -> AppResult<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

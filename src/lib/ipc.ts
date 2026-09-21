@@ -23,6 +23,7 @@ import type {
   AssistSummary,
   BackupMeta,
   BootState,
+  BuiltinRuntimeStatus,
   DiagSection,
   DockerInfo,
   ExportResult,
@@ -33,11 +34,15 @@ import type {
   ManualInstall,
   MissingEndpoint,
   OfflineImport,
+  OneClickFeedback,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
   ServiceStatus,
+  TakeoverCandidate,
+  TakeoverOp,
+  TakeoverState,
   TelemetryView,
   UpgradeCheck,
   UpgradeStatus,
@@ -486,10 +491,18 @@ export const EV_ASSIST = 'assist://event'
 export const EV_ASSIST_SUMMARY = 'assist://summary'
 export const EV_ASSIST_DONE = 'assist://done'
 
-/** 用户在一次授权页上做的选择。Rust 侧会写配置、写日志、写审计。 */
-export async function assistConsent(mode: AssistMode): Promise<LauncherSettings> {
+/**
+ * 用户在一次授权页上做的选择。Rust 侧会写配置、写日志、写审计。
+ *
+ * `allowInstallRuntime` 是 I7 加的那一项勾（默认勾着）：电脑上没有 Docker 时，
+ * 允许 AI 自动装一套到 `~/.hunter/runtime`。勾了之后那个动作就不再弹「需要你」。
+ */
+export async function assistConsent(
+  mode: AssistMode,
+  allowInstallRuntime = true,
+): Promise<LauncherSettings> {
   if (DEMO) return demo.demoSettings
-  return call<LauncherSettings>('assist_consent', { mode })
+  return call<LauncherSettings>('assist_consent', { mode, allowInstallRuntime })
 }
 
 /** 开始一次全自动安装。立刻返回，过程走 `assist://event`。 */
@@ -529,4 +542,81 @@ export function onAssistSummary(cb: (s: AssistSummary) => void): Promise<Unliste
 
 export function onAssistDone(cb: (o: AssistOutcome) => void): Promise<UnlistenFn> {
   return on<AssistOutcome>(EV_ASSIST_DONE, cb)
+}
+
+// ── I7 · 内置运行时 / 接管 / 一键反馈 ────────────────────────────────────
+
+/** 内置运行时现在什么情况（设置页）。只读。 */
+export async function builtinRuntimeStatus(): Promise<BuiltinRuntimeStatus> {
+  if (DEMO) return demo.demoBuiltinRuntime
+  return call<BuiltinRuntimeStatus>('builtin_runtime_status')
+}
+
+/** 卸载内置运行时：删 colima 的 hunter profile + 清空 `~/.hunter/runtime`。 */
+export async function builtinRuntimeUninstall(): Promise<string> {
+  if (DEMO) return '演示数据：不会真的删东西'
+  return call<string>('builtin_runtime_uninstall')
+}
+
+/** 本机上可以接管的那几套 Hunter（只读探测）。 */
+export async function takeoverCandidates(): Promise<TakeoverCandidate[]> {
+  if (DEMO) return demo.demoTakeoverCandidates
+  return call<TakeoverCandidate[]>('takeover_candidates')
+}
+
+/** 当前接管态（运行面板）。 */
+export async function takeoverState(): Promise<TakeoverState> {
+  if (DEMO) return demo.demoTakeoverState
+  return call<TakeoverState>('takeover_state')
+}
+
+/** 「直接用它，不再装一套」。 */
+export async function takeoverAdopt(project: string): Promise<string> {
+  if (DEMO) return '演示数据'
+  return call<string>('takeover_adopt', { project })
+}
+
+/** 撤回接管，回到「自己装一套」。不动被接管的那一套一个字节。 */
+export async function takeoverRelease(): Promise<string> {
+  if (DEMO) return '演示数据'
+  return call<string>('takeover_release')
+}
+
+/**
+ * 对被接管那一套做 stop / start / restart。
+ *
+ * **`confirmed` 为 false 时 Rust 一定会拒绝** —— 界面拿 `takeoverConfirmText`
+ * 把那句话弹给用户，他点了「确定」才用 `confirmed: true` 再调一次。
+ */
+export async function takeoverOp(op: TakeoverOp, confirmed: boolean): Promise<string> {
+  if (DEMO) return '演示数据'
+  return call<string>('takeover_op', { op, confirmed })
+}
+
+/** 二次确认要给用户看的那句话（文案由 Rust 给，界面不另写一套）。 */
+export async function takeoverConfirmText(op: TakeoverOp): Promise<string> {
+  if (DEMO) return '演示数据：真要停它吗？'
+  return call<string>('takeover_confirm_text', { op })
+}
+
+/** 被接管那一套的日志（只读，已脱敏）。 */
+export async function takeoverLogs(service?: string, lines = 200): Promise<string[]> {
+  if (DEMO) return demo.demoComposeLog
+  return call<string[]>('takeover_logs', { service: service ?? null, lines })
+}
+
+/**
+ * 一键反馈：生成脱敏诊断包 + 预填 issue。
+ *
+ * **它不发送任何东西**，也不打开浏览器 —— 那是用户看过内容之后另一次点击的事。
+ */
+export async function feedbackOneClick(
+  errorCode?: string,
+  errorMessage?: string,
+): Promise<OneClickFeedback> {
+  if (DEMO) return demo.demoOneClick
+  return call<OneClickFeedback>('feedback_one_click', {
+    errorCode: errorCode ?? null,
+    errorMessage: errorMessage ?? null,
+  })
 }

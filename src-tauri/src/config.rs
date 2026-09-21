@@ -257,10 +257,55 @@ pub struct RuntimeSection {
     /// `use_isolated_docker_config` 这个动作打开（I6）。**用户那份配置一个字节都不动。**
     #[serde(default)]
     pub isolated_docker_config: bool,
+    /// 「这台机器上没有 Docker」时走哪条路（I7）。
+    ///
+    /// * `builtin`（默认）—— 内置运行时（Colima + Lima + docker CLI + compose），
+    ///   全程用户态、零点击、可一键卸载
+    /// * `orbstack` —— OrbStack 官方 dmg。装得更快，但**首次启动会弹系统提示**
+    ///   （欢迎页 / 管理员密码装辅助程序），做不到零点击，所以不是默认
+    ///
+    /// 认不得的值一律按 `builtin` 处理。
+    #[serde(default = "default_install_route")]
+    pub install_route: String,
 }
 
 fn yes() -> bool {
     true
+}
+
+fn default_install_route() -> String {
+    "builtin".into()
+}
+
+/// 没有 Docker 时装哪一套。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallRoute {
+    /// 内置运行时（默认）
+    Builtin,
+    /// OrbStack 官方 dmg（备选）
+    OrbStack,
+}
+
+impl InstallRoute {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "orbstack" => InstallRoute::OrbStack,
+            _ => InstallRoute::Builtin,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InstallRoute::Builtin => "builtin",
+            InstallRoute::OrbStack => "orbstack",
+        }
+    }
+    pub fn cn(self) -> &'static str {
+        match self {
+            InstallRoute::Builtin => "内置运行时（零点击）",
+            InstallRoute::OrbStack => "OrbStack 官方安装包（首次启动需要你点几下）",
+        }
+    }
 }
 
 impl Default for RuntimeSection {
@@ -272,11 +317,15 @@ impl Default for RuntimeSection {
             use_builtin_paths: true,
             use_env_path: true,
             isolated_docker_config: false,
+            install_route: default_install_route(),
         }
     }
 }
 
 impl RuntimeSection {
+    pub fn route(&self) -> InstallRoute {
+        InstallRoute::parse(&self.install_route)
+    }
     pub fn to_policy(&self) -> crate::runtime::which::Policy {
         crate::runtime::which::Policy {
             docker_path: self.docker_path.clone(),
@@ -304,6 +353,20 @@ pub struct AssistSection {
     /// 用户是哪一刻做的授权（上海时间）。没授权过就是空
     #[serde(default)]
     pub consented_at: String,
+    /// 一次授权页上那一项**默认勾选**的勾（I7）：
+    /// 「如果电脑上没有 Docker，允许 AI 为你安装（装在 `~/.hunter/runtime` 里，
+    /// 不改系统，可一键卸载）」。
+    ///
+    /// 勾了 → `install_runtime` 这个 `Sensitive` 动作**不再弹「需要你」卡片**，
+    /// 因为用户已经在授权页上对它明确说过「可以」——「已授权」与「每次都问」
+    /// 是两件事，把已经授权过的事再问一遍不叫谨慎，叫啰嗦。
+    ///
+    /// 没勾 → 照旧走「需要你」卡片。
+    ///
+    /// **注意**：它只对 `install_runtime` 这一个动作生效，别的 `Sensitive` 动作
+    /// （例如 `reuse_existing_hunter`，会动用户已有的那一套）照样每次都问。
+    #[serde(default = "yes")]
+    pub allow_install_runtime: bool,
 }
 
 fn default_assist_mode() -> String {
@@ -330,6 +393,7 @@ impl Default for AssistSection {
             enabled: true,
             mode: default_assist_mode(),
             consented_at: String::new(),
+            allow_install_runtime: true,
         }
     }
 }
@@ -350,6 +414,46 @@ pub struct LauncherConfig {
     pub runtime: RuntimeSection,
     #[serde(default)]
     pub assist: AssistSection,
+    #[serde(default)]
+    pub takeover: TakeoverSection,
+}
+
+/// 「直接用这台机器上已经有的那一套 Hunter」（I7 · `reuse_existing_hunter`）。
+///
+/// 默认是**并存**（`project` 为空）—— 新装的换一组空闲端口，两套互不影响。
+/// 只有用户在「需要你」卡片上亲手点了「直接用它，不再装一套」，这里才会有值。
+///
+/// 接管之后启动器变成那一套的**管理面板**：看状态、看日志、打开网页。
+/// 升级 / 停止 / `down` 这些改动类操作**一律先二次确认**，
+/// 而且任何情况下都不删它的卷（[`crate::takeover`] 里有硬校验，不是靠自觉）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TakeoverSection {
+    /// 被接管的 compose 项目名。空 = 没有接管任何东西（默认）
+    #[serde(default)]
+    pub project: String,
+    /// 它的工作目录（compose 文件所在）。读不出来就是空 —— 那种情况降级成只读监控
+    #[serde(default)]
+    pub working_dir: String,
+    /// 它的 compose 文件（逗号分隔的绝对路径，来自容器标签）
+    #[serde(default)]
+    pub config_files: String,
+    /// 它的 web 端口。读不到就是 0
+    #[serde(default)]
+    pub web_port: u16,
+    /// 什么时候接管的（上海时间）
+    #[serde(default)]
+    pub since: String,
+}
+
+impl TakeoverSection {
+    /// 现在是接管态吗。
+    pub fn active(&self) -> bool {
+        !self.project.trim().is_empty()
+    }
+    /// 有工作目录吗 —— 没有的话只能只读监控（改动类操作一概做不了）。
+    pub fn manageable(&self) -> bool {
+        self.active() && !self.working_dir.trim().is_empty()
+    }
 }
 
 impl LauncherConfig {

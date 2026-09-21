@@ -80,10 +80,14 @@ const en: Dict = {
     ],
     askTitle: 'It will ask you first in these three cases',
     ask: [
-      'New software needs to be installed (e.g. Docker)',
+      'New software needs to be installed (e.g. Docker) — not asked while the box below is ticked',
       'An existing Hunter on your machine would be touched',
       'This run would go over its token budget',
     ],
+    allowInstallTitle: 'If this computer has no Docker, let the AI install one for you',
+    allowInstallBody:
+      "It goes into Hunter's own folder ~/.hunter/runtime — nothing system-wide is changed, no admin password is needed, and one click in Settings removes it completely. While this is ticked you will not be asked about it again; untick it and you will.",
+    allowInstallOff: 'Leaving it unticked is fine — you will get a card asking you at the time.',
     autoBtn: 'Let the AI install it (recommended)',
     confirmBtn: 'Ask me before every change',
     off: 'No AI, fixed rules only',
@@ -91,9 +95,36 @@ const en: Dict = {
     footnote:
       'This applies to this installation and later automatic fixes; change it any time under Settings → AI assistant. Every action is appended to ~/.hunter/logs/assist-audit.log.',
   },
+  takeover: {
+    title: 'Managing your existing Hunter',
+    subline: (project: string, up: number, total: number) =>
+      `${project} · ${up} / ${total} containers running`,
+    banner:
+      'This stack is **yours**, not one the launcher installed. The launcher only shows its status and logs and opens its web page; stop / start / restart will ask you again every single time, its data volumes are never deleted, and its configuration is never changed.',
+    open: 'Open Hunter',
+    containers: 'Containers',
+    noContainers: 'No containers belonging to it were found in docker.',
+    project: 'compose project',
+    workDir: 'Working directory',
+    noWorkDir: 'Not readable (so stop / restart are unavailable — view only)',
+    since: 'Taken over at',
+    actions: 'What you can do',
+    actionsHint: 'All three change things, so each one asks you once more first.',
+    readOnlyHint:
+      'Its compose file location cannot be read (the containers carry no working_dir label), so only status and logs are available. To stop or restart it, go back to the directory you started it from.',
+    viewLogs: 'View logs',
+    logsTitle: 'Its logs (last 200 lines, redacted)',
+    stop: 'Stop',
+    start: 'Start',
+    restart: 'Restart',
+    release: 'Stop managing it',
+    confirmYes: 'Yes, do it',
+  },
   auto: {
     title: 'The AI is installing Hunter',
     intro: 'Every line below is something that actually happened. Normally you click nothing; only three cases need you.',
+    reviewBadge: 'Review',
+    reviewNote: 'A second model read this plan on its own and only judged two things: whether it could harm anything you already have, and whether its reasoning matches the evidence. Its approval alone does not let anything run — the guard and your confirmation still apply.',
     starting: 'Starting the installation…',
     workingPlain: 'AI is installing',
     working: (phase: string) => `AI is installing · ${phase}`,
@@ -343,6 +374,26 @@ const en: Dict = {
     title: 'Settings',
     sectionGeneral: 'General',
     sectionDeploy: 'Deployment',
+    sectionRuntime: 'Container runtime',
+    runtimeHint:
+      "Hunter's six services run in containers, so this computer needs a container runtime. If OrbStack / Docker Desktop / Colima is already installed, the launcher just uses it and neither option below applies.",
+    routeBuiltin: 'Built-in runtime (recommended, no clicks needed)',
+    routeBuiltinHint:
+      'Puts Colima + Lima + the docker client + compose into ~/.hunter/runtime. Versions and checksums are pinned in the program and every file is verified after download. Nothing system-wide is changed, no admin password is needed, and one click below removes it completely.',
+    routeOrbstack: 'Official OrbStack installer (needs a few clicks from you)',
+    routeOrbstackHint:
+      "Downloads the official dmg, verifies Apple's signature and notarization, then installs it into Applications. Faster to install, but the first time OrbStack opens, macOS and OrbStack itself will show a welcome screen and may ask for your admin password — that is between you and them; the launcher will not click it for you. Also: OrbStack is free for personal use and requires a licence for commercial use.",
+    allowInstallHint:
+      'Untick this and you will get a card asking first when this computer turns out to have no Docker, instead of it being installed straight away.',
+    builtinNotInstalled: (dir: string, size: string) =>
+      `The built-in runtime is not installed. If it is ever needed it goes into ${dir} and downloads about ${size}.`,
+    builtinInstalled: 'Built-in runtime installed',
+    builtinRunning: 'VM is running',
+    builtinStopped: 'VM is not running',
+    uninstallRuntime: 'Remove built-in runtime',
+    uninstallConfirm:
+      "This deletes its VM disk and the whole ~/.hunter/runtime directory (Hunter's own data volumes are untouched). Sure?",
+    uninstallYes: 'Yes, remove it',
     sectionPrivacy: 'Privacy',
     sectionAbout: 'About',
     language: 'Language',
@@ -530,6 +581,16 @@ const en: Dict = {
     title: 'Something went wrong',
     codeLabel: 'Error code',
     detailLabel: 'Details',
+    sendToDev: 'Send diagnostics to the developers',
+    sendToDevTitle: 'This is what would go out — take a look first',
+    sendToDevIntro:
+      'The diagnostics bundle has been written to your own machine; the launcher has not sent it to anyone. Below is the title and body that would be pre-filled into a GitHub issue — you can still edit it after opening, and whether to submit is entirely up to you.',
+    issueTitleLabel: 'Title',
+    issueBodyLabel: 'Body',
+    revealBundle: 'Show the bundle in the file manager',
+    openIssue: 'Open GitHub and file an issue',
+    scanHit: (what: string) =>
+      `The outbound gate found something sensitive in the text that would be sent and blocked it: ${what}. The "Open GitHub" button is withheld here — please review the bundle above and paste it manually.`,
     oneClickFeedback: 'Report this',
     viewLogs: 'View logs',
     codes: {

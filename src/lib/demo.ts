@@ -19,6 +19,7 @@ import type {
   AppInfo,
   BackupMeta,
   BootState,
+  BuiltinRuntimeStatus,
   DiagSection,
   AssistState,
   DockerInfo,
@@ -28,10 +29,13 @@ import type {
   LauncherUpdate,
   MissingEndpoint,
   OfflineImport,
+  OneClickFeedback,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
+  TakeoverCandidate,
+  TakeoverState,
   TelemetryView,
   UpgradeCheck,
 } from './types'
@@ -302,6 +306,73 @@ export const demoSettings: LauncherSettings = {
   assistMode: 'auto',
   assistConsentedAt: '2026-09-21 10:30:00',
   dockerPath: '/usr/bin/docker',
+  // I7：授权页上那一项勾，默认勾着
+  allowInstallRuntime: true,
+  installRoute: 'builtin',
+  builtinRuntimeInstalled: false,
+  builtinRuntimeRunning: false,
+  takeoverProject: '',
+}
+
+/** 内置运行时的演示态：**没装**（默认就是没装，别编一个装好的样子出来）。 */
+export const demoBuiltinRuntime: BuiltinRuntimeStatus = {
+  supported: false,
+  unsupportedReason:
+    '内置运行时目前只做了 macOS 这一条路线（演示数据；真机上这一行来自 Rust 的真实判断）。',
+  installed: false,
+  running: false,
+  profile: 'hunter',
+  dir: '~/.hunter/runtime',
+  socket: '~/.hunter/runtime/colima/hunter/docker.sock',
+  items: [],
+  installedAt: '',
+  downloadBytes: 0,
+}
+
+/** 「本机已经有一套 Hunter」的演示数据（截图用）。 */
+export const demoTakeoverCandidates: TakeoverCandidate[] = [
+  {
+    project: 'hunter-community',
+    containers: [
+      'hunter-community-web-1',
+      'hunter-community-api-1',
+      'hunter-community-opencode-1',
+      'hunter-community-postgres-1',
+      'hunter-community-redis-1',
+    ],
+    ports: [3100, 8100, 3921, 5442, 6479],
+    workingDir: '~/hunter-community',
+    configFiles: '~/hunter-community/docker-compose.yml',
+    webPort: 3100,
+  },
+]
+
+export const demoTakeoverState: TakeoverState = {
+  active: true,
+  manageable: true,
+  project: 'hunter-community',
+  workingDir: '~/hunter-community',
+  since: '2026-09-21 18:20:00',
+  webUrl: 'http://localhost:3100',
+  containers: [
+    { name: 'hunter-community-web-1', status: 'Up 2 days', image: 'hunter-community-web:1.2.0', ports: '0.0.0.0:3100->3000/tcp' },
+    { name: 'hunter-community-api-1', status: 'Up 2 days', image: 'hunter-community-api:1.2.0', ports: '0.0.0.0:8100->8000/tcp' },
+    { name: 'hunter-community-opencode-1', status: 'Up 2 days', image: 'hunter-community-opencode:1.2.0', ports: '0.0.0.0:3921->3921/tcp' },
+    { name: 'hunter-community-postgres-1', status: 'Up 2 days', image: 'postgres:16-alpine', ports: '0.0.0.0:5442->5432/tcp' },
+    { name: 'hunter-community-redis-1', status: 'Up 2 days', image: 'redis:7-alpine', ports: '0.0.0.0:6479->6379/tcp' },
+  ],
+  note: '',
+}
+
+/** 一键反馈的演示态。**scanHit 是 null（干净），bundlePath 用 ~ 开头的脱敏路径。** */
+export const demoOneClick: OneClickFeedback = {
+  bundlePath: '~/.hunter/diagnostics/hunter-diagnostics-20260921-183045.zip',
+  bundleBytes: 24_576,
+  issueUrl: 'https://github.com/agentpit-io/HunterLauncher/issues/new?title=%E6%BC%94%E7%A4%BA&body=%E6%BC%94%E7%A4%BA',
+  issueTitle: '[部署问题] E_PULL_FAILED AI 自动安装没能把问题解决',
+  issueBody: '## 遇到了什么\n\n演示数据。\n\n## 环境\n\n```\n启动器: 0.1.7\n系统: macos aarch64\n```\n',
+  scanHit: null,
+  note: '演示数据：诊断包只在你自己的机器上，启动器没有把它发给任何人。',
 }
 
 /** 遥测队列的演示内容。开关关着时真实队列是空的，这里演示的是「开了之后长什么样」。 */

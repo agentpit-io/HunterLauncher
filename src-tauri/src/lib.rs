@@ -52,6 +52,7 @@ pub mod registry;
 pub mod runtime;
 pub mod secretgen;
 pub mod selfupdate;
+pub mod takeover;
 pub mod telemetry;
 pub mod timefmt;
 pub mod tray;
@@ -186,6 +187,17 @@ pub fn run() {
             commands::assist_auto_answer,
             commands::assist_auto_snapshot,
             commands::assist_audit_tail,
+            // I7 · 内置运行时 / 接管 / 一键反馈
+            commands::builtin_runtime_status,
+            commands::builtin_runtime_uninstall,
+            commands::takeover_candidates,
+            commands::takeover_state,
+            commands::takeover_adopt,
+            commands::takeover_release,
+            commands::takeover_op,
+            commands::takeover_confirm_text,
+            commands::takeover_logs,
+            commands::feedback_one_click,
         ])
         .setup(|app| {
             let handle = app.handle();

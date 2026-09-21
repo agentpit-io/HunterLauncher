@@ -512,6 +512,21 @@ pub struct LauncherSettings {
     /// （红线 1：读不到就是 `None`，界面显示「—」）
     #[serde(default)]
     pub docker_path: Option<String>,
+    /// I7：一次授权页上那一项勾 —— 没有 Docker 时允许 AI 自动装一套
+    #[serde(default)]
+    pub allow_install_runtime: bool,
+    /// I7：没有 Docker 时走哪条路。`builtin`（默认，零点击）/ `orbstack`（备选）
+    #[serde(default)]
+    pub install_route: String,
+    /// I7：内置运行时装了没有（只读）
+    #[serde(default)]
+    pub builtin_runtime_installed: bool,
+    /// I7：内置运行时的虚拟机在跑没有（只读）
+    #[serde(default)]
+    pub builtin_runtime_running: bool,
+    /// I7：现在在管理哪一套别人的 Hunter。空 = 没有接管（只读）
+    #[serde(default)]
+    pub takeover_project: String,
 }
 
 #[tauri::command]
@@ -603,6 +618,11 @@ pub async fn write_settings(
             let cand = registry::custom(&settings.registry);
             c.apply_registry(&cand);
         }
+        c.assist.allow_install_runtime = settings.allow_install_runtime;
+        // 认不得的值落到默认（`builtin`），不是照抄进去
+        c.runtime.install_route = crate::config::InstallRoute::parse(&settings.install_route)
+            .as_str()
+            .to_string();
         c.save()?;
         st.set_config(c.clone());
         Ok(to_settings(&c))
@@ -631,6 +651,12 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         assist_consented_at: c.assist.consented_at.clone(),
         // 用**当前真实的定位结果**，不是配置里记的那一行（红线 1）
         docker_path: crate::runtime::which::docker_probe().resolved,
+        allow_install_runtime: c.assist.allow_install_runtime,
+        install_route: c.runtime.route().as_str().to_string(),
+        // 这两项同样是**当场读的真实状态**，不是配置里记的
+        builtin_runtime_installed: crate::runtime::builtin::is_installed(),
+        builtin_runtime_running: crate::runtime::builtin::is_running(),
+        takeover_project: c.takeover.project.clone(),
     }
 }
 
@@ -1390,30 +1416,175 @@ fn auto_slot() -> &'static AutoSlot {
 /// **写日志、写配置、写审计**：授权这件事必须留痕，用户以后要能查到
 /// 「我是什么时候、同意了哪一档」。
 #[tauri::command]
-pub async fn assist_consent(app: tauri::AppHandle, mode: String) -> Result<LauncherSettings> {
+/// `allow_install_runtime` 是一次授权页上那一项勾（I7）：
+/// 「电脑上没有 Docker 时，允许 AI 为你安装」。默认勾着；
+/// `None` 表示旧版界面没传，按默认（勾着）处理。
+pub async fn assist_consent(
+    app: tauri::AppHandle,
+    mode: String,
+    allow_install_runtime: Option<bool>,
+) -> Result<LauncherSettings> {
     blocking(move || {
         let m = crate::assist::guard::Mode::parse(&mode);
+        let allow = allow_install_runtime.unwrap_or(true);
         let st = state(&app);
         let mut cfg = st.config();
         cfg.assist.mode = m.as_str().to_string();
         cfg.assist.enabled = m != crate::assist::guard::Mode::Off;
         cfg.assist.consented_at = crate::timefmt::now_shanghai();
+        cfg.assist.allow_install_runtime = allow;
         cfg.save()?;
         st.set_config(cfg.clone());
         crate::linfo!(
-            "用户授权：档位 {}（{}），时间 {}",
+            "用户授权：档位 {}（{}），没有 Docker 时允许自动安装={}，时间 {}",
             m.as_str(),
             m.cn(),
+            allow,
             cfg.assist.consented_at
         );
         crate::assist::guard::audit(
             "consent",
-            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::from([(
+                "allow_install_runtime".to_string(),
+                allow.to_string(),
+            )]),
             crate::assist::guard::Proposer::User,
             None,
-            &format!("授权档位 {}（{}）", m.as_str(), m.cn()),
+            &format!(
+                "授权档位 {}（{}）；没有 Docker 时{}自动安装运行时",
+                m.as_str(),
+                m.cn(),
+                if allow { "允许" } else { "不允许" }
+            ),
         );
         Ok(to_settings(&cfg))
+    })
+    .await
+}
+
+// ── I7 · 内置运行时 ───────────────────────────────────────────────────────
+
+/// 内置运行时现在什么情况（设置页用）。**只读**。
+#[tauri::command]
+pub async fn builtin_runtime_status() -> Result<crate::runtime::builtin::Status> {
+    blocking(move || Ok(crate::runtime::builtin::status())).await
+}
+
+/// 卸载内置运行时（设置页的「卸载内置运行时」）。
+///
+/// 走的是动作表那条路：`uninstall_builtin_runtime` 是 `Safe` 级
+/// （只动 `~/.hunter/runtime`，那棵树完全是启动器自己生成的），
+/// 但**界面上仍然会先弹一次确认** —— 删虚拟机磁盘这种事值得多问一句。
+#[tauri::command]
+pub async fn builtin_runtime_uninstall(app: tauri::AppHandle) -> Result<String> {
+    blocking(move || {
+        let out = crate::assist::actions::execute_as(
+            &crate::assist::actions::Call::new("uninstall_builtin_runtime"),
+            crate::assist::guard::Mode::Confirm,
+            true,
+            crate::assist::guard::Proposer::User,
+        )?;
+        let st = state(&app);
+        st.set_config(crate::config::LauncherConfig::load());
+        Ok(out.text)
+    })
+    .await
+}
+
+// ── I7 · 接管本机已有的那一套 ─────────────────────────────────────────────
+
+/// 本机上可以接管的那几套（只读探测）。
+#[tauri::command]
+pub async fn takeover_candidates() -> Result<Vec<crate::takeover::Candidate>> {
+    blocking(move || Ok(crate::takeover::candidates())).await
+}
+
+/// 当前接管态（运行面板用）。
+#[tauri::command]
+pub async fn takeover_state() -> Result<crate::takeover::State> {
+    blocking(move || Ok(crate::takeover::state())).await
+}
+
+/// 「直接用它，不再装一套」。走动作表 → 守卫 → 审计。
+#[tauri::command]
+pub async fn takeover_adopt(app: tauri::AppHandle, project: String) -> Result<String> {
+    blocking(move || {
+        let out = crate::assist::actions::execute_as(
+            &crate::assist::actions::Call::with("reuse_existing_hunter", "project", &project),
+            crate::assist::guard::Mode::Confirm,
+            true,
+            crate::assist::guard::Proposer::User,
+        )?;
+        let st = state(&app);
+        st.set_config(crate::config::LauncherConfig::load());
+        Ok(out.text)
+    })
+    .await
+}
+
+/// 撤回接管，回到「自己装一套」。**不动被接管的那一套一个字节。**
+#[tauri::command]
+pub async fn takeover_release(app: tauri::AppHandle) -> Result<String> {
+    blocking(move || {
+        let t = crate::takeover::release()?;
+        let st = state(&app);
+        st.set_config(crate::config::LauncherConfig::load());
+        Ok(t)
+    })
+    .await
+}
+
+/// 对被接管那一套做 stop / start / restart。**`confirmed` 必须为真**，
+/// 而且这一层拒绝之后界面上要再弹一次二次确认（文案由 `confirm_text` 给）。
+#[tauri::command]
+pub async fn takeover_op(op: String, confirmed: bool) -> Result<String> {
+    blocking(move || {
+        let o = crate::takeover::Op::parse(&op).ok_or_else(|| {
+            crate::err::AppError::new(
+                crate::err::Code::NotImplemented,
+                format!("认不得的操作「{}」。", crate::redact::redact(&op)),
+            )
+        })?;
+        crate::takeover::run(o, confirmed)
+    })
+    .await
+}
+
+/// 二次确认要给用户看的那句话（界面拿它填弹窗，不自己另写一套）。
+#[tauri::command]
+pub async fn takeover_confirm_text(op: String) -> Result<String> {
+    blocking(move || {
+        let cfg = crate::config::LauncherConfig::load();
+        let o = crate::takeover::Op::parse(&op).ok_or_else(|| {
+            crate::err::AppError::new(
+                crate::err::Code::NotImplemented,
+                format!("认不得的操作「{}」。", crate::redact::redact(&op)),
+            )
+        })?;
+        Ok(o.confirm_text(&cfg.takeover.project))
+    })
+    .await
+}
+
+/// 被接管那一套的日志（**只读**，已脱敏）。
+#[tauri::command]
+pub async fn takeover_logs(service: Option<String>, lines: Option<usize>) -> Result<Vec<String>> {
+    blocking(move || crate::takeover::logs(service.as_deref(), lines.unwrap_or(200))).await
+}
+
+// ── I7 · 一键反馈直达 ─────────────────────────────────────────────────────
+
+/// 生成脱敏诊断包 + 预填 issue。**不打开浏览器、不发送任何东西。**
+#[tauri::command]
+pub async fn feedback_one_click(
+    error_code: Option<String>,
+    error_message: Option<String>,
+) -> Result<crate::feedback::OneClick> {
+    blocking(move || {
+        crate::feedback::one_click(
+            error_code.as_deref().unwrap_or(""),
+            error_message.as_deref().unwrap_or(""),
+        )
     })
     .await
 }

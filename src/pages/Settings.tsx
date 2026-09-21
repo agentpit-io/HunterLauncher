@@ -163,6 +163,11 @@ export function Settings() {
           </div>
         </Card>
 
+        {/* I7 · 容器运行时：没有 Docker 时走哪条路，以及内置运行时的现状与卸载。
+            这一节里的每个数字（装了什么版本、多少字节、从哪个源下的）都来自
+            Rust 当场读的 `installed.json`，界面不生成任何数字（红线 1）。 */}
+        <RuntimeCard settings={d} t={t} onPatch={patch} onDone={() => s.reload()} />
+
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionPrivacy}</div>
           <div className="mt-[16px] flex flex-col gap-[6px]">
@@ -232,6 +237,179 @@ export function Settings() {
       {showQueue && <TelemetryQueue onClose={() => setShowQueue(false)} />}
     </PlainLayout>
   )
+}
+
+/**
+ * 容器运行时（I7）。
+ *
+ * 两件事：①「电脑上没有 Docker 时走哪条路」——默认内置运行时（零点击），
+ * 备选 OrbStack（首次启动会弹系统提示，做不到零点击，这里如实写明）；
+ * ② 内置运行时装了没有、装了什么、以及**一键卸载**。
+ */
+function RuntimeCard({
+  settings,
+  t,
+  onPatch,
+  onDone,
+}: {
+  settings: LauncherSettings | null
+  t: ReturnType<typeof useStore>['t']
+  onPatch: (p: Partial<LauncherSettings>) => Promise<void>
+  onDone: () => void
+}) {
+  const [nonce, setNonce] = useState(0)
+  const st = useAsync(() => ipc.builtinRuntimeStatus(), [nonce])
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function uninstall() {
+    setBusy(true)
+    setErr(null)
+    setMsg(null)
+    try {
+      setMsg(await ipc.builtinRuntimeUninstall())
+      setNonce((n) => n + 1)
+      onDone()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      setConfirming(false)
+    }
+  }
+
+  const d = st.data
+  return (
+    <Card>
+      <div className="text-md font-medium text-ink">{t.settings.sectionRuntime}</div>
+      <div className="mt-[6px] text-sm leading-[1.6] text-muted">{t.settings.runtimeHint}</div>
+
+      <div className="mt-[14px] flex flex-col gap-[8px]">
+        {(
+          [
+            ['builtin', t.settings.routeBuiltin, t.settings.routeBuiltinHint],
+            ['orbstack', t.settings.routeOrbstack, t.settings.routeOrbstackHint],
+          ] as const
+        ).map(([value, label, hint]) => {
+          const on = (settings?.installRoute ?? 'builtin') === value
+          return (
+            <button
+              key={value}
+              type="button"
+              data-testid={`settings-install-route-${value}`}
+              onClick={() => void onPatch({ installRoute: value })}
+              className={`flex items-start gap-[10px] rounded-md border px-[14px] py-[11px] text-left transition-colors ${
+                on ? 'border-amber bg-amber-soft' : 'border-line bg-card hover:bg-hover'
+              }`}
+            >
+              <span
+                className={`mt-[4px] size-[12px] shrink-0 rounded-full border ${
+                  on ? 'border-amber bg-amber' : 'border-line-strong'
+                }`}
+                aria-hidden
+              />
+              <span className="min-w-0">
+                <span className="block text-md leading-tight text-ink">{label}</span>
+                <span className="mt-[4px] block text-xs leading-[1.5] text-muted">{hint}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
+      <label className="mt-[12px] flex cursor-pointer items-start gap-[10px]">
+        <input
+          type="checkbox"
+          data-testid="settings-allow-install-runtime"
+          className="mt-[3px] size-[15px] shrink-0 accent-amber"
+          checked={settings?.allowInstallRuntime ?? true}
+          onChange={(e) => void onPatch({ allowInstallRuntime: e.target.checked })}
+        />
+        <span className="min-w-0">
+          <span className="block text-md leading-tight text-ink">{t.consent.allowInstallTitle}</span>
+          <span className="mt-[4px] block text-xs leading-[1.5] text-muted">{t.settings.allowInstallHint}</span>
+        </span>
+      </label>
+
+      {/* 内置运行时的现状。**不支持时把原因原样显示出来**，不含糊成一句「不可用」 */}
+      <div className="mt-[16px]" data-testid="settings-builtin-runtime">
+        {st.loading && <div className="text-sm text-muted">{t.common.loading}</div>}
+        {st.error && <div className="text-sm text-danger">{st.error.message}</div>}
+        {d && !d.supported && (
+          <div className="rounded-md border border-line bg-card px-[14px] py-[11px] text-sm leading-[1.6] text-muted">
+            {d.unsupportedReason}
+          </div>
+        )}
+        {d && d.supported && !d.installed && (
+          <div className="rounded-md border border-line bg-card px-[14px] py-[11px] text-sm leading-[1.6] text-muted">
+            {t.settings.builtinNotInstalled(d.dir, fmtBytes(d.downloadBytes))}
+          </div>
+        )}
+        {d && d.installed && (
+          <div className="rounded-md border border-line bg-card px-[14px] py-[11px]">
+            <div className="flex flex-wrap items-baseline gap-x-[14px] gap-y-[4px]">
+              <span className="text-md text-ink">{t.settings.builtinInstalled}</span>
+              <span className="text-sm text-body">
+                {d.running ? t.settings.builtinRunning : t.settings.builtinStopped}
+              </span>
+              {d.installedAt && <span className="font-mono text-xs text-muted">{d.installedAt}</span>}
+            </div>
+            <ul className="mt-[8px] flex flex-col gap-[3px]">
+              {d.items.map((it) => (
+                <li key={it.file} className="font-mono text-xs leading-[1.6] text-dim">
+                  {it.component} {it.version} · {fmtBytes(it.bytes)} · {it.source} · sha256 {it.sha256.slice(0, 12)}…
+                </li>
+              ))}
+            </ul>
+            <div className="mt-[8px] font-mono text-xs text-muted">{d.dir}</div>
+            <div className="mt-[12px] flex flex-wrap items-center gap-[10px]">
+              {!confirming ? (
+                <Button
+                  size="sm"
+                  data-testid="settings-uninstall-runtime"
+                  disabled={busy}
+                  onClick={() => setConfirming(true)}
+                >
+                  {t.settings.uninstallRuntime}
+                </Button>
+              ) : (
+                <>
+                  <span className="text-sm leading-[1.5] text-body">{t.settings.uninstallConfirm}</span>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    data-testid="settings-uninstall-runtime-yes"
+                    disabled={busy}
+                    onClick={() => void uninstall()}
+                  >
+                    {busy ? t.common.working : t.settings.uninstallYes}
+                  </Button>
+                  <Button size="sm" disabled={busy} onClick={() => setConfirming(false)}>
+                    {t.common.cancel}
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+        {msg && (
+          <div className="mt-[10px] break-all text-sm leading-[1.5] text-amber-text" data-testid="settings-runtime-msg">
+            {msg}
+          </div>
+        )}
+        {err && <div className="mt-[10px] break-all text-sm text-danger">{err}</div>}
+      </div>
+    </Card>
+  )
+}
+
+/** 字节数 → 人话。**只在这里做格式化，数字本身来自 Rust。** */
+function fmtBytes(n: number): string {
+  if (n <= 0) return '—'
+  const mb = n / (1024 * 1024)
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GiB` : `${mb.toFixed(1)} MiB`
 }
 
 /**

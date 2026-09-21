@@ -322,13 +322,25 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         None => cfg.assist.mode(),
     };
     println!("  授权档位：{}（{}）", mode.as_str(), mode.cn());
-    if mode == Mode::Confirm {
-        // 命令行下没有人能点确认。不说清楚的话，用户会看着它在第一个改动动作上
-        // 「莫名其妙地失败」——其实是它在等一个永远不会来的回答
+    // I7 · 待办池 P1-25 的结论：**stdin 是终端就真的问，不是终端才按「不」处理。**
+    //
+    // I5 那一版的做法是「命令行下一律按不」，并在这里打一句提醒。那条结论对了一半：
+    // `--auto` 的典型用法（CI、远程脚本、cron）确实没人能答，阻塞等下去就是把进程挂死。
+    // 但人**坐在终端前面**手敲这条命令的情况同样常见 —— 那时候让他答一句
+    // 「y / n」比让他重跑一遍换成 `--assist-mode auto` 讲道理。
+    //
+    // 判据用 `stdin` 是不是终端：管道、重定向、nohup、CI 全都不是，行为与 I5 一致；
+    // 人在终端里敲的就是，于是「逐步确认」在命令行下第一次真的能用了。
+    let stdin_is_tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    if mode == Mode::Confirm && !stdin_is_tty {
+        // 不说清楚的话，用户会看着它在第一个改动动作上「莫名其妙地失败」——
+        // 其实是它在等一个永远不会来的回答
         println!(
-            "  ⚠ 「逐步确认」档在命令行下等不到回答：凡是要你点头的动作都会按「不」处理。\n\
-               要全自动请用 --assist-mode auto。"
+            "  ⚠ 「逐步确认」档在这里等不到回答（stdin 不是终端，多半是 CI 或管道）：\n\
+               凡是要你点头的动作都会按「不」处理。要全自动请用 --assist-mode auto。"
         );
+    } else if stdin_is_tty {
+        println!("  要你拍板的地方会在这里问你（输入 y 或 n 回车）。");
     }
     println!(
         "  预算：单问题 {} 回合 · 整次 {} 回合 · {} token · 单次模型 45 秒",
@@ -344,9 +356,35 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
     };
     let bus = std::sync::Arc::new(Bus::new(Box::new(Stdout::new()), true));
     let mut orch = Orchestrator::new(bus, mode, Some(key), st.cancel.clone());
-    // 命令行下没有人能点「需要你」卡片上的按钮 —— 如实告诉总指挥，
-    // 别让它在那儿等一个永远不会来的回答
-    orch.set_interactive(false);
+    if stdin_is_tty {
+        // 人就在终端前面 —— 把问题打出来、读一行回答（I7 · P1-25）
+        orch.set_answer_reader(Box::new(|question, choices| {
+            use std::io::Write;
+            println!();
+            println!("？ {question}");
+            for c in choices {
+                println!("    {} {}", if c.primary { "›" } else { " " }, c.label);
+            }
+            print!("  你的选择（y = 第一项 / n = 第二项）：");
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                // 读不到（stdin 被关了）就按「不」——**不猜他想要什么**
+                println!("  （读不到回答，按「不」处理）");
+                return Some("no".into());
+            }
+            let ans = match line.trim().to_ascii_lowercase().as_str() {
+                "y" | "yes" | "是" | "好" => "yes",
+                _ => "no",
+            };
+            println!("  已记下：{}", if ans == "yes" { "是" } else { "不" });
+            Some(ans.to_string())
+        }));
+    } else {
+        // 没有人能点「需要你」卡片上的按钮 —— 如实告诉总指挥，
+        // 别让它在那儿等一个永远不会来的回答
+        orch.set_interactive(false);
+    }
     let out = orch.run(st, &opts);
 
     println!();
@@ -362,6 +400,16 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         out.tokens,
         out.elapsed_ms / 1000
     );
+    if let Some(p) = &out.takeover {
+        println!(
+            "\n✓ 没有再装一套 —— 按你的选择，启动器现在管理你已有的「{p}」。{}",
+            match &out.url {
+                Some(u) => format!("打开 {u}"),
+                None => "（读不到它的 web 端口）".to_string(),
+            }
+        );
+        return Ok(());
+    }
     if out.ok {
         println!("\n✓ 装好了。打开 {}", out.url.unwrap_or_default());
         Ok(())

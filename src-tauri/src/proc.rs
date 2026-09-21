@@ -52,8 +52,27 @@ pub fn run_with_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRe
 
 /// 带超时的版本。docker 在 daemon 半死不活时会一直挂着，不设超时会把界面卡住。
 pub fn run_timeout(program: &str, args: &[&str], timeout: Duration) -> AppResult<Ran> {
-    let mut child = base_command(program)
-        .args(args)
+    run_timeout_env(program, args, timeout, &[])
+}
+
+/// 带超时 **且带额外环境变量** 的版本（I7 的内置运行时要给 colima / docker
+/// 传 `LIMA_HOME` / `COLIMA_HOME` / `DOCKER_HOST`）。
+///
+/// 这些变量**只加在这一次调用上**，不写进进程环境 —— 启动器自己的环境里
+/// 出现 `DOCKER_HOST` 会把「用不用内置运行时」这件事变成全局隐式状态，
+/// 那正是最难查的一类 bug。
+pub fn run_timeout_env(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> AppResult<Ran> {
+    let mut cmd = base_command(program);
+    cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

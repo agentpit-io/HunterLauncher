@@ -79,6 +79,106 @@ pub fn get_bytes(url: &str, timeout: Duration) -> AppResult<Vec<u8>> {
         })
 }
 
+/// 把一个大文件流式下到磁盘，边下边报**真实字节数**。
+///
+/// 为什么不复用 [`get_bytes`]：内置运行时的四个包加起来将近 100 MB，
+/// 整个读进内存再写盘是白白占一份内存；而且进度条要的是「现在下到第几个字节」，
+/// 一次性读完只能在结束时跳一下（红线 1 意义上的假进度）。
+///
+/// `max` 是上限，超了就**中断并报错**（清单里写着每个文件多大，收到更大的东西
+/// 说明拿错了地址）。`on_progress(已下字节, 总字节或 None)` 由调用方节流。
+pub fn download_to_file(
+    url: &str,
+    dest: &std::path::Path,
+    timeout: Duration,
+    max: u64,
+    cancel: &dyn Fn() -> bool,
+    on_progress: &mut dyn FnMut(u64, Option<u64>),
+) -> AppResult<u64> {
+    use std::io::{Read, Write};
+
+    let a = agent(timeout);
+    let mut resp = a
+        .get(url)
+        .call()
+        .map_err(|e| AppError::new(Code::Unknown, format!("请求 {} 失败：{e}", host_of(url))))?;
+    let status = resp.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(AppError::new(
+            Code::Unknown,
+            format!("{} 返回 HTTP {status}", host_of(url)),
+        ));
+    }
+    let total = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    if let Some(t) = total {
+        if t > max {
+            return Err(AppError::new(
+                Code::Unknown,
+                format!(
+                    "{} 说这个文件有 {t} 字节，比清单里写的上限 {max} 还大，不下了。",
+                    host_of(url)
+                ),
+            ));
+        }
+    }
+    if let Some(d) = dest.parent() {
+        std::fs::create_dir_all(d).map_err(|e| {
+            AppError::new(
+                Code::ConfigWrite,
+                format!("建目录 {} 失败：{e}", d.display()),
+            )
+        })?;
+    }
+    let mut f = std::fs::File::create(dest).map_err(|e| {
+        AppError::new(
+            Code::ConfigWrite,
+            format!("建文件 {} 失败：{e}", dest.display()),
+        )
+    })?;
+    let mut reader = resp.body_mut().with_config().limit(max + 1).reader();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut got: u64 = 0;
+    loop {
+        if cancel() {
+            let _ = std::fs::remove_file(dest);
+            return Err(AppError::new(Code::Unknown, "下载被取消了。".to_string()));
+        }
+        let n = reader.read(&mut buf).map_err(|e| {
+            AppError::new(
+                Code::Unknown,
+                format!("读 {} 的响应体失败：{e}", host_of(url)),
+            )
+        })?;
+        if n == 0 {
+            break;
+        }
+        got += n as u64;
+        if got > max {
+            let _ = std::fs::remove_file(dest);
+            return Err(AppError::new(
+                Code::Unknown,
+                format!(
+                    "{} 传回来的内容超过了清单上限 {max} 字节，已中断。",
+                    host_of(url)
+                ),
+            ));
+        }
+        f.write_all(&buf[..n]).map_err(|e| {
+            AppError::new(
+                Code::ConfigWrite,
+                format!("写 {} 失败：{e}", dest.display()),
+            )
+        })?;
+        on_progress(got, total);
+    }
+    f.flush().ok();
+    Ok(got)
+}
+
 pub fn post_json(
     url: &str,
     headers: &[(&str, &str)],

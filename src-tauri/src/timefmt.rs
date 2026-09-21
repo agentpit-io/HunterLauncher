@@ -29,6 +29,27 @@ pub fn hms_shanghai(unix: i64) -> String {
     format!("{h:02}:{mi:02}:{s:02}")
 }
 
+/// 文件名安全的上海时间戳：`20260921-183045`。
+///
+/// 定长，所以**按名字排序 = 按时间排序**（事件流归档就靠这一点决定删哪几份）。
+pub fn file_stamp_unix(unix: i64) -> String {
+    let (y, mo, d, h, mi, s) = civil_from_unix(unix + SHANGHAI_OFFSET_SECS);
+    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
+}
+
+pub fn file_stamp_now() -> String {
+    file_stamp_unix(now_unix())
+}
+
+/// 从 [`SystemTime`] 来一份（文件的修改时间）。1970 之前的时间当成 0。
+pub fn file_stamp(t: SystemTime) -> String {
+    let unix = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    file_stamp_unix(unix)
+}
+
 /// Howard Hinnant 的 civil_from_days 算法，适用于全部公历日期。
 fn civil_from_unix(t: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = t.div_euclid(86_400);

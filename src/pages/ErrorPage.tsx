@@ -1,9 +1,13 @@
+import { useState } from 'react'
 import { AssistPanel } from '../components/AssistPanel'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { AlertTriangle } from '../components/Icons'
+import { Modal } from '../components/Modal'
 import { OfflineImport } from '../components/OfflineImport'
 import { PlainLayout } from '../components/WizardLayout'
+import * as ipc from '../lib/ipc'
+import type { OneClickFeedback } from '../lib/types'
 import { useStore } from '../state/context'
 import type { ErrorCode } from '../state/machine'
 
@@ -52,7 +56,10 @@ export function ErrorPage() {
         </div>
 
         <div className="mt-[20px] flex flex-wrap gap-[10px]">
-          <Button size="sm" variant="secondary" onClick={() => setOverlay('feedback')}>
+          {/* I7 · 一键反馈直达：生成脱敏包 + 预填 issue，**中间隔一屏给用户看**，
+              他点了才打开浏览器。不会自动上传、不会假装上报成功。 */}
+          <SendToDev code={code} detail={state.detail} />
+          <Button size="sm" onClick={() => setOverlay('feedback')}>
             {t.error.oneClickFeedback}
           </Button>
           {/* 方案 §18 给 E_PULL_FAILED 规定的动作就是「换源重试 / 离线导入」。
@@ -70,6 +77,99 @@ export function ErrorPage() {
         stage={state.from}
       />
     </PlainLayout>
+  )
+}
+
+/**
+ * 「发送诊断给开发者」（I7）。
+ *
+ * 三步，**一步都不省**：
+ * 1. 在本机生成脱敏诊断包（`export_zip` 那一套闸门 + 用户名/主机名扫描）；
+ * 2. 把**将要贴出去的标题与正文原样摆给用户看**；
+ * 3. 他点「打开 GitHub」才开浏览器。诊断包本身不自动上传，路径一并给出。
+ *
+ * 出口闸扫出东西时**不给「打开 GitHub」这个按钮** —— 宁可让这条路走不通，
+ * 也不能把可能带着隐私的文字预填进一个公开页面。
+ */
+function SendToDev({ code, detail }: { code: string; detail?: string }) {
+  const { t } = useStore()
+  const [busy, setBusy] = useState(false)
+  const [data, setData] = useState<OneClickFeedback | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function make() {
+    setBusy(true)
+    setErr(null)
+    try {
+      setData(await ipc.feedbackOneClick(code, detail))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="secondary"
+        data-testid="error-send-to-dev"
+        disabled={busy}
+        onClick={() => void make()}
+      >
+        {busy ? t.common.working : t.error.sendToDev}
+      </Button>
+      {err && <span className="self-center break-all text-sm text-danger">{err}</span>}
+      {data && (
+        <Modal
+          title={t.error.sendToDevTitle}
+          testId="send-to-dev"
+          onClose={() => setData(null)}
+          footer={
+            <>
+              <Button onClick={() => setData(null)}>{t.common.cancel}</Button>
+              <Button
+                size="sm"
+                data-testid="send-to-dev-reveal"
+                onClick={() => void ipc.revealPath(data.bundlePath)}
+              >
+                {t.error.revealBundle}
+              </Button>
+              {!data.scanHit && (
+                <Button
+                  variant="primary"
+                  data-testid="send-to-dev-open"
+                  onClick={() => {
+                    void ipc.openExternal(data.issueUrl)
+                    setData(null)
+                  }}
+                >
+                  {t.error.openIssue}
+                </Button>
+              )}
+            </>
+          }
+        >
+          <p className="text-md leading-[1.6] text-body">{t.error.sendToDevIntro}</p>
+          {data.scanHit && (
+            <div
+              data-testid="send-to-dev-scan-hit"
+              className="mt-[12px] rounded-md border border-danger/45 bg-danger-soft px-[14px] py-[11px] text-sm leading-[1.6] text-danger"
+            >
+              {t.error.scanHit(data.scanHit)}
+            </div>
+          )}
+          <div className="mt-[14px] text-sm text-label">{t.error.issueTitleLabel}</div>
+          <div className="selectable mt-[4px] break-all text-md text-ink-2">{data.issueTitle}</div>
+          <div className="mt-[14px] text-sm text-label">{t.error.issueBodyLabel}</div>
+          <pre className="selectable mt-[4px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-log px-[12px] py-[9px] font-mono text-xs leading-[1.5] text-dim">
+            {data.issueBody}
+          </pre>
+          <div className="mt-[14px] text-sm leading-[1.6] text-muted">{data.note}</div>
+        </Modal>
+      )}
+    </>
   )
 }
 
