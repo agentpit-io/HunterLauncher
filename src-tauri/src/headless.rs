@@ -196,7 +196,12 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
             }
             "--code" => {
                 a.code = v.get(i + 1).cloned();
-                a.action = Some("diagnose".into());
+                // `--code` 只在**还没有别的子命令**时才把动作定成 diagnose：
+                // `--feedback --code E_PULL_FAILED` 里它是参数，不是子命令
+                //（I7 实测：原来它无条件覆盖，于是 --feedback 被顶掉、跑成了诊断）
+                if a.action.is_none() {
+                    a.action = Some("diagnose".into());
+                }
                 a.headless = true;
                 i += 1;
             }
@@ -1942,5 +1947,53 @@ mod tests {
         assert!(v.iter().any(|s| s.contains("ghcr")));
         assert!(v.iter().any(|s| s.contains("腾讯云")));
         assert_eq!(default_tag(), "1.2.0");
+    }
+
+    /// `--code` 是**参数**不是子命令：`--feedback --code X` 要跑反馈，不是诊断。
+    /// （I7 实测撞出来的：原来 `--code` 无条件把 action 覆盖成 diagnose）
+    #[test]
+    fn code_不该顶掉已经定下的子命令() {
+        assert_eq!(
+            a(&["--feedback", "--code", "E_PULL_FAILED"])
+                .action
+                .as_deref(),
+            Some("feedback")
+        );
+        assert_eq!(
+            a(&["--feedback", "--code", "E_PULL_FAILED"])
+                .code
+                .as_deref(),
+            Some("E_PULL_FAILED")
+        );
+        // 单独给 --code 时它仍然是「跑一遍诊断」的入口（老行为不变）
+        assert_eq!(
+            a(&["--code", "E_PULL_FAILED"]).action.as_deref(),
+            Some("diagnose")
+        );
+        assert_eq!(
+            a(&["--diagnose", "--code", "E_PULL_FAILED"])
+                .action
+                .as_deref(),
+            Some("diagnose")
+        );
+    }
+
+    /// I7 的三个子命令解析得对。
+    #[test]
+    fn i7_的子命令解析() {
+        let x = a(&["--takeover", "use", "hunter-community", "-y"]);
+        assert_eq!(x.action.as_deref(), Some("takeover"));
+        assert_eq!(x.takeover.as_deref(), Some("use"));
+        assert_eq!(x.takeover_arg.as_deref(), Some("hunter-community"));
+        assert!(x.yes);
+        // 不带参数的子命令不该把后面的选项吞成参数
+        let y = a(&["--takeover", "status", "--key-file", "/k"]);
+        assert_eq!(y.takeover.as_deref(), Some("status"));
+        assert_eq!(y.takeover_arg, None);
+        assert_eq!(y.key_file.as_deref(), Some("/k"));
+        let z = a(&["--review", "install_runtime", "--review-why", "因为"]);
+        assert_eq!(z.action.as_deref(), Some("review"));
+        assert_eq!(z.review.as_deref(), Some("install_runtime"));
+        assert_eq!(z.review_why.as_deref(), Some("因为"));
     }
 }

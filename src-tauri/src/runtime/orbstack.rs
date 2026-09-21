@@ -126,6 +126,16 @@ pub fn parse_team_id(text: &str) -> Option<String> {
 }
 
 /// 验一个 `.app` 或 `.dmg` 的签名。**三道全过才返回 ok。**
+///
+/// ## 为什么这三条不过 [`crate::assist::guard::argv`]
+///
+/// `spctl` 在守卫的禁用名单里 —— 那条禁令针对的是 `spctl --master-disable`
+/// 这种**关掉 Gatekeeper** 的用法，而禁用名单存在的理由是「**模型**不许碰这些程序」。
+/// 这里的三条命令参数**完全由这个函数自己构造**，模型碰不到任何一个字节，
+/// 而且 `codesign --verify` 与 `spctl -a` 都是只读的判定，不改系统任何状态。
+///
+/// 会被模型影响的那几步（`hdiutil attach` / `ditto`）**照样过守卫**，
+/// 因为它们的参数里有路径。
 pub fn verify(target: &Path) -> AppResult<Verdict> {
     if !cfg!(target_os = "macos") {
         return Err(AppError::new(

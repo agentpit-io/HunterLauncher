@@ -307,15 +307,42 @@ pub fn sources_for(item: &Item) -> Vec<Source> {
             url: item.cn_url(),
         },
     ];
+    let want = item.size;
     let mut timed: Vec<(Option<u128>, Source)> = v
         .drain(..)
         .map(|s| {
             let t = Instant::now();
-            let ok = crate::http::get(&s.url, &[("Range", "bytes=0-0")], PROBE_TIMEOUT)
-                .ok()
-                .filter(|r| r.ok() || r.status == 206)
-                .is_some();
-            (ok.then(|| t.elapsed().as_millis()), s)
+            // **只问头**：拿状态码与 content-length，不取正文
+            let ms = match crate::http::head(&s.url, PROBE_TIMEOUT) {
+                Ok(r) if r.ok() => {
+                    // 顺手把「这个地址上的文件多大」和清单对一遍。对不上就当它不可用 ——
+                    // 真下下来也会被 sha256 拦住，不如在测速这一步就排除掉，
+                    // 省一次几十 MB 的无用下载
+                    let len = r
+                        .header("content-length")
+                        .and_then(|x| x.parse::<u64>().ok());
+                    match len {
+                        Some(n) if n != want => {
+                            crate::lwarn!(
+                                "{} 上的 {} 是 {n} 字节，清单里写的是 {want} —— 这个源本次不用",
+                                s.label,
+                                item.file
+                            );
+                            None
+                        }
+                        _ => Some(t.elapsed().as_millis()),
+                    }
+                }
+                Ok(r) => {
+                    crate::lwarn!("测速 {}（{}）返回 HTTP {}", s.label, item.file, r.status);
+                    None
+                }
+                Err(e) => {
+                    crate::lwarn!("测速 {}（{}）失败：{}", s.label, item.file, e.msg);
+                    None
+                }
+            };
+            (ms, s)
         })
         .collect();
     // 通的排前面、快的排前面；不通的按原顺序排后面
@@ -939,5 +966,100 @@ mod tests {
         assert!(urls[0].starts_with("https://github.com/"));
         assert!(urls[1].contains("hunter-dl-hk-"));
         assert_ne!(urls[0], urls[1]);
+    }
+
+    /// **真的从两个源各下一个文件，按清单核对 sha256。**
+    ///
+    /// 默认 `#[ignore]`：它要联网、要下十几 MB，不该在每次 `cargo test` 时跑。
+    /// 验收时显式跑：
+    ///
+    /// ```text
+    /// cargo test --lib runtime::builtin::tests::两个源都真能下到与清单一致的文件 -- --ignored --nocapture
+    /// ```
+    ///
+    /// 这一条是 macOS 那条链路里**唯一能在 Linux 上验的部分**（下载 + 校验），
+    /// 剩下的（colima 起虚拟机）必须真机。挑的是清单里最小的那个文件。
+    #[test]
+    #[ignore = "要联网、要下十几 MB；验收时用 --ignored 显式跑"]
+    fn 两个源都真能下到与清单一致的文件() {
+        let item = manifest::MACOS
+            .iter()
+            .min_by_key(|i| i.size)
+            .expect("清单非空");
+        println!("挑的是 {}（{} 字节）", item.file, item.size);
+        let dir = crate::paths::runtime_cache();
+        std::fs::create_dir_all(&dir).unwrap();
+        for src in [
+            Source {
+                id: "github",
+                label: "GitHub / docker.com",
+                url: item.url.to_string(),
+            },
+            Source {
+                id: "tencent-hk",
+                label: "腾讯云 · 香港",
+                url: item.cn_url(),
+            },
+        ] {
+            let dest = dir.join(format!("{}.{}", item.file, src.id));
+            let t = Instant::now();
+            let mut last = 0u64;
+            let n = crate::http::download_to_file(
+                &src.url,
+                &dest,
+                Duration::from_secs(600),
+                item.size + 4 * 1024 * 1024,
+                &|| false,
+                &mut |got, _| {
+                    if got > last + 4 * 1024 * 1024 {
+                        last = got;
+                        println!("  {} 已下 {got} 字节", src.label);
+                    }
+                },
+            )
+            .unwrap_or_else(|e| panic!("从 {} 下 {} 失败：{}", src.label, item.file, e.msg));
+            let ms = t.elapsed().as_millis();
+            assert_eq!(n, item.size, "{} 给的字节数与清单不符", src.label);
+            let got = sha256_file(&dest).expect("算得出 sha256");
+            assert_eq!(
+                got, item.sha256,
+                "{} 上的内容与清单里的 sha256 对不上",
+                src.label
+            );
+            println!("  ✓ {} · {n} 字节 · {ms} ms · sha256 与清单一致", src.label);
+            let _ = std::fs::remove_file(&dest);
+        }
+    }
+
+    /// 测速这一步**只问头**，而且会把 content-length 和清单对一遍。
+    /// 同样要联网，所以也 `#[ignore]`。
+    #[test]
+    #[ignore = "要联网；验收时用 --ignored 显式跑"]
+    fn 测速两个源都通且文件大小对得上() {
+        for item in manifest::MACOS.iter() {
+            let srcs = sources_for(item);
+            assert_eq!(srcs.len(), 2);
+            for s in &srcs {
+                let r = crate::http::head(&s.url, Duration::from_secs(15))
+                    .unwrap_or_else(|e| panic!("HEAD {} 失败：{}", s.label, e.msg));
+                assert!(
+                    r.ok(),
+                    "{} 上的 {} 回了 HTTP {}",
+                    s.label,
+                    item.file,
+                    r.status
+                );
+                let len: u64 = r
+                    .header("content-length")
+                    .and_then(|x| x.parse().ok())
+                    .unwrap_or_else(|| panic!("{} 没给 content-length", s.label));
+                assert_eq!(
+                    len, item.size,
+                    "{} 上的 {} 大小与清单不符",
+                    s.label, item.file
+                );
+                println!("  ✓ {} · {} · {len} 字节", s.label, item.file);
+            }
+        }
     }
 }

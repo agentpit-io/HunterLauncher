@@ -79,6 +79,31 @@ pub fn get_bytes(url: &str, timeout: Duration) -> AppResult<Vec<u8>> {
         })
 }
 
+/// 只问头、不取正文。测速与「这个地址上的文件多大」都用它。
+///
+/// 为什么不拿 `get` 凑合：`get` 会把正文读成 `String`，对着一个几十 MB 的二进制文件
+/// 既浪费带宽又没有意义（而且读不成 UTF-8 时正文会被当成空的，看起来还「成功」了）。
+pub fn head(url: &str, timeout: Duration) -> AppResult<Resp> {
+    let a = agent(timeout);
+    let mut resp = a
+        .head(url)
+        .call()
+        .map_err(|e| AppError::new(Code::Unknown, format!("请求 {} 失败：{e}", host_of(url))))?;
+    let status = resp.status().as_u16();
+    let mut headers = HashMap::new();
+    for (k, v) in resp.headers().iter() {
+        if let Ok(s) = v.to_str() {
+            headers.insert(k.as_str().to_ascii_lowercase(), s.to_string());
+        }
+    }
+    let _ = resp.body_mut();
+    Ok(Resp {
+        status,
+        headers,
+        body: String::new(),
+    })
+}
+
 /// 把一个大文件流式下到磁盘，边下边报**真实字节数**。
 ///
 /// 为什么不复用 [`get_bytes`]：内置运行时的四个包加起来将近 100 MB，
