@@ -687,6 +687,161 @@ export const demoAutoSnapshot: AssistAutoSnapshot = {
   ],
 }
 
+/**
+ * 复核卡片 + 「直接用它」那张不阻塞的选择卡片长什么样（I7）。给截图脚本用
+ * （`HUNTER_DEMO_PAGE=auto-review`）。
+ *
+ * **里面的数字都是从测试机真实跑出来的那一次抄过来的**（见 I7-迭代报告第三节），
+ * 不是随手编的 —— 演示数据也不该出现一个真实系统里不可能出现的值。
+ */
+export const demoAutoReview: AssistAutoSnapshot = {
+  running: true,
+  summary: {
+    solved: 0,
+    open: 1,
+    tokens: 2_146,
+    rounds: 1,
+    maxRounds: 10,
+    elapsedMs: 18_400,
+    phase: '正在解决：找不到 Docker',
+  },
+  events: [
+    {
+      id: 1,
+      parent: null,
+      kind: 'step',
+      status: 'failed',
+      title: '检查 Docker',
+      detail: '这台机器上找不到 docker 可执行文件。',
+      elapsedMs: 410,
+      at: '2026-09-21 18:20:02',
+    },
+    {
+      id: 2,
+      parent: null,
+      kind: 'issue',
+      status: 'warn',
+      title: '发现问题：找不到 Docker',
+      detail: '这台机器上找不到 docker 可执行文件。',
+      tech: ['错误码 E_DOCKER_MISSING｜这台机器上找不到 docker 可执行文件。'],
+      at: '2026-09-21 18:20:02',
+    },
+    {
+      id: 3,
+      parent: 2,
+      kind: 'analyze',
+      status: 'ok',
+      title: '分析中…',
+      detail: '查了 5 个端口 · 本机还有 1 套 Hunter',
+      elapsedMs: 1_240,
+      at: '2026-09-21 18:20:03',
+    },
+    {
+      id: 4,
+      parent: 2,
+      kind: 'analyze',
+      status: 'ok',
+      title: '找到原因',
+      detail:
+        '这台机器上一个 Docker 都没有（内置清单里 14 个位置全找过了）。装一套完全放在 ~/.hunter/runtime 里的运行时：4 个组件、合计 94.9 MiB，不要管理员密码、不改系统任何地方、设置里可一键卸载。',
+      at: '2026-09-21 18:20:03',
+    },
+    {
+      id: 5,
+      parent: 2,
+      kind: 'review',
+      status: 'ok',
+      title: '复核：放行',
+      detail:
+        '所有改动都落在 ~/.hunter/runtime 内，不触及用户已有的数据卷、网络设置或其他 compose 项目；理由与证据里「一个 docker 位置都没探到」一致。',
+      tokens: 2_146,
+      elapsedMs: 3_910,
+      tech: [
+        '第二个模型，单独的提示词，只判「会不会伤到你已有的东西」「对不对得上证据」',
+        '复核通过 ≠ 可以执行：守卫与你的确认这两道照样要过',
+      ],
+      at: '2026-09-21 18:20:07',
+    },
+    {
+      id: 6,
+      parent: 2,
+      kind: 'action',
+      status: 'ok',
+      title: '这一步不再问你',
+      detail: '你在授权页上勾了「电脑上没有 Docker 时允许 AI 为你安装」',
+      tech: [
+        '动作 install_runtime（需要你同意）。想改回「每次都问」：设置页把那一项取消勾选，或者改 launcher.toml 的 [assist] allow_install_runtime = false',
+      ],
+      at: '2026-09-21 18:20:07',
+    },
+    {
+      id: 7,
+      parent: 2,
+      kind: 'action',
+      status: 'running',
+      title: '正在下载容器运行时（4 个组件，合计 94.9 MiB）',
+      detail: '38% · 已下载 36.1 MiB / 94.9 MiB',
+      at: '2026-09-21 18:20:22',
+    },
+  ],
+}
+
+/**
+ * 「你电脑上已经在运行另一套 Hunter」那张**不阻塞**的选择卡片（I7）。
+ * `HUNTER_DEMO_PAGE=auto-takeover-offer`。
+ */
+export const demoAutoTakeoverOffer: AssistAutoSnapshot = {
+  running: true,
+  summary: {
+    solved: 1,
+    open: 0,
+    tokens: 0,
+    rounds: 0,
+    maxRounds: 10,
+    elapsedMs: 9_400,
+    phase: '挑下载源、算端口、写配置',
+  },
+  events: [
+    {
+      id: 1,
+      parent: null,
+      kind: 'step',
+      status: 'ok',
+      title: '检查 Docker',
+      detail: 'Docker Engine 29.8.1 正在运行',
+      elapsedMs: 254,
+      at: '2026-09-21 18:30:02',
+    },
+    {
+      id: 2,
+      parent: null,
+      kind: 'step',
+      status: 'running',
+      title: '挑下载源、算端口、写配置',
+      detail: '正在测速…',
+      at: '2026-09-21 18:30:03',
+    },
+    {
+      id: 3,
+      parent: 2,
+      kind: 'needUser',
+      status: 'waiting',
+      title: '你电脑上已经在运行另一套 Hunter',
+      detail:
+        'hunter-community（5 个容器，占着端口 3100、3921、5442、6479、8100）。不点也行 —— 默认就是「和它并存」，下面这一步已经在跑了。',
+      tech: [
+        '并存的做法：新装的这一套换一组空闲端口。启动器不会停它、不会删它、不会改它的配置。',
+        '「hunter-community」的 compose 文件在 ~/hunter-community，所以接管之后能看状态、看日志，也能停 / 重启（每次都要再确认一遍）',
+      ],
+      choices: [
+        { value: 'coexist', label: '和它并存（推荐，不动它）', primary: true },
+        { value: 'takeover:hunter-community', label: '直接用「hunter-community」，不再装一套', primary: false },
+      ],
+      at: '2026-09-21 18:30:04',
+    },
+  ],
+}
+
 export const demoAudit: string[] = [
   '{"at":"2026-09-21 10:30:00","action":"consent","args":{},"by":"user","level":null,"result":"授权档位 auto（自动驾驶）"}',
   '{"at":"2026-09-21 10:30:01","action":"autopilot_start","args":{},"by":"user","level":null,"result":"授权档位 auto"}',

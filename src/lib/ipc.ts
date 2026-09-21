@@ -521,8 +521,13 @@ export async function assistAutoAnswer(value: string): Promise<boolean> {
 export async function assistAutoSnapshot(): Promise<AssistAutoSnapshot> {
   // 演示模式下按 __HUNTER_DEMO_PAGE__ 给两份不同的快照：
   // 正常直播 与「需要你」那张卡片各一张图
-  if (DEMO)
-    return demoPage() === 'auto-need-user' ? demo.demoAutoNeedUser : demo.demoAutoSnapshot
+  if (DEMO) {
+    const p = demoPage()
+    if (p === 'auto-need-user') return demo.demoAutoNeedUser
+    if (p === 'auto-review') return demo.demoAutoReview
+    if (p === 'auto-takeover-offer') return demo.demoAutoTakeoverOffer
+    return demo.demoAutoSnapshot
+  }
   return call<AssistAutoSnapshot>('assist_auto_snapshot')
 }
 
@@ -566,7 +571,12 @@ export async function takeoverCandidates(): Promise<TakeoverCandidate[]> {
 
 /** 当前接管态（运行面板）。 */
 export async function takeoverState(): Promise<TakeoverState> {
-  if (DEMO) return demo.demoTakeoverState
+  // 演示模式下**只有截图脚本明确要那一页时**才说「正在接管」——
+  // 否则每一张运行面板的截图都会变成接管态（接管是少数情况，不是默认）
+  if (DEMO)
+    return demoPage() === 'takeover'
+      ? demo.demoTakeoverState
+      : { ...demo.demoTakeoverState, active: false, project: '', containers: [] }
   return call<TakeoverState>('takeover_state')
 }
 

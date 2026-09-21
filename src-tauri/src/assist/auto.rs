@@ -173,7 +173,7 @@ impl Handle {
             if let Ok(mut g) = self.takeover.lock() {
                 *g = Some(project.clone());
             }
-            self.close_offer(&format!("你选了「直接用 {project}」，这就改道"));
+            self.close_offer(&format!("记下了：改用「{project}」"));
             return true;
         }
         if value == "coexist" {
@@ -369,6 +369,17 @@ impl Orchestrator {
                 };
                 return self.fail(e.code, &msg);
             }
+        }
+
+        // 装完了才点「直接用它」—— 那就**如实说没有改道**，不要让那张卡片
+        // 留着一句「这就改道」却什么都没发生
+        if let Some(late) = self.takeover.lock().ok().and_then(|mut g| g.take()) {
+            self.bus.emit(
+                EventDraft::new(Kind::Action, format!("「直接用 {late}」这一下点晚了"))
+                    .status(Status::Skipped)
+                    .detail("这次安装已经跑完了，所以没有改道 —— 两套现在都在，互不影响")
+                    .tech("想改成管理原有的那一套：设置页 →「容器运行时」下面那一节，或者命令行 `--takeover use <项目名> -y`"),
+            );
         }
 
         // **从磁盘重读**：修复动作（remap_ports / switch_registry / raise_timeouts）

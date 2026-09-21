@@ -23,6 +23,10 @@ const DEMO_STATES: Record<string, State> = {
   logs: { name: 'Ready' },
   feedback: { name: 'Ready' },
   update: { name: 'Ready' },
+  // I7：接管态的运行面板（App.tsx 里按 takeoverState().active 决定渲染哪一个）
+  takeover: { name: 'Ready' },
+  'auto-review': { name: 'AutoInstalling' },
+  'auto-takeover-offer': { name: 'AutoInstalling' },
   error: {
     name: 'Error',
     code: 'E_START_TIMEOUT',
