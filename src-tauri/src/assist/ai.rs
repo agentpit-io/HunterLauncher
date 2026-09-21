@@ -616,11 +616,12 @@ pub(crate) fn call_gateway_plain(
     messages: &[serde_json::Value],
     key: &str,
     timeout: std::time::Duration,
+    max_tokens: u32,
 ) -> Result<serde_json::Value, Degrade> {
     let body = serde_json::json!({
         "model": gateway::DEFAULT_MODEL,
         "messages": messages,
-        "max_tokens": 1200,
+        "max_tokens": max_tokens,
     });
     send(body, key, timeout)
 }

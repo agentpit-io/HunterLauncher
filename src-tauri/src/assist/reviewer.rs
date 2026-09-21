@@ -135,7 +135,10 @@ pub fn review(calls: &[Call], why: &str, evidence: &str, key: &str) -> Verdict {
         serde_json::json!({"role": "user", "content": user}),
     ];
     // **不给工具**：复核员只出结论，不该有任何动手的能力
-    let resp = match super::ai::call_gateway_plain(&messages, key, Duration::from_secs(45)) {
+    // `max_tokens` 与诊断员一样给 2000：复核员的**输出**很短（一个小 JSON），
+    // 但思考型模型的 thinking 也算在输出预算里 —— I7 实测 1200 时撞到过一次
+    // 「回的不是 JSON」（4,436 token 里几乎全花在思考上，JSON 没写完）。
+    let resp = match super::ai::call_gateway_plain(&messages, key, Duration::from_secs(45), 2000) {
         Ok(r) => r,
         Err(d) => return Verdict::unavailable(d.message()),
     };
@@ -154,6 +157,24 @@ pub fn review(calls: &[Call], why: &str, evidence: &str, key: &str) -> Verdict {
         .unwrap_or("")
         .to_string();
     let mut v = parse(&text);
+    if v.degraded.is_some() {
+        // 解析不出结论时**把它到底说了什么记下来**（脱敏 + 截断）。
+        // I7 实测撞到过一次「复核员回的不是 JSON」，当时日志里一个字都没有，
+        // 只能靠重跑去猜 —— 一条查不动的失败等于没有失败信息。
+        let head: String = crate::redact::mask_home(&crate::redact::redact(&text))
+            .chars()
+            .take(400)
+            .collect();
+        crate::lwarn!(
+            "复核员的回复解析不了（{} token）。它说的是：{}",
+            tokens,
+            if head.trim().is_empty() {
+                "（一个字都没有）"
+            } else {
+                &head
+            }
+        );
+    }
     v.tokens = tokens;
     v.elapsed_ms = t.elapsed().as_millis() as u64;
     crate::linfo!(
