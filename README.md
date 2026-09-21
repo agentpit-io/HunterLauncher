@@ -5,7 +5,7 @@
 **把 [HunterCode 开源版](https://github.com/agentpit-io/hunter-community) 的部署，从「clone → 改 .env → 敲命令行」变成「下载 → 填一把 key → 等几分钟」。**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-amber.svg)](LICENSE)
-[![状态](https://img.shields.io/badge/状态-v0.1.0%20预发布%20·%20未签名-orange.svg)](https://github.com/agentpit-io/HunterLauncher/releases)
+[![状态](https://img.shields.io/badge/状态-v0.1.8%20预发布%20·%20未签名-orange.svg)](https://github.com/agentpit-io/HunterLauncher/releases)
 [![平台](https://img.shields.io/badge/平台-Windows%20·%20macOS%20·%20Linux-1e293b.svg)](#三平台支持)
 
 </div>
@@ -14,10 +14,12 @@
 
 ## 下载与安装
 
-> 表里的大小是 **v0.1.0 实际发布产物**的值。
-> **0.1.0 是预发布版（prerelease）**，因为安装包**没有代码签名**（见下面的「未签名包怎么放行」）。
+> 表里的大小是 **v0.1.0 实际发布产物**的值，后续版本体积相近但没有逐版重测。
+> **每一版都标预发布（prerelease）**，因为安装包**没有代码签名**（见下面的「未签名包怎么放行」）。
 > 功能是完整的：Linux 上从零安装、升级、回滚、离线导入都真机跑通过；
-> Windows / macOS **只在 CI 里编译与打包通过，没有在真机上跑过**。
+> Windows **只在 CI 里编译与打包通过，没有在真机上跑过**；
+> macOS 由用户在自己那一台上手工验证（0.1.3 / 0.1.4 / 0.1.5 / 0.1.7 各跑过一次，
+> 每一次都撞出一个只在 macOS 上出现的缺陷，修在随后那一版里）。
 
 | 平台 | 下载 | 大小 | 说明 |
 |---|---|---|---|
@@ -30,21 +32,34 @@
 **GitHub 下载**：<https://github.com/agentpit-io/HunterLauncher/releases>
 **国内下载**（腾讯云香港，不用翻墙）：`https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/<版本>/`
 
-装完打开，按向导走：**欢迎 → 填一把 key → 授权一次 → 等它装完**。
-0.1.5 起，授权之后**你不需要再点任何按钮** —— 检测 Docker、挑下载源、算端口、拉镜像、起容器
-全由 AI 连着跑完，出问题它自己查、自己修，过程实时显示在屏幕上
-（只有三种情况会来问你：要装新软件、要动你电脑上已有的 Hunter、要超本次额度上限）。
+装完打开，按向导走：**欢迎 → 填一把 key → 点一下「开始安装」→ 等它装完**。
 
-**0.1.7 起，macOS 上连「这台电脑没装 Docker」也不用你操心**：授权页上那一项默认勾着的勾
-允许启动器装一套**完全用户态**的容器运行时（Colima + Lima + docker 客户端 + compose）到
-`~/.hunter/runtime` —— 版本与 sha256 写死在程序里、下完逐个校验，**不要管理员密码、
-不改系统任何地方**，设置页里点一下就能卸干净。本机已经有 OrbStack / Docker Desktop 的话
-它一个字节都不下。（Windows 装 WSL、Linux 装 Docker Engine 都需要管理员权限，
-那两条路启动器**不替你提权**，只把命令写给你。）
+**0.1.8 起，从点「开始安装」到装好，你一次都不用点。** 检测 Docker、挑下载源、算端口、
+拉镜像、起容器全由 AI 连着跑完；出问题它自己查、自己修、**自己按最好的办法拿主意**，
+做了什么决定、为什么这么定，一条条实时写在屏幕上。
+界面上**永远不会**出现「请在终端里执行 …」这种把活儿丢回给你的话。
 
-本机已经有一套 Hunter 在跑时，0.1.7 还会多给一个选择：**和它并存（默认，不动它）**，
-或者**直接用它、不再装一套**。选后者之后运行面板改成管理那一套 —— 看状态、看日志、
-打开网页；停止 / 重启每一次都要你再点一下，**任何情况下都不删它的数据卷**。
+唯一可能出现的交互是**系统自己弹的密码框**（macOS 的授权框 / Linux 的 polkit /
+Windows 的 UAC），而且只在最后一条兜底路线上才会用到。启动器不自绘密码框、
+不保存密码、不把密码写进日志。
+
+**这台电脑上没有 Docker 时，三条路自动依次走完**（前一条失败才走下一条，
+排序原则是「同样能解决问题时优先不需要交互的那条」）：
+
+| 顺序 | 路线 | 要下多少 | 要密码吗 |
+|---|---|---|---|
+| ① | 内置运行时（Colima + Lima + docker 客户端 + compose + 虚拟机系统镜像，全装在 `~/.hunter/runtime`） | 约 436 MB | **不要** |
+| ② | OrbStack 官方安装包（下 dmg → 验苹果签名与公证 → 装 → 打开 → 等就绪） | 约 200 MB | 可能要 |
+| ③ | Homebrew —— **没有 brew 就先替你把 brew 装上**，再 `brew install --cask orbstack` | 视情况 | 会要 |
+
+版本与校验和全部写死在程序里、下完逐个核对。本机已经有 OrbStack / Docker Desktop /
+Colima 的话它一条都不走，一个字节都不下。
+
+**你自己在系统里配好的网络代理，启动器会沿用**（只读出来用，绝不修改），
+并且传给它起的每一个子进程与虚拟机 —— 直连不通时自动走它重试。
+
+本机已经有一套 Hunter 在跑时，启动器**自动选「两套并存、换一组端口」**，
+你原来那套一点都不动。想改成直接用已有那套，到「设置 → 已有的 Hunter」里切换。
 
 没有桌面环境的服务器用 `hunter-launcher --auto --key-file <路径>`，跑的是同一套逻辑。
 
@@ -304,12 +319,24 @@ A small cross-platform desktop app (Tauri 2 + React) that turns deploying
 from *"clone the repo, edit `.env`, run docker compose"* into
 *"download, paste one key, wait a few minutes."*
 
-**Status: under active development — no installable release yet.** See
-[`docs/开发文档/总进度表.md`](docs/开发文档/总进度表.md) for milestone progress.
-If you want to run HunterCode today, use
-[its own `docker compose up -d`](https://github.com/agentpit-io/hunter-community#quick-start) instead.
+**Status: v0.1.8, prerelease.** Installers for all three platforms are published on the
+[Releases page](https://github.com/agentpit-io/HunterLauncher/releases); they are **unsigned**,
+so every release is marked as a prerelease and your OS will warn you the first time you open it
+(see the Chinese section above for how to allow it). Linux is tested on real hardware;
+Windows is CI-built only; macOS is verified by hand on the maintainer's own machine.
+See [`docs/开发文档/总进度表.md`](docs/开发文档/总进度表.md) for milestone progress.
 
-**What it does.** Detects (or guides you through installing) Docker; validates a single
+**It never asks you to open a terminal.** From the single "Start installing" click onward you
+do not touch anything: it detects the problem, works out the cause, and takes the best course of
+action on its own, narrating every decision on screen. If this machine has no container runtime it
+installs one for you — trying the least intrusive route first (a fully user-space runtime inside
+`~/.hunter/runtime`), then the official OrbStack installer, and only last Homebrew (installing
+Homebrew itself first if needed). When administrator rights are genuinely required, **your operating
+system shows its own password dialog** — the launcher never draws a password box, never stores a
+password, and never writes one to a log. It also **reuses the network proxy you already configured**
+(read-only; it never modifies your network settings) and passes it to every subprocess and to the VM.
+
+**What it does.** Detects (or installs) a container runtime; validates a single
 `hunt_tools_` key against the Hunter gateway and shows your daily model quota; pulls the six
 container images with real per-image progress; rewrites ports when they collide; starts the stack
 and waits for all six services to report healthy; then lives in your system tray for
