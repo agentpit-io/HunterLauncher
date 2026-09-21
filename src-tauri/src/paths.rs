@@ -185,8 +185,22 @@ pub fn chmod_600(path: &std::path::Path) -> AppResult<()> {
 
 /// `HUNTER_HOME` 是**进程级**环境变量，两条测试同时改它必然打架。
 /// 凡是动这个变量的测试都要先拿这把锁。
+///
+/// ## 为什么这把锁必须只有一把
+///
+/// 原来 `paths` / `config` / `telemetry` / `dockercfg` / `log` **各有一把自己的锁**。
+/// 每个模块内部是串行的，模块之间照样并行 —— 而它们抢的是同一个进程级变量。
+/// 症状是间歇性的、而且长得完全不像根因：`config` 那边写覆盖文件时
+/// `std::fs::write` 成功、紧接着 `chmod` 报 `No such file or directory`，
+/// 因为中间 `dockercfg` 那边把它自己的临时目录（也就是当时的 `HUNTER_HOME`）删掉了。
+///
+/// 它在 I7 之前一直没炸过，只是因为时序没撞上；I7 给 `write_override` 加了一次
+/// `LauncherConfig::load()`，时序变了一点点，macOS runner 上当场翻车。
+/// **这种测试不是"偶尔失败"，是一直坏着、只是还没被看见。**
+///
+/// 所以这把锁挪到 `paths` 里，`pub(crate)`，全进程**只有这一把**。
 #[cfg(test)]
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     use std::sync::{Mutex, OnceLock};
     static L: OnceLock<Mutex<()>> = OnceLock::new();
     L.get_or_init(|| Mutex::new(()))

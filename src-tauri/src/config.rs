@@ -1986,12 +1986,10 @@ mod tests {
     #[cfg(unix)]
     fn 启动器写出来的五个文件都是_600() {
         use std::os::unix::fs::PermissionsExt;
-        use std::sync::{Mutex, OnceLock};
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        let _g = L
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // 全进程只有一把（`paths::env_lock`）。这里原来是模块私有的一把 ——
+        // 于是 dockercfg 那边可以同时把 HUNTER_HOME 指到别处、再把那个目录删掉，
+        // 本条测试就会在 write 成功之后 chmod 报「文件不存在」（macOS runner 上真撞到了）
+        let _g = crate::paths::env_lock();
 
         let old = std::env::var("HUNTER_HOME").ok();
         let dir = std::env::temp_dir().join(format!("hunter-perm600-{}", std::process::id()));

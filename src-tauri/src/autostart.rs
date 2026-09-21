@@ -259,16 +259,13 @@ pub fn plist_content(exe: &str) -> String {
     )
 }
 
-/// 凡是动 `XDG_CONFIG_HOME` / `HOME` 这类**进程级**环境变量的测试都要先拿这把锁，
-/// 否则 cargo 的并行测试会互相踩（和 `paths::env_lock` 同一个理由）。
+/// 凡是动 `XDG_CONFIG_HOME` / `HOME` 这类**进程级**环境变量的测试都要先拿这把锁。
+///
+/// 用的就是 `paths::env_lock` 那一把 —— 不是「同一个理由的另一把」。
+/// `paths::home()` 读的正是 `HOME`，这边改 `HOME` 和那边改 `HUNTER_HOME`
+/// 影响的是同一组路径，两把锁等于没锁。
 #[cfg(test)]
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    use std::sync::{Mutex, OnceLock};
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    L.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-}
+use crate::paths::env_lock;
 
 #[cfg(test)]
 mod tests {

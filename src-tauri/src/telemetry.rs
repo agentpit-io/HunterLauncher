@@ -220,13 +220,8 @@ mod tests {
     use super::*;
 
     /// 这些测试要往临时的 `HUNTER_HOME` 里写文件，进程级环境变量得串行改。
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
+    /// **用全进程那一把**（`paths::env_lock`）—— 每个模块各拿一把等于没拿。
+    use crate::paths::env_lock;
 
     struct TempHome {
         old: Option<String>,

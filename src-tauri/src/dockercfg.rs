@@ -328,14 +328,13 @@ mod tests {
         home: PathBuf,
     }
 
-    fn lock() -> &'static std::sync::Mutex<()> {
-        static M: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        M.get_or_init(|| std::sync::Mutex::new(()))
-    }
+    // 这里原来是模块私有的一把锁。它挡得住 dockercfg 自己的测试互相踩，
+    // 挡不住 config / telemetry 那边同时改 HUNTER_HOME —— 全进程只能有一把
+    // （`paths::env_lock`，那儿的注释写了这次是怎么翻车的）。
 
     impl Scene {
         fn new(tag: &str) -> Self {
-            let g = lock().lock().unwrap_or_else(|e| e.into_inner());
+            let g = crate::paths::env_lock();
             let src = tmp(&format!("src-{tag}"));
             let home = tmp(&format!("home-{tag}"));
             std::env::set_var("DOCKER_CONFIG", &src);
