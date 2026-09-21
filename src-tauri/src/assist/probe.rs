@@ -140,7 +140,9 @@ pub fn collect(
         .map(|(name, port)| PortState {
             service: (*name).to_string(),
             port: *port,
-            free: crate::config::port_free(*port, *name == "web" && !cfg.hunter.web_local_only()),
+            // 第二个参数早就不起作用了（探测一律按通配地址来，那是更保守的一头）。
+            // I7 起 web 也只绑本机，这里连表面上的区分也不留了。
+            free: crate::config::port_free(*port, true),
             ours: ours.contains(port),
         })
         .collect();

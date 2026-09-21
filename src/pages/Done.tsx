@@ -11,11 +11,12 @@ export function Done() {
   const { t, send } = useStore()
   const rt = useAsync(() => ipc.runtimeStatus(), [])
   const url = rt.data?.webUrl ?? null
-  // 最后一条提示讲的是「谁能打开这个地址」，而那件事是可配置的（设置页 · 待办池 P1-20）。
-  // 设置读不出来时按默认（对外）显示 —— 那才是真实的默认行为。
-  const st = useAsync(() => ipc.readSettings(), [])
-  const tips = st.data?.webLocalOnly
-    ? [...t.done.tips.slice(0, -1), t.done.tipLocalOnly]
+  // 最后一条提示讲的是「谁能打开这个地址」。I7 起新装的机器一律只有本机能打开，
+  // 所以那一条就是默认文案；只有「升级前就对局域网开放、本轮有意没动」的老机器
+  // 要换成另一句（照原样显示就成了假话 —— 红线 1）。
+  // 依据是 runtimeStatus 里 docker 报的**真实绑定地址**，不是配置。
+  const tips = rt.data?.webLanExposed
+    ? [...t.done.tips.slice(0, -1), t.done.tipLanExposed]
     : t.done.tips
 
   return (

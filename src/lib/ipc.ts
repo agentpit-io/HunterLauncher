@@ -213,6 +213,15 @@ export async function launcherLog(tail: number): Promise<string[]> {
 
 // ── 设置与诊断 ───────────────────────────────────────────────────────────
 
+/**
+ * 一键把网页端口收回本机（I7）。**单向** —— 收紧之后没有任何入口能放开，
+ * 局域网访问是付费版功能。只有「升级前就对局域网开放」的老机器会看到这个按钮。
+ */
+export async function tightenWebBind(): Promise<string> {
+  if (DEMO) return '演示模式不真的改端口绑定'
+  return call<string>('tighten_web_bind')
+}
+
 export async function readSettings(): Promise<LauncherSettings> {
   if (DEMO) return demo.demoSettings
   return call<LauncherSettings>('read_settings')

@@ -433,6 +433,23 @@ function RegistryCard({
 }) {
   const { t } = useStore()
   const [custom, setCustom] = useState('')
+  // I7：只有「升级前就对局域网开放」的老机器会用到这两个 state
+  const [tightening, setTightening] = useState(false)
+  const [tightenMsg, setTightenMsg] = useState('')
+
+  async function onTighten() {
+    setTightening(true)
+    setTightenMsg('')
+    try {
+      setTightenMsg(await ipc.tightenWebBind())
+      // 收紧之后 webLanExposed 变成 false，那段说明与按钮会一起消失
+      await onPatch({})
+    } catch (e) {
+      setTightenMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTightening(false)
+    }
+  }
 
   return (
     <Card>
@@ -484,27 +501,46 @@ function RegistryCard({
         </div>
       </Field>
 
-      {/* 谁能打开 Hunter（待办池 P1-20 的开关）。
-          默认「同一网络里的设备都可以」—— 这是既定设计（总控规则红线 4 把 web 明确排除在
-          「只绑 127.0.0.1」之外），I2 只把开关做出来，**默认值一个字节没动**。
-          改完要重新起容器才生效，下面那句提示写清楚了。 */}
+      {/* 谁能打开 Hunter（待办池 P1-20 · 用户 2026-09-21 19:05 拍板后**不再是开关**）。
+          原话：「目前只能本机访问，不考虑同一局域网访问，这个需要升级付费版本才可以。」
+          所以这里是一行只读的说明 + 一句付费版提示，**点不动、也不写配置**。
+          唯一的例外是升级上来的老机器（升级前就对局域网开放，本轮有意没动它）：
+          多出一段说明与一个「只允许本机访问」按钮，收紧是单向的。 */}
       <div className="mt-[14px] border-t border-line pt-[14px]">
         <div className="text-md text-ink-2">{t.settings.webAccess}</div>
-        <div className="mt-[10px]">
-          <SegmentedControl<string>
-            value={settings?.webLocalOnly ? 'local' : 'all'}
-            testIdPrefix="web-access"
-            onChange={(v) => void onPatch({ webLocalOnly: v === 'local' })}
-            options={[
-              { id: 'all', label: t.settings.webAccessAll },
-              { id: 'local', label: t.settings.webAccessLocal },
-            ]}
-          />
+        <div
+          className="mt-[10px] inline-flex items-center rounded-[6px] border border-line px-[12px] py-[6px] text-md text-ink"
+          data-testid="web-access-value"
+        >
+          {t.settings.webAccessValue}
         </div>
         <div className="mt-[10px] text-xs leading-[1.5] text-muted">{t.settings.webAccessHint}</div>
-        <div className="mt-[6px] text-xs leading-[1.5] text-amber-text">
-          {t.settings.webAccessApply}
+        <div className="mt-[6px] text-xs leading-[1.5] text-muted" data-testid="web-access-paid">
+          {t.settings.webAccessPaid}
         </div>
+        {settings?.webLanExposed && (
+          <div className="mt-[10px] rounded-[6px] border border-amber/40 bg-amber/5 p-[12px]">
+            <div className="text-xs leading-[1.5] text-amber-text">{t.settings.webAccessLegacy}</div>
+            <div className="mt-[10px] flex items-center gap-[10px]">
+              <Button
+                size="sm"
+                data-testid="web-access-tighten"
+                disabled={tightening}
+                onClick={() => void onTighten()}
+              >
+                {tightening ? t.settings.webAccessTightening : t.settings.webAccessTighten}
+              </Button>
+              <span className="text-xs leading-[1.5] text-muted">
+                {t.settings.webAccessTightenNote}
+              </span>
+            </div>
+            {tightenMsg && (
+              <div className="mt-[8px] text-xs leading-[1.5] text-ink-2" data-testid="web-access-tighten-msg">
+                {tightenMsg}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.saving}</div>}

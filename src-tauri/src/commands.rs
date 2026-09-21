@@ -460,6 +460,47 @@ pub async fn stack_action(action: String) -> Result<String> {
     .await
 }
 
+/// 一键把网页端口收回本机（I7 · 用户 2026-09-21 19:05 的决定第三点）。
+///
+/// 只有「升级前就对局域网开放」的老机器会看到这个按钮。做三件事：
+/// 1. 用 [`config::write_override_local`] 重写覆盖文件（唯一一个显式指定 `Local` 的入口）；
+/// 2. `launcher.toml` 里那一项遗迹也顺手改成 `local`，免得日志里一直报「已忽略」；
+/// 3. `up -d --force-recreate web` —— 改端口绑定必须**重建**容器，`restart` 不够
+///    （与切模型那件事同一个原因，见 `compose::up_services` 的注释）。
+///
+/// **单向**：收紧之后 `WebBind::detect()` 永远返回 `Local`，
+/// 而免费版没有任何一个入口能写回去（局域网访问是付费版功能）。
+#[tauri::command]
+pub async fn tighten_web_bind(app: tauri::AppHandle) -> Result<String> {
+    blocking(move || {
+        let st = state(&app);
+        let mut c = st.config();
+        crate::config::write_override_local(&c.hunter.ports, &c.hunter.base_prefix)?;
+        c.hunter.web_bind = config::WEB_BIND_LOCAL.into();
+        c.save()?;
+        st.set_config(c.clone());
+        crate::linfo!(
+            "已把网页端口收回 127.0.0.1（端口 {}），正在重建 web 容器",
+            c.hunter.ports.web
+        );
+        // 没在跑就只改配置文件 —— 下次启动自然是本机绑定，不去无端把容器拉起来
+        if compose::ps()
+            .unwrap_or_default()
+            .iter()
+            .any(|s| s.service == "web" && s.state == "running")
+        {
+            compose::up_services(&["web"])?;
+            Ok(format!(
+                "已收紧：网页现在只有这台电脑能打开（http://localhost:{}）。",
+                c.hunter.ports.web
+            ))
+        } else {
+            Ok("已收紧：下次启动时网页就只有这台电脑能打开了。".to_string())
+        }
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn compose_logs(service: Option<String>, tail: Option<usize>) -> Result<Vec<String>> {
     blocking(move || compose::logs(service.as_deref(), tail.unwrap_or(200))).await
@@ -495,10 +536,14 @@ pub struct LauncherSettings {
     /// 当前镜像源的完整前缀（自定义源时界面要显示它）
     #[serde(default)]
     pub registry_prefix: String,
-    /// web 端口只允许本机访问。**默认 false**（= 绑所有网卡，与 I1 之前的行为一致）。
-    /// 改这一项要重新生成覆盖文件并重启容器才生效，界面上写清楚了。
+    /// 网页端口现在是不是**不止本机**能打开。**只读** ——
+    /// 免费版只允许本机访问（用户 2026-09-21 19:05 的决定），设置页里没有开关，
+    /// 只有一行说明「局域网访问为付费版功能」。
+    ///
+    /// 为 `true` 的唯一情形是「这台机器升级前就对外，本轮有意没动它」，
+    /// 那时设置页与运行面板各给一个「只允许本机访问」按钮（收紧是单向的）。
     #[serde(default)]
-    pub web_local_only: bool,
+    pub web_lan_exposed: bool,
     /// AI 诊断助手（I4）。**默认开**；关掉之后只用确定性规则，一个 token 也不花
     #[serde(default)]
     pub assist: bool,
@@ -548,11 +593,9 @@ pub async fn write_settings(
         let mut c = st.config();
         c.launcher.locale = settings.locale;
         c.launcher.check_update_hours = if settings.check_update { 24 } else { 0 };
-        c.hunter.web_bind = if settings.web_local_only {
-            config::WEB_BIND_LOCAL.into()
-        } else {
-            config::WEB_BIND_ALL.into()
-        };
+        // I7：「谁能打开 Hunter」不再是设置页能改的东西 —— 免费版只允许本机访问。
+        // 前端传什么过来都不看（旧版本的界面、脚本、`--set` 之类都可能还在传）。
+        // 要收紧走 `tighten_web_bind`（单向），那是唯一一个能改绑定的入口。
         c.assist.enabled = settings.assist;
         // I5：设置页也能改授权档位。**改档位算一次新的授权**，所以重新盖时间戳、写审计
         if !settings.assist_mode.trim().is_empty() {
@@ -645,7 +688,8 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         model_base_url: c.model.base_url.clone(),
         model_name: c.model.model.clone(),
         registry_prefix: c.hunter.registry_prefix.clone(),
-        web_local_only: c.hunter.web_local_only(),
+        // 现状，不是配置里的意图（红线 1）
+        web_lan_exposed: crate::config::WebBind::detect().lan_exposed(),
         assist: c.assist.enabled,
         assist_mode: c.assist.mode().as_str().to_string(),
         assist_consented_at: c.assist.consented_at.clone(),

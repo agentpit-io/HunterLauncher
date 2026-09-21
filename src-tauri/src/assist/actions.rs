@@ -761,15 +761,10 @@ pub fn execute_as(
                 .iter()
                 .filter_map(|s| s.port)
                 .collect();
-            let (ports, changes) =
-                crate::config::resolve_ports(&cfg.hunter.ports, &own, cfg.hunter.web_local_only())?;
+            let (ports, changes) = crate::config::resolve_ports(&cfg.hunter.ports, &own)?;
             cfg.hunter.ports = ports.clone();
             cfg.save()?;
-            crate::config::write_override(
-                &ports,
-                &cfg.hunter.base_prefix,
-                cfg.hunter.web_local_only(),
-            )?;
+            crate::config::write_override(&ports, &cfg.hunter.base_prefix)?;
             if changes.is_empty() {
                 "5 个端口都是空的，没有需要改的。".to_string()
             } else {

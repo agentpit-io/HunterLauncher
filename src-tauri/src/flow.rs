@@ -282,8 +282,7 @@ pub fn prepare(
             "现有的这一套 hunter 正占着端口 {own_ports:?}，这些不算冲突"
         ));
     }
-    let (ports, changes) =
-        config::resolve_ports(&cfg.hunter.ports, &own_ports, cfg.hunter.web_local_only())?;
+    let (ports, changes) = config::resolve_ports(&cfg.hunter.ports, &own_ports)?;
     for c in &changes {
         note(&format!(
             "端口 {} 被占用，自动改用 {}（服务 {}）",
@@ -331,9 +330,9 @@ pub fn prepare(
         llm_api_key: &llm_key,
         schema_sanitize: sanitize,
     })?;
-    config::write_override(&ports, &cfg.hunter.base_prefix, cfg.hunter.web_local_only())?;
+    config::write_override(&ports, &cfg.hunter.base_prefix)?;
     note(&format!(
-        "已写 {}（权限 600）与覆盖文件；端口 web {} · api {} · opencode {} · postgres {} · redis {}",
+        "已写 {}（权限 600）与覆盖文件；端口 web {} · api {} · opencode {} · postgres {} · redis {}（全部只绑 127.0.0.1）",
         paths::env_file().display(),
         ports.web,
         ports.api,
@@ -344,8 +343,13 @@ pub fn prepare(
 
     // 真让 compose 解析一遍，写错了现在就知道，不用等拉完 800 MB
     let rendered = compose::config_check_json()?;
-    verify_bindings(&rendered)?;
-    note("docker compose config 校验通过，且除 web 外的端口都绑在 127.0.0.1");
+    let bind = config::WebBind::detect();
+    verify_bindings(&rendered, bind)?;
+    note(if bind.lan_exposed() {
+        "docker compose config 校验通过。这台机器的网页端口原本就对局域网开放，本次没有改动它"
+    } else {
+        "docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）"
+    });
 
     cfg.save()?;
     state.set_config(cfg.clone());
@@ -415,12 +419,16 @@ pub struct PrepareResult {
 }
 
 /// 红线 4 的机器自查：从 `docker compose config --format json` 的渲染结果里确认
-/// **除 web 之外的发布端口全部绑在 127.0.0.1**。
+/// **所有发布端口都绑在 127.0.0.1 上**。
+///
+/// I7 起 web 也算在内（用户 2026-09-21 19:05 的决定：免费版只允许本机访问）。
+/// 唯一的例外是 `bind == WebBind::LegacyLan` —— 那台机器升级前本来就对外，
+/// 我们**有意不悄悄改动它**，所以这里也不能把它判成失败、把升级拦下来。
 ///
 /// 为什么读 JSON 而不是看覆盖文件：覆盖文件只是我们写进去的「意图」，
 /// 而 `compose config` 给的是**合并之后的最终结果** —— compose 对 `ports` 默认做追加合并，
 /// `!override` 标签一旦写漏，只有在这里才看得出来（M0 §3.4 踩过）。
-pub fn verify_bindings(rendered_json: &str) -> AppResult<()> {
+pub fn verify_bindings(rendered_json: &str, bind: config::WebBind) -> AppResult<()> {
     let v: serde_json::Value = serde_json::from_str(rendered_json).map_err(|e| {
         AppError::new(
             Code::ConfigWrite,
@@ -448,8 +456,8 @@ pub fn verify_bindings(rendered_json: &str) -> AppResult<()> {
                 .get("published")
                 .map(|x| x.to_string())
                 .unwrap_or_default();
-            if name == "web" {
-                continue; // web 按设计对外
+            if name == "web" && bind == config::WebBind::LegacyLan {
+                continue; // 这台机器升级前就对外，本轮有意不动它（运行面板给一键收紧）
             }
             if host_ip != "127.0.0.1" {
                 bad.push(format!(
@@ -727,11 +735,7 @@ pub fn rewrite_env_and_override(
         llm_api_key: &llm_key,
         schema_sanitize: sanitize,
     })?;
-    config::write_override(
-        &cfg.hunter.ports,
-        &cfg.hunter.base_prefix,
-        cfg.hunter.web_local_only(),
-    )
+    config::write_override(&cfg.hunter.ports, &cfg.hunter.base_prefix)
 }
 
 /// 写 `~/.hunter/app/VERSION` 并把它收成 600（待办池 P2-16）。
@@ -840,6 +844,15 @@ pub struct RuntimeStatus {
     pub running: bool,
     pub uptime_seconds: Option<u64>,
     pub web_url: Option<String>,
+    /// 网页端口现在是不是**不止本机**能打开。
+    ///
+    /// 优先看 docker 报的真实绑定地址（`compose ps` 的 `Publishers[].URL`）；
+    /// 没在跑的时候退回读覆盖文件的现状（[`config::WebBind::detect`]）。
+    /// 两个都是**现状**，不是配置里的意图（红线 1）。
+    ///
+    /// 为 `true` 时运行面板出一行提示 + 一个「只允许本机访问」按钮
+    /// （用户 2026-09-21 19:05 的决定第三点：升级不自动改动已有配置，但要告诉用户）。
+    pub web_lan_exposed: bool,
     pub services: Vec<ServiceStatus>,
     pub env: Vec<EnvRow>,
     pub log: Vec<String>,
@@ -887,6 +900,11 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         Some(format!("http://localhost:{web_port}"))
     } else {
         None
+    };
+    // 「现在谁能打开它」只能问 docker 或者问磁盘上那份覆盖文件，不能问 launcher.toml
+    let web_lan_exposed = match services.iter().find(|s| s.service == "web") {
+        Some(w) if w.bind.is_some() => w.lan_exposed(),
+        _ => config::WebBind::detect().lan_exposed(),
     };
 
     let api_port = services
@@ -966,6 +984,7 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         running,
         uptime_seconds: uptime,
         web_url,
+        web_lan_exposed,
         services,
         env,
         log,
@@ -1313,11 +1332,11 @@ mod tests {
                 "postgres": {"ports": [{"host_ip": "127.0.0.1", "target": 5432, "published": "5443"}]},
                 "redis": {"ports": [{"host_ip": "127.0.0.1", "target": 6379, "published": "6480"}]},
                 "llm-shim": {},
-                "web": {"ports": [{"target": 3000, "published": "3101"}]}
+                "web": {"ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3101"}]}
             }
         })
         .to_string();
-        verify_bindings(&good).expect("全都绑了本机就该通过");
+        verify_bindings(&good, config::WebBind::Local).expect("全都绑了本机就该通过");
 
         // api 少了 host_ip = 监听所有网卡
         let bad = serde_json::json!({
@@ -1327,7 +1346,7 @@ mod tests {
             }
         })
         .to_string();
-        let e = verify_bindings(&bad).unwrap_err();
+        let e = verify_bindings(&bad, config::WebBind::Local).unwrap_err();
         assert_eq!(e.code, Code::ConfigWrite);
         assert!(
             e.msg.contains("api") && e.msg.contains("所有网卡"),
@@ -1340,14 +1359,33 @@ mod tests {
             "services": {"redis": {"ports": [{"host_ip": "0.0.0.0", "published": "6480"}]}}
         })
         .to_string();
-        assert!(verify_bindings(&bad2).is_err());
+        assert!(verify_bindings(&bad2, config::WebBind::Local).is_err());
 
-        // web 对外是设计如此，不能被误报
+        // I7：web 没绑本机也要抓出来（以前这里是「设计如此，放过」）
         let only_web = serde_json::json!({"services": {"web": {"ports": [{"published": "3101"}]}}})
             .to_string();
-        assert!(verify_bindings(&only_web).is_ok());
+        let e2 = verify_bindings(&only_web, config::WebBind::Local).unwrap_err();
+        assert!(
+            e2.msg.contains("web") && e2.msg.contains("所有网卡"),
+            "{}",
+            e2.msg
+        );
+        // 但老机器沿用现状时不能把升级拦下来
+        assert!(
+            verify_bindings(&only_web, config::WebBind::LegacyLan).is_ok(),
+            "升级前就对外的机器不该被这道自查拦住"
+        );
+        // 老机器的例外**只对 web 一个服务开**
+        let legacy_but_redis = serde_json::json!({
+            "services": {
+                "web": {"ports": [{"published": "3101"}]},
+                "redis": {"ports": [{"published": "6480"}]}
+            }
+        })
+        .to_string();
+        assert!(verify_bindings(&legacy_but_redis, config::WebBind::LegacyLan).is_err());
 
-        assert!(verify_bindings("不是 JSON").is_err());
+        assert!(verify_bindings("不是 JSON", config::WebBind::Local).is_err());
     }
 
     #[test]

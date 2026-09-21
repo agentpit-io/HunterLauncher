@@ -198,6 +198,8 @@ pub fn run() {
             commands::takeover_confirm_text,
             commands::takeover_logs,
             commands::feedback_one_click,
+            // I7 · 只允许本机访问（用户 2026-09-21 19:05 的决定）
+            commands::tighten_web_bind,
         ])
         .setup(|app| {
             let handle = app.handle();

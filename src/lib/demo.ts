@@ -231,13 +231,15 @@ export const demoRuntime: RuntimeStatus = {
   running: true,
   uptimeSeconds: 3 * 86400 + 6 * 3600,
   webUrl: 'http://localhost:3100',
+  // 免费版只允许本机访问（I7），演示数据也照这个来
+  webLanExposed: false,
   services: [
-    { service: 'web', state: 'running', health: 'healthy', port: 3100, exitCode: null },
-    { service: 'api', state: 'running', health: 'healthy', port: 8100, exitCode: null },
-    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, exitCode: null },
-    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, exitCode: null },
-    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
-    { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
+    { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null },
+    { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
+    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null },
+    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
+    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
+    { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
   ],
   upstream: {
     reachable: true,
@@ -275,20 +277,21 @@ export const demoRuntime: RuntimeStatus = {
 }
 
 export const demoStartingServices: RuntimeStatus['services'] = [
-  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, exitCode: null },
-  { service: 'redis', state: 'running', health: 'healthy', port: 6479, exitCode: null },
-  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, exitCode: null },
-  { service: 'api', state: 'running', health: 'healthy', port: 8100, exitCode: null },
-  { service: 'opencode', state: 'running', health: 'starting', port: 3921, exitCode: null },
-  { service: 'web', state: 'created', health: 'pending', port: 3100, exitCode: null },
+  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
+  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
+  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
+  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
+  { service: 'opencode', state: 'running', health: 'starting', port: 3921, bind: '127.0.0.1', exitCode: null },
+  // 还没创建出来的容器 docker 报不出绑定地址 —— 那就是 null，不猜（红线 1）
+  { service: 'web', state: 'created', health: 'pending', port: 3100, bind: null, exitCode: null },
 ]
 
 export const demoSettings: LauncherSettings = {
   locale: 'zh-CN',
   autostart: false,
   checkUpdate: true,
-  // 默认对外 —— 和真实默认值一致（演示模式也不该显示一个不存在的默认）
-  webLocalOnly: false,
+  // 免费版只允许本机访问，所以这一项恒为 false（演示模式也不该显示一个不存在的状态）
+  webLanExposed: false,
   registry: 'ghcr',
   hunterTag: DEMO_HUNTER_TAG,
   workDir: '~/.hunter',

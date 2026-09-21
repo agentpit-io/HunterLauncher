@@ -198,6 +198,11 @@ export interface ServiceStatus {
   health: Health
   /** 宿主端口；llm-shim 不发布端口时为 null（M0 §5.3 的坑 3） */
   port: number | null
+  /**
+   * 这个端口**实际**绑在哪个地址（docker 自己报的 `Publishers[].URL`，不是我们写的配置）。
+   * 读不到就是 null —— 界面显示「还没读到」，不猜（红线 1）。
+   */
+  bind: string | null
   exitCode: number | null
 }
 
@@ -234,6 +239,14 @@ export interface RuntimeStatus {
   running: boolean
   uptimeSeconds: number | null
   webUrl: string | null
+  /**
+   * 网页端口现在是不是**不止本机**能打开。
+   *
+   * 免费版只允许本机访问（用户 2026-09-21 19:05 的决定），所以新装的机器这一项恒为 false。
+   * 为 true 的唯一情形是「这台机器升级前就对局域网开放，升级时有意没动它」——
+   * 那时运行面板出一行提示 + 一个「只允许本机访问」按钮（收紧是单向的）。
+   */
+  webLanExposed: boolean
   services: ServiceStatus[]
   env: EnvRow[]
   /** 运行面板中间那个日志框 */
@@ -264,13 +277,13 @@ export interface LauncherSettings {
   modelName: string
   registryPrefix: string
   /**
-   * web 端口只允许本机访问。**默认 false** —— 也就是绑所有网卡，
-   * 同一网络里的其他设备打开 `http://<这台机器的 IP>:<端口>` 就能直接用。
+   * 网页端口现在是不是**不止本机**能打开。**只读**。
    *
-   * 这是既定设计（总控规则红线 4 把 web 明确排除在「只绑 127.0.0.1」之外），
-   * I2 只是把开关做出来，默认值没动 —— 默认该是哪一个由用户决定（待办池 P1-20）。
+   * 免费版只允许本机访问（用户 2026-09-21 19:05 的决定，待办池 P1-20 已关闭），
+   * 设置页里没有开关，只有一行说明「局域网访问为付费版功能」。
+   * 为 true 时设置页与运行面板各给一个「只允许本机访问」按钮（单向）。
    */
-  webLocalOnly: boolean
+  webLanExposed: boolean
   /** AI 诊断助手。默认开；关掉之后只用确定性规则，一个 token 也不花（I4） */
   assist: boolean
   /** I5 授权档位：auto 自动驾驶 / confirm 逐步确认 / off 关闭 */

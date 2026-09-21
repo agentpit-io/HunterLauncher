@@ -442,6 +442,11 @@ mod tests {
             state: state.into(),
             health,
             port: if name == "web" { Some(3101) } else { None },
+            bind: if name == "web" {
+                Some("127.0.0.1".into())
+            } else {
+                None
+            },
             exit_code: None,
         }
     }

@@ -834,7 +834,24 @@ pub struct ServiceStatus {
     pub health: Health,
     /// 宿主端口。llm-shim 不发布端口时为 null（M0 §5.3 坑 3：它的 PublishedPort 是 0）
     pub port: Option<u16>,
+    /// 这个端口**实际**绑在哪个地址上（`docker compose ps` 的 `Publishers[].URL`）。
+    ///
+    /// I7 加的，用来回答「这台机器现在是不是对局域网开着」——
+    /// 答案只能来自 docker 本身，不能来自我们自己写的配置（红线 1：配置是意图，这是现状）。
+    /// 空串 / 拿不到就是 `None`，界面显示「还没读到」。
+    pub bind: Option<String>,
     pub exit_code: Option<i64>,
+}
+
+impl ServiceStatus {
+    /// 这个服务的端口是不是**不止本机**能连。
+    /// 读不到绑定地址时返回 `false` —— 不知道就不喊狼来了（红线 1）。
+    pub fn lan_exposed(&self) -> bool {
+        match self.bind.as_deref() {
+            Some(b) if !b.is_empty() => b != "127.0.0.1" && b != "::1" && b != "localhost",
+            _ => false,
+        }
+    }
 }
 
 /// `docker compose ps --format json` 的一行。
@@ -857,6 +874,10 @@ struct PsLine {
 struct Publisher {
     #[serde(rename = "PublishedPort")]
     published_port: Option<u16>,
+    /// 宿主侧的绑定地址。实测取值有 `127.0.0.1`、`0.0.0.0`、`::`，
+    /// 老版本 compose 里也可能整个字段都没有
+    #[serde(rename = "URL")]
+    url: Option<String>,
 }
 
 /// 解析 `ps --format json` 的输出。
@@ -910,17 +931,35 @@ fn to_status(p: PsLine) -> ServiceStatus {
         _ => Health::Pending,
     };
     // M0 §5.3 坑 1：每个端口有 IPv4 / IPv6 两条，去重取第一个非 0 的
-    let port = p
-        .publishers
-        .unwrap_or_default()
-        .into_iter()
+    let pubs = p.publishers.unwrap_or_default();
+    let port = pubs
+        .iter()
         .filter_map(|x| x.published_port)
         .find(|p| *p != 0);
+    // 绑定地址取**同一个端口**那一条的 URL。
+    // IPv4 / IPv6 两条的 URL 不一样（`0.0.0.0` 与 `::`），但对「是不是只有本机能连」
+    // 这个问题来说，只要有一条不是本机地址就算对外 —— 所以这里挑最宽的那一条。
+    let bind = port.and_then(|want| {
+        let mut widest: Option<String> = None;
+        for x in pubs.iter().filter(|x| x.published_port == Some(want)) {
+            let u = x.url.clone().unwrap_or_default();
+            if u.is_empty() {
+                continue;
+            }
+            let lan = u != "127.0.0.1" && u != "::1" && u != "localhost";
+            if lan {
+                return Some(u);
+            }
+            widest = widest.or(Some(u));
+        }
+        widest
+    });
     ServiceStatus {
         service: p.service.unwrap_or_default(),
         state,
         health,
         port,
+        bind,
         exit_code: p.exit_code,
     }
 }
@@ -2006,6 +2045,39 @@ mod tests {
         assert_eq!(v[0].service, "web", "按视觉稿顺序：web 排在 redis 前面");
         let arr = r#"[{"Service":"web","State":"running","Health":"healthy"}]"#;
         assert_eq!(parse_ps(arr).len(), 1);
+    }
+
+    /// I7：绑定地址要从 docker 自己报的 `Publishers[].URL` 读出来。
+    /// 下面三行的形状取自测试机上 `docker compose ps --format json` 的真实输出
+    /// （旧栈 hunter-community，2026-09-21 实测）。
+    #[test]
+    fn 读得出端口实际绑在哪个地址() {
+        // 对外：IPv4 与 IPv6 各一条
+        let lan = r#"{"Service":"api","State":"running","Health":"healthy","Publishers":[{"URL":"0.0.0.0","TargetPort":8000,"PublishedPort":8100,"Protocol":"tcp"},{"URL":"::","TargetPort":8000,"PublishedPort":8100,"Protocol":"tcp"}]}"#;
+        let v = parse_ps(lan);
+        assert_eq!(v[0].port, Some(8100));
+        assert_eq!(v[0].bind.as_deref(), Some("0.0.0.0"));
+        assert!(v[0].lan_exposed(), "0.0.0.0 就是对外");
+
+        // 收回本机之后只有一条
+        let local = r#"{"Service":"api","State":"running","Health":"healthy","Publishers":[{"URL":"127.0.0.1","TargetPort":8000,"PublishedPort":8100,"Protocol":"tcp"}]}"#;
+        let v = parse_ps(local);
+        assert_eq!(v[0].bind.as_deref(), Some("127.0.0.1"));
+        assert!(!v[0].lan_exposed());
+
+        // llm-shim 不发布端口：URL 是空串、PublishedPort 是 0（M0 §5.3 坑 3）
+        let none = r#"{"Service":"llm-shim","State":"running","Health":"healthy","Publishers":[{"URL":"","TargetPort":3999,"PublishedPort":0,"Protocol":"tcp"}]}"#;
+        let v = parse_ps(none);
+        assert_eq!(v[0].port, None);
+        assert_eq!(v[0].bind, None);
+        assert!(!v[0].lan_exposed(), "没有端口就谈不上对外");
+
+        // 老版本 compose 里可能整个 URL 字段都没有 —— 那就是「读不到」，不猜（红线 1）
+        let nourl = r#"{"Service":"web","State":"running","Health":"healthy","Publishers":[{"TargetPort":3000,"PublishedPort":3101}]}"#;
+        let v = parse_ps(nourl);
+        assert_eq!(v[0].port, Some(3101));
+        assert_eq!(v[0].bind, None);
+        assert!(!v[0].lan_exposed(), "读不到就不喊狼来了");
     }
 
     #[test]
