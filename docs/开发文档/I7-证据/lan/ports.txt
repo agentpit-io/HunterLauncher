@@ -1,0 +1,6 @@
+hunter-api-1	127.0.0.1:8101->8000/tcp
+hunter-llm-shim-1	3999/tcp
+hunter-opencode-1	127.0.0.1:3922->3901/tcp
+hunter-postgres-1	127.0.0.1:5443->5432/tcp
+hunter-redis-1	127.0.0.1:6480->6379/tcp
+hunter-web-1	127.0.0.1:3101->3000/tcp

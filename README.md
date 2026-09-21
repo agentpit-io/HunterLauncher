@@ -277,7 +277,8 @@ Windows / macOS 的安装包只在 GitHub Actions 上构建（`.github/workflows
 ### 隐私与安全底线
 
 - `hunt_tools_` key 只存在 `~/.hunter/app/.env`（权限 600）与内存里 —— 不写日志、不进诊断包、不进仓库
-- 除 web 端口外，api / opencode / postgres / redis 一律只绑 `127.0.0.1`
+- **六个服务的端口一律只绑 `127.0.0.1`**（web / api / opencode / postgres / redis 全部；llm-shim 本来就不发布端口）。
+  局域网访问是付费版功能，免费版不提供切换开关；`launcher.toml` 里手写 `0.0.0.0` 也不生效，会按 `127.0.0.1` 生成并在日志里记一条
 - 子进程调用一律用参数数组，不拼 shell 字符串
 - **不做假数据**：额度、镜像大小、进度、服务状态全部来自真实调用；拿不到就显示 `—` 并给原因
 - 遥测默认关闭；当前**没有**上报服务端，反馈走「本地诊断包导出 + 去 GitHub 提 issue」

@@ -1,0 +1,6 @@
+hunter-community_hunter_opencode_data
+hunter-community_hunter_packages
+hunter-community_hunter_pg_data
+hunter-community_hunter_redis_data
+hunter-community_hunter_secrets
+hunter-community_hunter_user_skills

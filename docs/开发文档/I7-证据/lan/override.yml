@@ -1,0 +1,22 @@
+# ~/.hunter/app/docker-compose.launcher.yml
+# 由 Hunter 启动器生成 · 请勿手改（改了下次启动会被覆盖）
+# 作用：1) 把**所有**发布端口收回 127.0.0.1（总控规则红线 4 · I7 起连 web 也收进来）
+#       2) 落实端口冲突改写后的值
+#       3) 用国内镜像源时改写 postgres / redis 的镜像地址
+#
+# `!override` 标签是必须的：compose 默认对 ports 做**追加**合并，不加这个标签会变成
+# 「既监听 0.0.0.0 又监听 127.0.0.1」，红线 4 就白写了（M0 §3.4 已实测验证）。
+services:
+  # web 也只绑本机：免费版不提供局域网访问（付费版功能）
+  web:
+    ports: !override ["127.0.0.1:3101:3000"]
+  api:
+    ports: !override ["127.0.0.1:8101:8000"]
+  opencode:
+    ports: !override ["127.0.0.1:3922:3901"]
+  postgres:
+    image: postgres:16-alpine
+    ports: !override ["127.0.0.1:5443:5432"]
+  redis:
+    image: redis:7-alpine
+    ports: !override ["127.0.0.1:6480:6379"]

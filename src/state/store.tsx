@@ -19,7 +19,11 @@ const DEMO_STATES: Record<string, State> = {
   done: { name: 'Done' },
   dashboard: { name: 'Ready' },
   'dashboard-quota-exhausted': { name: 'Ready' },
+  // I7：升级上来的老机器（网页端口还对局域网开着）看到的那条横幅
+  'dashboard-lan': { name: 'Ready' },
   settings: { name: 'Ready' },
+  // I7：同一件事在设置页里的样子（只读说明 + 一键收紧）
+  'settings-lan': { name: 'Ready' },
   logs: { name: 'Ready' },
   feedback: { name: 'Ready' },
   update: { name: 'Ready' },
@@ -43,6 +47,7 @@ function initialState(): State {
 
 function initialOverlay(): Overlay {
   const page = demoPage()
+  if (page === 'settings-lan') return 'settings'
   return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
     ? page
     : null

@@ -189,9 +189,11 @@ export async function startingStatus(): Promise<RuntimeStatus> {
 
 export async function runtimeStatus(): Promise<RuntimeStatus> {
   if (DEMO) {
-    return demoPage() === 'dashboard-quota-exhausted'
-      ? demo.demoRuntimeQuotaExhausted
-      : demo.demoRuntime
+    const p = demoPage()
+    if (p === 'dashboard-quota-exhausted') return demo.demoRuntimeQuotaExhausted
+    // I7：升级上来的老机器 —— 网页端口还绑在所有网卡上
+    if (p === 'dashboard-lan') return demo.demoRuntimeLanExposed
+    return demo.demoRuntime
   }
   return call<RuntimeStatus>('runtime_status')
 }
@@ -223,7 +225,10 @@ export async function tightenWebBind(): Promise<string> {
 }
 
 export async function readSettings(): Promise<LauncherSettings> {
-  if (DEMO) return demo.demoSettings
+  if (DEMO)
+    return demoPage() === 'settings-lan'
+      ? { ...demo.demoSettings, webLanExposed: true }
+      : demo.demoSettings
   return call<LauncherSettings>('read_settings')
 }
 

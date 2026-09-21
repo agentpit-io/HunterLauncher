@@ -102,7 +102,7 @@ const zhCN = {
     subline: (project: string, up: number, total: number) =>
       `${project} · ${up} / ${total} 个容器在运行`,
     banner:
-      '这一套是**你自己装的**，不是启动器装的。启动器只负责帮你看状态、看日志、打开网页；停止 / 启动 / 重启每一次都会再问你一遍，任何情况下都不会删它的数据卷，也不会改它的配置。',
+      '这一套是你自己装的，不是启动器装的。启动器只负责帮你看状态、看日志、打开网页；停止 / 启动 / 重启每一次都会再问你一遍，任何情况下都不会删它的数据卷，也不会改它的配置。',
     open: '打开 Hunter',
     containers: '容器',
     noContainers: 'docker 里找不到属于它的容器。',
@@ -393,7 +393,7 @@ const zhCN = {
       '把 Colima + Lima + docker 客户端 + compose 装进 ~/.hunter/runtime，版本与校验和写死在程序里、下完逐个核对。不改系统任何地方、不需要管理员密码，不想要了下面点一下就能卸干净。',
     routeOrbstack: 'OrbStack 官方安装包（需要你点几下）',
     routeOrbstackHint:
-      '从官方地址下 dmg、验苹果签名与公证之后装进「应用程序」。装得更快，但**第一次打开 OrbStack 时 macOS 与它自己会弹欢迎页、可能还要你输一次管理员密码** —— 那是系统与 OrbStack 的交互，启动器不会替你点。另外：OrbStack 个人使用免费，商用需要另外授权。',
+      '从官方地址下 dmg、验苹果签名与公证之后装进「应用程序」。装得更快，但第一次打开 OrbStack 时，macOS 与它自己会弹欢迎页、可能还要你输一次管理员密码 —— 那是系统与 OrbStack 的交互，启动器不会替你点。另外：OrbStack 个人使用免费，商用需要另外授权。',
     allowInstallHint:
       '取消勾选之后，真碰上「这台电脑没有 Docker」时会先出一张卡片问你一句，而不是直接装。',
     builtinNotInstalled: (dir: string, size: string) =>
@@ -421,7 +421,7 @@ const zhCN = {
       'Hunter 的六个服务端口全部绑在 127.0.0.1 上：只有这台电脑的浏览器能打开它，同一网络里的其他人打不开，也烧不到你的额度。',
     // 升级上来的老机器才会看到下面这三条
     webAccessLegacy:
-      '这台机器的网页端口在升级前就对局域网开放（同一网络里的设备能打开）。新版本默认只允许本机访问 —— 升级时**没有**动你的配置，要不要收紧由你决定。',
+      '这台机器的网页端口在升级前就对局域网开放（同一网络里的设备能打开）。新版本默认只允许本机访问 —— 升级时没有动你的配置，要不要收紧由你决定。',
     webAccessTighten: '只允许本机访问',
     webAccessTightenNote: '收紧之后不能再放开（局域网访问是付费版功能）。会重建一次 web 容器，几秒钟。',
     webAccessTightening: '正在重建 web 容器…',
@@ -616,7 +616,7 @@ const zhCN = {
       E_PULL_FAILED: { title: '镜像拉取失败', hint: '已重试 3 次仍然失败。可以换一个镜像源，或者从离线包导入。' },
       E_PORT_IN_USE: { title: '端口被占用', hint: '启动器已经自动改用别的端口，不需要你操作。' },
       E_PORT_CONFLICT: { title: 'Docker 说端口已经被占了', hint: '启动器已经重新探过端口并换了一组空闲的。要是还撞上，多半是这台机器上另有程序在抢同一个端口，下面写了它是谁。' },
-      E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，**你的 ~/.docker/config.json 不会被改动**。' },
+      E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，你的 ~/.docker/config.json 一个字节都不会被改动。' },
       E_START_TIMEOUT: { title: '启动超时', hint: '180 秒内没有等到全部服务健康。下面写明了是哪个服务没就绪。' },
       E_PROXY_BLOCK: { title: '容器连不上网', hint: '代理的 TUN 模式经常导致这个问题。给 Docker 配上 NO_PROXY，或者临时关掉代理。' },
       E_UPDATE_FAILED: { title: '升级失败', hint: '已经回滚到升级前的版本。把诊断包发给我们能更快定位。' },

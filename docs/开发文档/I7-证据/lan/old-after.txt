@@ -1,0 +1,6 @@
+16595225ff83	hunter-community-web-1	Up About an hour (healthy)
+398f76d0a3b6	hunter-community-api-1	Up About an hour (healthy)
+533ef00d032b	hunter-community-llm-shim-1	Up About an hour (healthy)
+a2391309294b	hunter-community-opencode-1	Up About an hour (healthy)
+b65aaa655f84	hunter-community-redis-1	Up About an hour (healthy)
+fb422b602fdb	hunter-community-postgres-1	Up About an hour (healthy)

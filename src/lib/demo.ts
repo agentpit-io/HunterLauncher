@@ -554,6 +554,21 @@ export const demoRuntimeQuotaExhausted: RuntimeStatus = {
 }
 
 /**
+ * 「这台机器是从 0.1.7 之前升上来的，网页端口还对局域网开着」的运行面板演示态
+ * （截图脚本 `HUNTER_DEMO_PAGE=dashboard-lan`）。
+ *
+ * 新装的机器**不可能**是这个样子 —— 免费版只允许本机访问（I7 · 用户 2026-09-21 19:05 的决定）。
+ * 绑定地址照着旧版本装出来的现场写：web 在 `0.0.0.0` 上，其余四个当初就是 `127.0.0.1`。
+ */
+export const demoRuntimeLanExposed: RuntimeStatus = {
+  ...demoRuntime,
+  webLanExposed: true,
+  services: demoRuntime.services.map((s) =>
+    s.service === 'web' ? { ...s, bind: '0.0.0.0' } : s,
+  ),
+}
+
+/**
  * AI 诊断助手的演示态（I4）。
  *
  * 演示的是**规则层**那一半 —— 它不花 token、不联网，演示出来是诚实的。
