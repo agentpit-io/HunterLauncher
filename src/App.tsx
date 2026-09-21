@@ -6,7 +6,8 @@ import { Welcome } from './pages/Welcome'
 import { Docker } from './pages/Docker'
 import { Key } from './pages/Key'
 import { Model } from './pages/Model'
-import { Pull } from './pages/Pull'
+import { Consent } from './pages/Consent'
+import { AutoInstall } from './pages/AutoInstall'
 import { Start } from './pages/Start'
 import { Done } from './pages/Done'
 import { Dashboard } from './pages/Dashboard'
@@ -134,8 +135,10 @@ function Page() {
       return <Key />
     case 'model':
       return <Model />
-    case 'pull':
-      return <Pull />
+    case 'consent':
+      return <Consent />
+    case 'auto':
+      return <AutoInstall />
     case 'start':
       return <Start />
     case 'done':

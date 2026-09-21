@@ -17,6 +17,15 @@ pub enum Code {
     QuotaExhausted,
     PullFailed,
     PortInUse,
+    /// **起容器时** Docker 自己报的端口冲突（I5）。原话形如
+    /// `Bind for 0.0.0.0:8100 failed: port is already allocated`。
+    ///
+    /// 为什么不并进 `E_PORT_IN_USE`：那一条是**装之前**我们自己探出来的，
+    /// 处置是「换一组端口再装」；这一条是**装到一半** Docker 拒绝的，
+    /// 说明我们的探测漏判了，处置是「重新探 + remap + 重来」。
+    /// 0.1.4 把它归成了 `E_START_TIMEOUT`（「180 秒没就绪」），
+    /// 于是规则层的 ports-taken 根本没被匹配上 —— 这是用户 Mac 上那次失败的第 2 条根因。
+    PortConflict,
     StartTimeout,
     ProxyBlock,
     UpdateFailed,
@@ -53,6 +62,7 @@ impl Code {
             Code::QuotaExhausted => "E_QUOTA_EXHAUSTED",
             Code::PullFailed => "E_PULL_FAILED",
             Code::PortInUse => "E_PORT_IN_USE",
+            Code::PortConflict => "E_PORT_CONFLICT",
             Code::StartTimeout => "E_START_TIMEOUT",
             Code::ProxyBlock => "E_PROXY_BLOCK",
             Code::UpdateFailed => "E_UPDATE_FAILED",
@@ -75,6 +85,7 @@ impl Code {
             Code::QuotaExhausted => "今日免费额度已用完",
             Code::PullFailed => "镜像拉取失败",
             Code::PortInUse => "端口被占用",
+            Code::PortConflict => "Docker 说端口已经被占了",
             Code::StartTimeout => "服务在 180 秒内没有全部就绪",
             Code::ProxyBlock => "代理挡住了容器的网络",
             Code::UpdateFailed => "升级失败，已回滚",
@@ -160,6 +171,7 @@ mod tests {
             Code::RateLimited,
             Code::PullFailed,
             Code::PortInUse,
+            Code::PortConflict,
             Code::StartTimeout,
             Code::ProxyBlock,
             Code::UpdateFailed,

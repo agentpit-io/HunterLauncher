@@ -18,25 +18,24 @@ import {
 const HAPPY_PATH: Event[] = [
   { type: 'BOOT' },
   { type: 'ACCEPT_TERMS' },
-  // I4：key 在 Docker 前面（欢迎 → 输入 key → Docker → 选模型 → 拉取 → 启动）
+  // I5：欢迎 → 输入 key → 一次授权 → 选模型 → 自动安装 → 完成
   { type: 'KEY_SUBMIT' },
   { type: 'KEY_VALID' },
-  { type: 'DOCKER_FOUND' },
-  { type: 'DAEMON_UP' },
-  { type: 'MODEL_CHOSEN' },
-  { type: 'REGISTRY_CHOSEN' },
-  { type: 'PULL_DONE' },
-  { type: 'CONFIG_WRITTEN' },
-  { type: 'START_OK' },
+  { type: 'CONSENT_GIVEN' },
+  { type: 'AUTO_DONE' },
   { type: 'ENTER_PANEL' },
 ]
 
-/** 一路走到「检测 Docker」那一页（I4 之后要先过 key 那两步）。 */
+/** 一路走到「检测 Docker」那一页。I5 之后它不在主路径上了 ——
+ *  只有自动安装撞上 Docker 问题、用户从错误页点「重试」时才会到那一页。 */
 const TO_DOCKER: Event[] = [
   { type: 'BOOT' },
   { type: 'ACCEPT_TERMS' },
   { type: 'KEY_SUBMIT' },
   { type: 'KEY_VALID' },
+  { type: 'CONSENT_GIVEN' },
+  { type: 'FAIL', code: 'E_DOCKER_MISSING' },
+  { type: 'RETRY' },
 ]
 
 function at(n: number): State {
@@ -52,16 +51,15 @@ const ALL_STATES: State[] = [
   { name: 'StartDaemon' },
   { name: 'NeedKey' },
   { name: 'ValidateKey' },
+  { name: 'Consent' },
   { name: 'ChooseModel' },
-  { name: 'SelectRegistry' },
-  { name: 'Pulling' },
-  { name: 'WriteConfig' },
+  { name: 'AutoInstalling' },
   { name: 'Starting' },
   { name: 'Done' },
   { name: 'Ready' },
   { name: 'Stopped' },
   { name: 'Upgrading' },
-  { name: 'Error', code: 'E_PULL_FAILED', from: 'Pulling' },
+  { name: 'Error', code: 'E_PULL_FAILED', from: 'AutoInstalling' },
 ]
 
 const ALL_EVENTS: Event[] = [
@@ -77,11 +75,11 @@ const ALL_EVENTS: Event[] = [
   { type: 'KEY_SUBMIT' },
   { type: 'KEY_VALID' },
   { type: 'KEY_INVALID' },
+  { type: 'CONSENT_GIVEN' },
+  { type: 'CHOOSE_MODEL' },
   { type: 'MODEL_CHOSEN' },
-  { type: 'REGISTRY_CHOSEN' },
-  { type: 'PULL_DONE' },
-  { type: 'PULL_FAILED' },
-  { type: 'CONFIG_WRITTEN' },
+  { type: 'AUTO_DONE' },
+  { type: 'AUTO_FAILED', code: 'E_PORT_CONFLICT' },
   { type: 'START_OK' },
   { type: 'START_TIMEOUT' },
   { type: 'ENTER_PANEL' },
@@ -102,13 +100,9 @@ describe('主路径', () => {
       'Welcome',
       'NeedKey',
       'ValidateKey',
-      'CheckDocker',
-      'CheckDaemon',
-      'ChooseModel',
-      'SelectRegistry',
-      'Pulling',
-      'WriteConfig',
-      'Starting',
+      'Consent',
+      // 授权完**直接开装** —— 中间不再插一页「选模型」让用户点下一步
+      'AutoInstalling',
       'Done',
       'Ready',
     ])
@@ -131,6 +125,72 @@ describe('Docker 分支', () => {
     expect(down.name).toBe('StartDaemon')
     expect(transition(down, { type: 'TRY_START_DAEMON' }).name).toBe('CheckDaemon')
   })
+
+  it('I5：Docker 这一关过了就回到自动安装，不把用户送回选模型', () => {
+    const daemon = run(INITIAL_STATE, [...TO_DOCKER, { type: 'DOCKER_FOUND' }])
+    expect(daemon.name).toBe('CheckDaemon')
+    expect(transition(daemon, { type: 'DAEMON_UP' }).name).toBe('AutoInstalling')
+  })
+})
+
+describe('I5 · 一次授权与自动安装', () => {
+  it('key 验过之后先做一次授权', () => {
+    const validating = run(INITIAL_STATE, [
+      { type: 'BOOT' },
+      { type: 'ACCEPT_TERMS' },
+      { type: 'KEY_SUBMIT' },
+    ])
+    const consent = transition(validating, { type: 'KEY_VALID' })
+    expect(consent.name).toBe('Consent')
+  })
+
+  /** 本轮的硬指标：**授权之后一次都不用点**。中间插一页「选模型 → 下一步」就不算数。 */
+  it('授权完直接进自动安装，中间没有任何一次点击', () => {
+    expect(transition({ name: 'Consent' }, { type: 'CONSENT_GIVEN' }).name).toBe('AutoInstalling')
+  })
+
+  it('要用自带模型 key 的人走支线：授权页 → 选模型 → 自动安装', () => {
+    const model = transition({ name: 'Consent' }, { type: 'CHOOSE_MODEL' })
+    expect(model.name).toBe('ChooseModel')
+    expect(transition(model, { type: 'MODEL_CHOSEN' }).name).toBe('AutoInstalling')
+  })
+
+  it('跳过选模型之后，步骤条上那一步显示成「已完成」', () => {
+    const steps = stepperOf({ name: 'AutoInstalling' })
+    expect(steps.map((x) => `${x.id}:${x.status}`)).toEqual([
+      'welcome:done',
+      'key:done',
+      'consent:done',
+      'model:done',
+      'install:current',
+    ])
+  })
+
+  it('自动安装成功进完成页，失败带着真实错误码进错误页', () => {
+    const auto: State = { name: 'AutoInstalling' }
+    expect(transition(auto, { type: 'AUTO_DONE' }).name).toBe('Done')
+    const err = transition(auto, {
+      type: 'AUTO_FAILED',
+      code: 'E_PORT_CONFLICT',
+      detail: 'Docker 拒绝发布端口 8100',
+    })
+    expect(err).toEqual({
+      name: 'Error',
+      code: 'E_PORT_CONFLICT',
+      from: 'AutoInstalling',
+      detail: 'Docker 拒绝发布端口 8100',
+    })
+  })
+
+  it('E_PORT_CONFLICT 是独立错误码，重试回到自动安装', () => {
+    expect(ERROR_CODES).toContain('E_PORT_CONFLICT')
+    const err: State = { name: 'Error', code: 'E_PORT_CONFLICT', from: 'AutoInstalling' }
+    expect(transition(err, { type: 'RETRY' }).name).toBe('AutoInstalling')
+  })
+
+  it('自动安装跑起来之后没有「上一步」', () => {
+    expect(transition({ name: 'AutoInstalling' }, { type: 'BACK' }).name).toBe('AutoInstalling')
+  })
 })
 
 describe('key 校验分支', () => {
@@ -142,20 +202,25 @@ describe('key 校验分支', () => {
 })
 
 describe('错误与重试', () => {
-  it('拉取失败进 Error(E_PULL_FAILED)，重试回到 Pulling', () => {
-    const pulling = at(8)
-    expect(pulling.name).toBe('Pulling')
-    const err = transition(pulling, { type: 'PULL_FAILED', detail: '源不可达' })
-    expect(err).toEqual({ name: 'Error', code: 'E_PULL_FAILED', from: 'Pulling', detail: '源不可达' })
-    expect(transition(err, { type: 'RETRY' }).name).toBe('Pulling')
+  it('拉取失败进 Error(E_PULL_FAILED)，重试回到自动安装', () => {
+    const auto = at(5)
+    expect(auto.name).toBe('AutoInstalling')
+    const err = transition(auto, { type: 'AUTO_FAILED', code: 'E_PULL_FAILED', detail: '源不可达' })
+    expect(err).toEqual({
+      name: 'Error',
+      code: 'E_PULL_FAILED',
+      from: 'AutoInstalling',
+      detail: '源不可达',
+    })
+    expect(transition(err, { type: 'RETRY' }).name).toBe('AutoInstalling')
   })
 
-  it('启动超时进 Error(E_START_TIMEOUT)，重试回到 Starting', () => {
-    const starting = at(10)
+  it('运行面板上的「启动」超时仍然回到启动页', () => {
+    const starting = run(INITIAL_STATE, [{ type: 'RESUME_READY' }, { type: 'STOP' }, { type: 'START' }])
     expect(starting.name).toBe('Starting')
     const err = transition(starting, { type: 'START_TIMEOUT', detail: 'opencode 未就绪' })
     expect(err.name).toBe('Error')
-    expect(transition(err, { type: 'RETRY' }).name).toBe('Starting')
+    expect(transition(err, { type: 'RETRY' }).name).toBe('AutoInstalling')
   })
 
   it('FAIL 在任何状态下都能进 Error，并记住来时的状态', () => {
@@ -170,7 +235,7 @@ describe('错误与重试', () => {
 
   it('每个错误码都有确定的重试去向，且不会停在 Error 上', () => {
     for (const code of ERROR_CODES) {
-      const err: State = { name: 'Error', code, from: 'Pulling' }
+      const err: State = { name: 'Error', code, from: 'AutoInstalling' }
       const next = transition(err, { type: 'RETRY' })
       expect(next.name).not.toBe('Error')
     }
@@ -182,15 +247,15 @@ describe('错误与重试', () => {
   })
 
   it('没有 detail 时不写 detail 字段', () => {
-    const err = transition({ name: 'Pulling' }, { type: 'PULL_FAILED' })
-    expect(err).toEqual({ name: 'Error', code: 'E_PULL_FAILED', from: 'Pulling' })
+    const err = transition({ name: 'AutoInstalling' }, { type: 'AUTO_FAILED', code: 'E_PULL_FAILED' })
+    expect(err).toEqual({ name: 'Error', code: 'E_PULL_FAILED', from: 'AutoInstalling' })
     expect('detail' in err).toBe(false)
   })
 })
 
 describe('运行期', () => {
   it('Ready 可以停止、重新启动', () => {
-    const ready = at(12)
+    const ready = at(7)
     expect(ready.name).toBe('Ready')
     const stopped = transition(ready, { type: 'STOP' })
     expect(stopped.name).toBe('Stopped')
@@ -198,7 +263,7 @@ describe('运行期', () => {
   })
 
   it('升级成功回 Ready，失败进 Error(E_UPDATE_FAILED)', () => {
-    const up = transition(at(12), { type: 'UPGRADE' })
+    const up = transition(at(7), { type: 'UPGRADE' })
     expect(up.name).toBe('Upgrading')
     expect(transition(up, { type: 'UPGRADE_OK' }).name).toBe('Ready')
     const failed = transition(up, { type: 'UPGRADE_FAILED', detail: '健康检查未通过' })
@@ -206,33 +271,37 @@ describe('运行期', () => {
   })
 })
 
-describe('上一步（I4 调整顺序之后）', () => {
+describe('上一步（I5 调整顺序之后）', () => {
   it('输入 key 页退回欢迎页 —— 它现在是第二步', () => {
     expect(transition({ name: 'NeedKey' }, { type: 'BACK' }).name).toBe('Welcome')
   })
 
-  it('Docker 检测页退回输入 key —— 它现在排在 key 后面', () => {
-    expect(transition({ name: 'CheckDocker' }, { type: 'BACK' }).name).toBe('NeedKey')
-    expect(transition({ name: 'CheckDaemon' }, { type: 'BACK' }).name).toBe('NeedKey')
-    expect(transition({ name: 'InstallDockerGuide' }, { type: 'BACK' }).name).toBe('NeedKey')
+  it('一次授权页退回输入 key', () => {
+    expect(transition({ name: 'Consent' }, { type: 'BACK' }).name).toBe('NeedKey')
   })
 
-  it('选模型页退回 Docker 检测', () => {
-    expect(transition({ name: 'ChooseModel' }, { type: 'BACK' }).name).toBe('CheckDaemon')
+  it('Docker 检测页退回一次授权 —— 它现在归在「自动安装」这一步里', () => {
+    expect(transition({ name: 'CheckDocker' }, { type: 'BACK' }).name).toBe('Consent')
+    expect(transition({ name: 'CheckDaemon' }, { type: 'BACK' }).name).toBe('Consent')
+    expect(transition({ name: 'InstallDockerGuide' }, { type: 'BACK' }).name).toBe('Consent')
+  })
+
+  it('选模型页退回一次授权', () => {
+    expect(transition({ name: 'ChooseModel' }, { type: 'BACK' }).name).toBe('Consent')
   })
 
   it('每一个向导状态的「上一步」都必须落在它前面（不许往回跳到后面的步骤）', () => {
-    const order = ['welcome', 'key', 'docker', 'model', 'pull', 'start']
+    const order = ['welcome', 'key', 'consent', 'model', 'install']
     const wizard: StateName[] = [
       'NeedKey',
       'ValidateKey',
+      'Consent',
       'CheckDocker',
       'InstallDockerGuide',
       'CheckDaemon',
       'StartDaemon',
       'ChooseModel',
-      'SelectRegistry',
-      'Pulling',
+      'AutoInstalling',
     ]
     for (const name of wizard) {
       const from = { name } as State
@@ -272,26 +341,32 @@ describe('健壮性', () => {
   })
 
   it('transition 不改原状态对象（纯函数）', () => {
-    const st: State = { name: 'Pulling' }
+    const st: State = { name: 'AutoInstalling' }
     const copy = { ...st }
-    transition(st, { type: 'PULL_FAILED', detail: 'x' })
+    transition(st, { type: 'AUTO_FAILED', code: 'E_PULL_FAILED', detail: 'x' })
     expect(st).toEqual(copy)
   })
 })
 
 describe('步骤条', () => {
-  it('六步，顺序与视觉稿一致', () => {
-    expect(STEP_IDS).toEqual(['welcome', 'key', 'docker', 'model', 'pull', 'start'])
+  it('五步，顺序是 I5 的向导顺序', () => {
+    expect(STEP_IDS).toEqual(['welcome', 'key', 'consent', 'model', 'install'])
   })
 
-  it('停在输入 key 时：欢迎 done、key current、其余 todo（I4 之后 key 是第二步）', () => {
+  it('停在输入 key 时：欢迎 done、key current、其余 todo', () => {
     const steps = stepperOf({ name: 'NeedKey' })
-    expect(steps.map((s) => s.status)).toEqual(['done', 'current', 'todo', 'todo', 'todo', 'todo'])
+    expect(steps.map((s) => s.status)).toEqual(['done', 'current', 'todo', 'todo', 'todo'])
   })
 
-  it('停在 Docker 检测时前两步都是 done', () => {
-    const steps = stepperOf({ name: 'CheckDocker' })
-    expect(steps.map((s) => s.status)).toEqual(['done', 'done', 'current', 'todo', 'todo', 'todo'])
+  it('停在一次授权时前两步都是 done', () => {
+    const steps = stepperOf({ name: 'Consent' })
+    expect(steps.map((s) => s.status)).toEqual(['done', 'done', 'current', 'todo', 'todo'])
+  })
+
+  it('Docker 的几个状态都归在「自动安装」这一步', () => {
+    for (const name of ['CheckDocker', 'InstallDockerGuide', 'CheckDaemon', 'StartDaemon'] as const) {
+      expect(stepOf({ name })).toBe('install')
+    }
   })
 
   it('同一屏里三种状态都会出现（视觉稿要求的三种样式）', () => {
@@ -300,7 +375,7 @@ describe('步骤条', () => {
   })
 
   it('出错时步骤条停在出错前的那一步', () => {
-    expect(stepOf({ name: 'Error', code: 'E_PULL_FAILED', from: 'Pulling' })).toBe('pull')
+    expect(stepOf({ name: 'Error', code: 'E_PULL_FAILED', from: 'AutoInstalling' })).toBe('install')
   })
 
   it('运行面板不在步骤条里', () => {
@@ -319,10 +394,9 @@ describe('步骤条', () => {
       'StartDaemon',
       'NeedKey',
       'ValidateKey',
+      'Consent',
       'ChooseModel',
-      'SelectRegistry',
-      'Pulling',
-      'WriteConfig',
+      'AutoInstalling',
       'Starting',
       'Done',
     ]
@@ -341,8 +415,12 @@ describe('页面映射', () => {
 
   it('三张视觉稿对应的页面', () => {
     expect(pageOf({ name: 'NeedKey' })).toBe('key')
-    expect(pageOf({ name: 'Pulling' })).toBe('pull')
     expect(pageOf({ name: 'Ready' })).toBe('dashboard')
+  })
+
+  it('I5 新增的两页', () => {
+    expect(pageOf({ name: 'Consent' })).toBe('consent')
+    expect(pageOf({ name: 'AutoInstalling' })).toBe('auto')
   })
 
   it('Error 永远渲染错误页', () => {
@@ -372,21 +450,21 @@ describe('M2 新增的两个错误码', () => {
   it('都在 ERROR_CODES 里且有确定的重试去向', () => {
     for (const code of ['E_COMPOSE_FETCH', 'E_CONFIG_WRITE'] as const) {
       expect(ERROR_CODES).toContain(code)
-      const err = transition({ name: 'Pulling' }, { type: 'FAIL', code })
-      expect(err).toMatchObject({ name: 'Error', code, from: 'Pulling' })
-      // 重试回到拉取页重来一遍：配置与 compose 文件都是在那一步写的
-      expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'Pulling' })
+      const err = transition({ name: 'AutoInstalling' }, { type: 'FAIL', code })
+      expect(err).toMatchObject({ name: 'Error', code, from: 'AutoInstalling' })
+      // 重试回到自动安装那一页从头跑一遍：配置与 compose 文件都是在那一步写的
+      expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'AutoInstalling' })
     }
   })
 })
 
 describe('Docker 页一次点击就该走到下一页（M2 修的 UX 问题）', () => {
-  it('CheckDocker 连发两个事件后落在 ChooseModel（I4 之后 Docker 的下一步是选模型）', () => {
+  it('CheckDocker 连发两个事件后回到自动安装（I5：Docker 好了就接着自动装）', () => {
     const start = run(INITIAL_STATE, TO_DOCKER)
     expect(start.name).toBe('CheckDocker')
     // 页面在「装了 + daemon 在跑 + 版本够」时一次把两个事件都发出去
     const after = run(start, [{ type: 'DOCKER_FOUND' }, { type: 'DAEMON_UP' }])
-    expect(after.name).toBe('ChooseModel')
+    expect(after.name).toBe('AutoInstalling')
   })
 
   it('CheckDocker 与 CheckDaemon 渲染的确实是同一页（所以只发一个事件会看起来没反应）', () => {

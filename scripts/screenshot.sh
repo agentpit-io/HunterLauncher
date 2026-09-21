@@ -19,7 +19,9 @@ DISPLAY_NUM="${DISPLAY_NUM:-:99}"
 # 截图前等多久。WebKitGTK 在软件渲染下首帧比较慢，宁可多等
 SETTLE="${SETTLE:-9}"
 
-PAGES=(welcome key docker docker-missing model pull start done dashboard dashboard-quota-exhausted settings logs feedback update error)
+# I5：向导改成「欢迎 → key → 一次授权 → 选模型 → 自动安装 → 完成」，
+# 「拉取镜像」那一页没有了，换成 consent 与 auto 两页（见 src/state/machine.ts 文件头）
+PAGES=(welcome key consent model auto auto-need-user docker docker-missing start done dashboard dashboard-quota-exhausted settings logs feedback update error)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

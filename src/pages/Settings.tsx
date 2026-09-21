@@ -107,20 +107,52 @@ export function Settings() {
 
         <ModelCard settings={d} onDone={() => s.reload()} />
 
-        {/* AI 诊断助手（I4 §三）。**默认开**；关掉之后只用确定性规则，一个 token 也不花。 */}
+        {/* AI 助手（I4 §三 + I5 §3.2 的三档授权）。
+            **档位是这一节的主开关**：I4 那个布尔开关现在由档位推出（off ⇔ 关），
+            两个来源写同一件事只会互相打架，所以界面上只留档位这一处。 */}
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionAssist}</div>
-          <div className="mt-[16px] flex flex-col gap-[6px]">
-            <Row label={t.settings.assist} hint={t.settings.assistHint}>
-              <Toggle
-                on={d?.assist ?? true}
-                testId="settings-assist"
-                onChange={(v) => void patch({ assist: v })}
-                label={t.settings.assist}
-              />
-            </Row>
+          <div className="mt-[6px] text-sm leading-[1.6] text-muted">{t.settings.assistModeHint}</div>
+          <div className="mt-[14px] flex flex-col gap-[8px]">
+            {(
+              [
+                ['auto', t.settings.assistModeAuto, t.settings.assistModeAutoHint],
+                ['confirm', t.settings.assistModeConfirm, t.settings.assistModeConfirmHint],
+                ['off', t.settings.assistModeOff, t.settings.assistModeOffHint],
+              ] as const
+            ).map(([value, label, hint]) => {
+              const on = (d?.assistMode ?? 'confirm') === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  data-testid={`settings-assist-mode-${value}`}
+                  onClick={() => void patch({ assistMode: value, assist: value !== 'off' })}
+                  className={`flex items-start gap-[10px] rounded-md border px-[14px] py-[11px] text-left transition-colors ${
+                    on ? 'border-amber bg-amber-soft' : 'border-line bg-card hover:bg-hover'
+                  }`}
+                >
+                  <span
+                    className={`mt-[4px] size-[12px] shrink-0 rounded-full border ${
+                      on ? 'border-amber bg-amber' : 'border-line-strong'
+                    }`}
+                    aria-hidden
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-md leading-tight text-ink">{label}</span>
+                    <span className="mt-[4px] block text-xs leading-[1.5] text-muted">{hint}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="mt-[10px] text-xs leading-[1.6] text-muted">
+            {d?.assistConsentedAt
+              ? t.settings.assistConsentedAt(d.assistConsentedAt)
+              : t.settings.assistConsentedNever}
           </div>
           <div className="mt-[10px] text-xs leading-[1.6] text-muted">{t.settings.assistNote}</div>
+          <AuditLog t={t} />
           <div className="mt-[14px]">
             <EnvList
               items={[
@@ -472,6 +504,57 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
         {hint && <div className="mt-[5px] text-xs leading-[1.5] text-muted">{hint}</div>}
       </div>
       <div className="shrink-0 pt-[2px]">{children}</div>
+    </div>
+  )
+}
+
+
+/**
+ * 「AI 都做过什么」（I5 §3.3）。
+ *
+ * 承诺「绝不会做 X」只有在用户**查得到它到底做了什么**的时候才站得住，
+ * 所以审计日志要能在界面上直接看到，而不是只躺在一个要自己 cat 的文件里。
+ * 内容由 Rust 侧写入时就脱敏过（key 不会出现在里面）。
+ */
+function AuditLog({ t }: { t: ReturnType<typeof useStore>['t'] }) {
+  const [lines, setLines] = useState<string[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className="mt-[14px] border-t border-line pt-[14px]">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-sm text-body">{t.settings.auditTitle}</div>
+          <div className="mt-[3px] text-xs leading-[1.5] text-muted">{t.settings.auditHint}</div>
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          data-testid="settings-audit-toggle"
+          disabled={busy}
+          onClick={() => {
+            if (lines) {
+              setLines(null)
+              return
+            }
+            setBusy(true)
+            void ipc
+              .assistAuditTail(20)
+              .then(setLines)
+              .catch(() => setLines([]))
+              .finally(() => setBusy(false))
+          }}
+        >
+          {lines ? t.settings.auditHide : t.settings.auditShow}
+        </Button>
+      </div>
+      {lines && (
+        <pre
+          data-testid="settings-audit"
+          className="mt-[10px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-log px-[12px] py-[9px] font-mono text-xs leading-[1.55] text-dim"
+        >
+          {lines.length > 0 ? lines.join('\n') : t.settings.auditEmpty}
+        </pre>
+      )}
     </div>
   )
 }

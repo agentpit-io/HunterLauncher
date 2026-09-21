@@ -1,0 +1,11 @@
+{"id":1,"parent":null,"kind":"step","status":"running","title":"检查 Docker","detail":"","at":"2026-09-21 11:59:15"}
+{"id":1,"parent":null,"kind":"step","status":"failed","title":"检查 Docker","detail":"docker 命令在，但连不上后台服务（daemon 没起）。","elapsedMs":103,"at":"2026-09-21 11:59:15"}
+{"id":2,"parent":null,"kind":"issue","status":"warn","title":"发现问题：Docker 装了但没在运行","detail":"docker 命令在，但连不上后台服务（daemon 没起）。","tech":["错误码 E_DAEMON_DOWN｜docker 命令在，但连不上后台服务（daemon 没起）。"],"at":"2026-09-21 11:59:15"}
+{"id":3,"parent":2,"kind":"analyze","status":"running","title":"分析中…","detail":"","at":"2026-09-21 11:59:15"}
+{"id":3,"parent":2,"kind":"analyze","status":"ok","title":"分析中…","detail":"查了 5 个端口","elapsedMs":1185,"at":"2026-09-21 11:59:16"}
+{"id":4,"parent":2,"kind":"analyze","status":"ok","title":"找到原因","detail":"systemd 的 docker 服务 装着但没在运行，把它启动起来再等它就绪。","at":"2026-09-21 11:59:16"}
+{"id":5,"parent":2,"kind":"action","status":"running","title":"正在处理：启动 systemd 的 docker 服务","detail":"","at":"2026-09-21 11:59:16"}
+{"id":5,"parent":2,"kind":"action","status":"failed","title":"正在处理：启动 systemd 的 docker 服务","detail":"「启动 systemd 的 docker 服务」没成功（退出码 Some(1)）：See system logs and 'systemctl status docker.service' for details.","elapsedMs":52,"at":"2026-09-21 11:59:16"}
+{"id":6,"parent":2,"kind":"needUser","status":"waiting","title":"Docker 后台服务要用管理员权限才能启动","detail":"请在终端里执行：sudo systemctl start docker","tech":["这一条要管理员权限。启动器不会替你提权，也不会把它塞进动作表。"],"choices":[{"value":"yes","label":"我执行完了，继续","primary":true},{"value":"no","label":"先不弄了","primary":false}],"at":"2026-09-21 11:59:16"}
+{"id":6,"parent":2,"kind":"needUser","status":"skipped","title":"Docker 后台服务要用管理员权限才能启动","detail":"命令行下没有人能回答，按「先不弄」处理","tech":["这一条要管理员权限。启动器不会替你提权，也不会把它塞进动作表。"],"choices":[{"value":"yes","label":"我执行完了，继续","primary":true},{"value":"no","label":"先不弄了","primary":false}],"at":"2026-09-21 11:59:16"}
+{"id":7,"parent":null,"kind":"failed","status":"failed","title":"没能自动装好","detail":"docker 命令在，但连不上后台服务（daemon 没起）。\nDocker 后台服务要用管理员权限才能启动：在终端里执行 sudo systemctl start docker，然后重试。","tech":["错误码 E_DAEMON_DOWN"],"at":"2026-09-21 11:59:16"}

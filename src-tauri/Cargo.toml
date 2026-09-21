@@ -1,6 +1,6 @@
 [package]
 name = "hunter-launcher"
-version = "0.1.4"
+version = "0.1.5"
 description = "Hunter 启动器 · 把 hunter-community 的部署变成「下载 → 填一把 key → 等几分钟」"
 authors = ["agentpit.io"]
 edition = "2021"
@@ -34,6 +34,10 @@ sha2 = "0.11"
 getrandom = "0.4"
 # headless 模式下输入 key 时不回显
 rpassword = "7"
+# 端口探测（I5 · P0）。必须用它显式构造套接字：`std::net::TcpListener` 在 Unix 上
+# 默认开 SO_REUSEADDR，macOS 的 BSD 语义下会把「已被 *:P 占死的端口」判成空闲 ——
+# 0.1.4 在用户 Mac 上装不起来就是这一条。详见 src/ports.rs 的模块注释
+socket2 = "0.6"
 # 离线包导入要选文件（方案 §9）。系统原生的文件选择框，比让用户手抄路径靠谱
 tauri-plugin-dialog = "2"
 # headless 下自己验 updater 清单与安装包的签名（见 selfupdate.rs 的「两条路」一节）。

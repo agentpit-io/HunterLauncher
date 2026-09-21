@@ -300,7 +300,16 @@ pub fn apply_response(session: &mut Session, resp: &serde_json::Value) -> Turn {
         }
         match actions::plan(&call) {
             Err(e) => {
-                // **这是白名单那道闸真正生效的地方。** 日志已经在 actions::plan 里打过一条 warn
+                // **这是白名单那道闸真正生效的地方。** 日志已经在 actions::plan 里打过一条 warn；
+                // I5 起再写一条审计 —— 「AI 提了什么、为什么没执行」要在
+                // `~/.hunter/logs/assist-audit.log` 里查得到，而不是只留在滚动日志里
+                crate::assist::guard::audit(
+                    &call.id,
+                    &call.args,
+                    crate::assist::guard::Proposer::Model,
+                    None,
+                    &format!("拒绝：{}", e.msg),
+                );
                 turn.rejected.push(Rejected {
                     name: safe(&call.id),
                     reason: e.msg.clone(),
@@ -564,7 +573,11 @@ pub fn tools_json() -> serde_json::Value {
                     "description": format!(
                         "{}（{}）。{}",
                         a.title,
-                        if a.kind == actions::Kind::ReadOnly { "只读，会自动执行" } else { "会改动用户的机器，需要用户确认" },
+                        match a.level {
+                            crate::assist::guard::Level::ReadOnly => "只读，会自动执行",
+                            crate::assist::guard::Level::Safe => "只动 Hunter 自己的东西，自动驾驶档下会自动执行",
+                            crate::assist::guard::Level::Sensitive => "会影响这台机器上别的东西，任何档位下都要用户先同意",
+                        },
                         a.desc
                     ),
                     "parameters": {
@@ -579,7 +592,10 @@ pub fn tools_json() -> serde_json::Value {
     serde_json::Value::Array(items)
 }
 
-fn call_gateway(messages: &[serde_json::Value], key: &str) -> Result<serde_json::Value, Degrade> {
+pub(crate) fn call_gateway(
+    messages: &[serde_json::Value],
+    key: &str,
+) -> Result<serde_json::Value, Degrade> {
     // 出口闸：整个请求体序列化出来再扫一遍，带着 key 的形状就**不发**
     let body = serde_json::json!({
         "model": gateway::DEFAULT_MODEL,
@@ -711,17 +727,31 @@ mod tests {
         for a in actions::ACTIONS {
             assert!(names.contains(&a.id), "少了 {}", a.id);
         }
-        // 描述里要写清是只读还是会改动机器 —— 模型据此决定要不要解释
-        let start = arr
-            .iter()
-            .find(|x| x["function"]["name"] == "start_runtime")
-            .unwrap();
-        assert!(
-            start["function"]["description"]
+        // 描述里要写清风险级别 —— 模型据此决定要不要解释、会不会被拦
+        // （I5：从 I4 的两分法换成了 ReadOnly / Safe / Sensitive 三级）
+        let one = |name: &str| {
+            arr.iter()
+                .find(|x| x["function"]["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        let d = |name: &str| {
+            one(name)["function"]["description"]
                 .as_str()
                 .unwrap()
-                .contains("需要用户确认"),
-            "{start}"
+                .to_string()
+        };
+        assert!(d("check_ports").contains("只读"), "{}", d("check_ports"));
+        assert!(
+            d("start_runtime").contains("自动驾驶档下会自动执行"),
+            "{}",
+            d("start_runtime")
+        );
+        // Sensitive 的那一条必须写明「任何档位下都要用户先同意」
+        assert!(
+            d("brew_install").contains("任何档位下都要用户先同意"),
+            "{}",
+            d("brew_install")
         );
     }
 

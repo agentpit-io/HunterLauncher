@@ -1,12 +1,7 @@
-import { useEffect, useState } from 'react'
 import { CandlestickDecor } from './CandlestickDecor'
 import { useStore } from '../state/context'
 import { stepperOf, type StepId, type StepStatus } from '../state/machine'
-import { useAsync } from '../lib/useAsync'
-import * as ipc from '../lib/ipc'
-import { bytes } from '../lib/format'
 import type { Dict } from '../i18n'
-import type { PullProgress } from '../lib/types'
 
 /**
  * 左侧竖向步骤条（视觉稿第 1、2 张）。宽 250px，底色比内容区深一点（#0b0f1a）。
@@ -15,37 +10,10 @@ import type { PullProgress } from '../lib/types'
 export function Stepper({ subtitles }: { subtitles: Partial<Record<StepId, string>> }) {
   const { state, t } = useStore()
   const steps = stepperOf(state)
-  // 视觉稿里 Docker 与「拉取镜像」两步的副标题在**每一页**都显示真实值
-  // （「已检测到 …」「约 … · 镜像源」），所以在步骤条这一层取，而不是让每个页面各传一遍。
-  // 拿不到就显示「—」并保留原因（总控规则红线 1）。
-  const docker = useAsync(() => ipc.detectDocker(), [])
-  const snapshot = useAsync(() => ipc.pullProgress(), [])
-  // 拉取开始之前快照是空的，副标题会停在「约 — · —」。订一份事件流，
-  // 镜像源与总大小一确定就跟着变（步骤条在每一页都显示，用户在拉取页之外也能看见）。
-  const [live, setLive] = useState<PullProgress | null>(null)
-  useEffect(() => {
-    let alive = true
-    let off: (() => void) | undefined
-    void ipc.onPullProgress((p) => alive && setLive(p)).then((f) => {
-      if (alive) off = f
-      else f()
-    })
-    return () => {
-      alive = false
-      off?.()
-    }
-  }, [])
-  const pull = { data: live ?? snapshot.data }
-
+  // I5：「Docker」与「拉取镜像」不再是独立步骤（都并进了「自动安装」），
+  // 那两条随实时数据变化的副标题也跟着去了自动安装页的过程流里 ——
+  // 同一个事实在两处显示、还各有一套取数逻辑，是迟早要对不上的。
   const auto: Partial<Record<StepId, string>> = {}
-  if (docker.data?.runtimeLabel) auto.docker = t.steps.docker.detected(docker.data.runtimeLabel)
-  else if (docker.data?.installed === false) auto.docker = t.steps.docker.missing
-  const totalBytes = pull.data?.totalBytes ?? 0
-  // 镜像源名字也用真实选中的那个：没测速之前显示「—」，不写死某个源（红线 1）
-  auto.pull = t.steps.pull.sub(
-    totalBytes > 0 ? bytes(totalBytes, 0) : t.app.noData,
-    pull.data?.registryLabel || t.app.noData,
-  )
 
   return (
     <aside className="relative flex w-[var(--hl-sidebar-w)] shrink-0 flex-col overflow-hidden border-r border-line bg-sidebar">

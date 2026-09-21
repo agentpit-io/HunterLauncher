@@ -502,6 +502,12 @@ pub struct LauncherSettings {
     /// AI 诊断助手（I4）。**默认开**；关掉之后只用确定性规则，一个 token 也不花
     #[serde(default)]
     pub assist: bool,
+    /// I5 授权档位：`auto` 自动驾驶 / `confirm` 逐步确认 / `off` 关闭
+    #[serde(default)]
+    pub assist_mode: String,
+    /// 用户是哪一刻做的授权（上海时间）。空 = 还没授权过
+    #[serde(default)]
+    pub assist_consented_at: String,
     /// 现在实际用的 docker 可执行文件路径。只读，给界面显示用
     /// （红线 1：读不到就是 `None`，界面显示「—」）
     #[serde(default)]
@@ -533,6 +539,27 @@ pub async fn write_settings(
             config::WEB_BIND_ALL.into()
         };
         c.assist.enabled = settings.assist;
+        // I5：设置页也能改授权档位。**改档位算一次新的授权**，所以重新盖时间戳、写审计
+        if !settings.assist_mode.trim().is_empty() {
+            let m = crate::assist::guard::Mode::parse(&settings.assist_mode);
+            if m.as_str() != c.assist.mode().as_str() {
+                crate::linfo!(
+                    "设置页改了授权档位：{} → {}",
+                    c.assist.mode().as_str(),
+                    m.as_str()
+                );
+                crate::assist::guard::audit(
+                    "consent",
+                    &std::collections::BTreeMap::new(),
+                    crate::assist::guard::Proposer::User,
+                    None,
+                    &format!("设置页改档位为 {}（{}）", m.as_str(), m.cn()),
+                );
+                c.assist.consented_at = crate::timefmt::now_shanghai();
+            }
+            c.assist.mode = m.as_str().to_string();
+            c.assist.enabled = m != crate::assist::guard::Mode::Off;
+        }
 
         // 开机自启：**真去动系统**（Linux 的 .desktop / mac 的 LaunchAgent / Windows 注册表），
         // 然后把系统里的真实状态记回配置，而不是把用户点的那一下直接当成结果（红线 1）。
@@ -600,6 +627,8 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         registry_prefix: c.hunter.registry_prefix.clone(),
         web_local_only: c.hunter.web_local_only(),
         assist: c.assist.enabled,
+        assist_mode: c.assist.mode().as_str().to_string(),
+        assist_consented_at: c.assist.consented_at.clone(),
         // 用**当前真实的定位结果**，不是配置里记的那一行（红线 1）
         docker_path: crate::runtime::which::docker_probe().resolved,
     }
@@ -1328,4 +1357,146 @@ pub async fn assist_rule_action(
 #[tauri::command]
 pub async fn assist_reset() -> Result<()> {
     blocking(crate::assist::reset).await
+}
+
+// ── I5 · AI 自动驾驶安装（设计文档 §二～八） ──────────────────────────────
+
+/// 把事件推到窗口上的 sink。headless 那条路用 [`crate::assist::events::Stdout`]，
+/// 两条路共用同一份事件与同一个 [`Bus`]。
+struct TauriSink(tauri::AppHandle);
+
+impl crate::assist::events::Sink for TauriSink {
+    fn event(&self, e: &crate::assist::events::Event) {
+        let _ = self.0.emit(crate::assist::events::EVENT, e);
+    }
+    fn summary(&self, s: &crate::assist::events::Summary) {
+        let _ = self.0.emit(EV_ASSIST_SUMMARY, s);
+    }
+}
+
+pub const EV_ASSIST_SUMMARY: &str = "assist://summary";
+pub const EV_ASSIST_DONE: &str = "assist://done";
+
+/// 正在跑的那一次自动安装。用户点「需要你」卡片时要找得到它。
+type AutoSlot = std::sync::Mutex<Option<crate::assist::auto::Handle>>;
+
+fn auto_slot() -> &'static AutoSlot {
+    static S: std::sync::OnceLock<AutoSlot> = std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 用户在一次授权页上做的选择（设计文档 §3.1）。
+///
+/// **写日志、写配置、写审计**：授权这件事必须留痕，用户以后要能查到
+/// 「我是什么时候、同意了哪一档」。
+#[tauri::command]
+pub async fn assist_consent(app: tauri::AppHandle, mode: String) -> Result<LauncherSettings> {
+    blocking(move || {
+        let m = crate::assist::guard::Mode::parse(&mode);
+        let st = state(&app);
+        let mut cfg = st.config();
+        cfg.assist.mode = m.as_str().to_string();
+        cfg.assist.enabled = m != crate::assist::guard::Mode::Off;
+        cfg.assist.consented_at = crate::timefmt::now_shanghai();
+        cfg.save()?;
+        st.set_config(cfg.clone());
+        crate::linfo!(
+            "用户授权：档位 {}（{}），时间 {}",
+            m.as_str(),
+            m.cn(),
+            cfg.assist.consented_at
+        );
+        crate::assist::guard::audit(
+            "consent",
+            &std::collections::BTreeMap::new(),
+            crate::assist::guard::Proposer::User,
+            None,
+            &format!("授权档位 {}（{}）", m.as_str(), m.cn()),
+        );
+        Ok(to_settings(&cfg))
+    })
+    .await
+}
+
+/// 开始一次**全自动**安装。立刻返回，过程走 `assist://event`。
+#[tauri::command]
+pub fn assist_auto_start(app: tauri::AppHandle, registry_id: Option<String>) -> Result<()> {
+    {
+        let st = state(&app);
+        if st.busy.swap(true, Ordering::SeqCst) {
+            return Err(AppError::new(Code::Unknown, "已经有一次安装在进行中").to_string());
+        }
+        st.cancel.store(false, Ordering::SeqCst);
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let st = handle.state::<AppState>();
+        let cfg = st.config();
+        let opts = InstallOptions {
+            registry: registry_id,
+            tag: cfg.hunter.tag.clone(),
+        };
+        let bus = std::sync::Arc::new(crate::assist::events::Bus::new(
+            Box::new(TauriSink(handle.clone())),
+            true,
+        ));
+        let mut orch = crate::assist::auto::Orchestrator::new(
+            bus,
+            cfg.assist.mode(),
+            st.hunter_key(),
+            st.cancel.clone(),
+        );
+        if let Ok(mut g) = auto_slot().lock() {
+            *g = Some(orch.handle());
+        }
+        let outcome = orch.run(&st, &opts);
+        let _ = handle.emit(EV_ASSIST_DONE, &outcome);
+        if let Ok(mut g) = auto_slot().lock() {
+            *g = None;
+        }
+        st.busy.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+/// 用户点了「需要你」卡片上的某个按钮。
+#[tauri::command]
+pub fn assist_auto_answer(value: String) -> Result<bool> {
+    let g = auto_slot().lock().ok().and_then(|g| g.clone());
+    Ok(match g {
+        Some(o) => o.answer(&value),
+        None => false,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoSnapshot {
+    pub running: bool,
+    pub events: Vec<crate::assist::events::Event>,
+    pub summary: crate::assist::events::Summary,
+}
+
+/// 页面刚挂载时先拉一份整棵树（事件可能在挂载前就发过了）。
+#[tauri::command]
+pub fn assist_auto_snapshot() -> Result<AutoSnapshot> {
+    let g = auto_slot().lock().ok().and_then(|g| g.clone());
+    Ok(match g {
+        Some(o) => AutoSnapshot {
+            running: true,
+            events: o.bus.snapshot(),
+            summary: o.bus.summary_now(),
+        },
+        None => AutoSnapshot {
+            running: false,
+            events: Vec::new(),
+            summary: crate::assist::events::Summary::default(),
+        },
+    })
+}
+
+/// 审计日志的末尾若干条（设置页「AI 都做过什么」）。
+#[tauri::command]
+pub async fn assist_audit_tail(lines: usize) -> Result<Vec<String>> {
+    blocking(move || Ok(crate::assist::guard::audit_tail(lines.min(500)))).await
 }
