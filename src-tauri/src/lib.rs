@@ -35,6 +35,7 @@ pub mod backup;
 pub mod commands;
 pub mod compose;
 pub mod config;
+pub mod datacheck;
 pub mod dockercfg;
 pub mod err;
 pub mod feedback;
@@ -43,6 +44,7 @@ pub mod gateway;
 pub mod headless;
 pub mod http;
 pub mod log;
+pub mod monitor;
 pub mod netproxy;
 pub mod offline;
 pub mod paths;
@@ -192,6 +194,15 @@ pub fn run() {
             commands::assist_audit_tail,
             // I11 · 现状复查（错误页靠它自己看见「其实已经好了」）
             commands::self_check,
+            // I12 · 装好了就记住：资源监控 · 启停补全 · 重装前检测已有数据
+            commands::monitor_host,
+            commands::monitor_runtime,
+            commands::monitor_services,
+            commands::monitor_storage,
+            commands::data_check,
+            commands::data_check_deep,
+            commands::stack_plan,
+            commands::stack_op,
             // I7 · 内置运行时 / 接管 / 一键反馈
             commands::builtin_runtime_status,
             commands::builtin_runtime_uninstall,
@@ -302,6 +313,66 @@ pub fn run() {
                             .join("、")
                     ),
                     Err(e) => lwarn!("开机自查：端口没能收回本机 —— {}", e.msg),
+                }
+            });
+
+            // **电脑或运行环境重启之后，容器要自己回来**（I12 · R3+）。
+            //
+            // 2026-09-23 在用户 Mac 上实测：内置运行时的虚拟机
+            // `limactl stop` / `start` 之后，六个容器一个都没起来，`docker ps` 是空的。
+            //
+            // 覆盖文件里那条 `restart: unless-stopped` 管不到这一档 ——
+            // 它的语义是「除非你手动停过」，而虚拟机停机时容器正是被「手动停」的那一路。
+            // 所以这里补一道：**启动器一起来就看一眼**「配置齐了、运行环境在跑、
+            // 可是本项目一个容器都没跑着」→ 自己 `up -d` 把它们拉回来，不用用户点。
+            //
+            // 四道闸门，缺一不可（宁可不做，也不要在不该做的时候动容器）：
+            //   1. 这台机器上装过（`install.done` + 配置文件都在）；
+            //   2. docker 现在连得上（运行环境确实在跑）；
+            //   3. 本项目的容器**存在但一个都没跑着** —— 一个都没有（从没装过）
+            //      或者已经有在跑的，都不该走这条路；
+            //   4. 不是用户刚刚自己在界面上点的「停止」（`[install] stopped_by_user`）。
+            std::thread::spawn(|| {
+                let cfg = crate::config::LauncherConfig::load();
+                if !cfg.install.done || !crate::selfcheck::installed_on_disk() {
+                    return;
+                }
+                if cfg.install.stopped_by_user {
+                    linfo!("开机自查容器：上一次是你自己在界面上点的「停止」，这次不替你起回来");
+                    return;
+                }
+                if !crate::runtime::effective::current().running {
+                    return;
+                }
+                let services = match compose::ps() {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                let ours: Vec<_> = services
+                    .iter()
+                    .filter(|s| crate::selfcheck::EXPECTED.contains(&s.service.as_str()))
+                    .collect();
+                if ours.is_empty() {
+                    return;
+                }
+                if ours.iter().any(|s| s.state == "running") {
+                    return;
+                }
+                // 「建出来过但一次都没跑起来」的残骸不在此列：它们身上冻着上一次那组端口，
+                // `up` 起来照样撞车。那一档归 selfcheck 的 Incomplete 走完整流程（I11 §1.1）
+                if ours.iter().all(|s| s.state == "created") {
+                    lwarn!("开机自查容器：六个都是 created（上一次装到一半留下的），不替你起");
+                    return;
+                }
+                lwarn!(
+                    "开机自查容器：运行环境在跑，可是本项目 {} 个容器一个都没起来 —— 自动拉起",
+                    ours.len()
+                );
+                match compose::up() {
+                    Ok(()) => linfo!(
+                        "开机自查容器：已经用两份 compose 文件把本项目拉回运行（不需要你点任何按钮）"
+                    ),
+                    Err(e) => lwarn!("开机自查容器：没能自动拉起 —— {}", e.msg),
                 }
             });
 

@@ -240,6 +240,80 @@ pub struct InstallSection {
     /// 见 `flow::clear_offline` 的注释）。
     #[serde(default)]
     pub offline: bool,
+
+    // ── I12 · R1 新增的六项「装好了就记住」────────────────────────────────
+    //
+    // 起因：2026-09-22 23:10 用户 Mac 上 Hunter 6/6 健康跑着，重开启动器却又从
+    // 欢迎页开始 —— `done` 只在安装流程**自己**走完时才写（flow.rs），
+    // 而那一次是在外部修好的。同一份文件里 `[launcher] version` 还停在 0.1.7。
+    //
+    // 这六项合起来回答三个问题：谁装的（哪一版启动器、哪一版 Hunter）、
+    // 装在哪（项目名、目录、用的哪套运行时）、上一次好好的是什么时候。
+    /// **每次启动器起来都写成当前版本**。
+    ///
+    /// 老配置里的 `[launcher] version` 从 I12 起只是遗迹：读得到就迁移过来，
+    /// 之后一律以这一项为准（方案第四节）。
+    #[serde(default)]
+    pub launcher_version: String,
+    /// 装的是哪个 Hunter 镜像 tag（写入时 `hunter.tag` 的值）
+    #[serde(default)]
+    pub hunter_tag: String,
+    /// compose 项目名。恒为 [`PROJECT`]，落盘是为了让人一眼看出「这套归启动器管」
+    #[serde(default)]
+    pub project: String,
+    /// 工作目录（`~/.hunter/app`），家目录打码后的形式
+    #[serde(default)]
+    pub app_dir: String,
+    /// 用的哪套运行时：`builtin` | `user` | `none`（[`crate::runtime::effective::Kind`]）
+    #[serde(default)]
+    pub runtime: String,
+    /// **最近一次真的看到 6/6 健康**是什么时候（上海时间）。
+    /// 每次健康检查通过都刷新；界面上「上次正常运行」那一行读的就是它
+    #[serde(default)]
+    pub last_healthy_at: String,
+    /// 这条记录是「检测到它已经在跑」补写的，不是安装流程写的（R1）。
+    ///
+    /// 为真时过程流里会说一句「检测到 Hunter 已在运行，已记录为已安装」——
+    /// 用户有权知道启动器凭什么认为装过了。
+    #[serde(default)]
+    pub adopted_from_running: bool,
+    /// **是用户自己在界面上点的「停止」**（I12 · R3+）。
+    ///
+    /// R3+ 那一条自愈（「运行环境在跑、容器没起 → 自己拉起来」）必须绕开这一档：
+    /// 用户刚点完停止、关掉窗口、过一会儿又打开启动器，启动器要是把容器又起回来，
+    /// 那就是在跟他对着干。点「启动」时清掉。
+    #[serde(default)]
+    pub stopped_by_user: bool,
+}
+
+/// 资源监控的阈值（方案第四节 `[monitor]`）。
+///
+/// I12 只做 R2「看得见」这一半：这些阈值决定运行面板上哪个数字标黄、哪个标红。
+/// R7 的「提醒 + 智能分析 + 一键处理」是 I13 的活，本轮**不发通知、不弹横幅**。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorSection {
+    /// 系统盘剩余低于这个数（GB）标黄
+    pub host_disk_warn_gb: u64,
+    /// 低于这个数标红
+    pub host_disk_crit_gb: u64,
+    /// 运行环境虚拟机磁盘用量超过这个百分比标黄
+    pub vm_disk_warn_pct: u8,
+    /// 运行环境虚拟机内存用量超过这个百分比标黄
+    pub vm_mem_warn_pct: u8,
+    /// 允不允许弹系统通知。**I12 不读这一项**（本轮不发通知），留给 I13 的 R7
+    pub notify: bool,
+}
+
+impl Default for MonitorSection {
+    fn default() -> Self {
+        Self {
+            host_disk_warn_gb: 20,
+            host_disk_crit_gb: 5,
+            vm_disk_warn_pct: 80,
+            vm_mem_warn_pct: 85,
+            notify: true,
+        }
+    }
 }
 
 /// 可执行文件的定位策略（I4 的 P0）。
@@ -443,6 +517,8 @@ pub struct LauncherConfig {
     pub assist: AssistSection,
     #[serde(default)]
     pub takeover: TakeoverSection,
+    #[serde(default)]
+    pub monitor: MonitorSection,
 }
 
 /// 「直接用这台机器上已经有的那一套 Hunter」（I7 · `reuse_existing_hunter`）。
@@ -491,13 +567,71 @@ impl LauncherConfig {
         match std::fs::read_to_string(&p) {
             Err(_) => Self::default(),
             Ok(s) => match toml::from_str::<Self>(&s) {
-                Ok(c) => c,
+                Ok(mut c) => {
+                    c.migrate();
+                    c
+                }
                 Err(e) => {
                     crate::lwarn!("{} 解析失败，这次用默认设置：{e}", p.display());
                     Self::default()
                 }
             },
         }
+    }
+
+    /// 老配置往 I12 的字段上搬（**只在内存里搬，落盘由调用方决定**）。
+    ///
+    /// 目前只有一条：`[launcher] version` → `[install] launcher_version`。
+    /// 用户 Mac 上那份 0.1.9 的配置里前者停在 `0.1.7`，后者根本不存在 ——
+    /// 合并成一项之后再也不会出现「显示 0.1.7、实际 0.1.9」（方案第四节）。
+    ///
+    /// **不删 `[launcher] version`**：老版本的启动器还要读它，
+    /// 用户在两个版本之间来回切的时候不该被我们弄坏配置。
+    pub fn migrate(&mut self) {
+        if self.install.launcher_version.is_empty() && !self.launcher.version.is_empty() {
+            self.install.launcher_version = self.launcher.version.clone();
+        }
+        if self.install.project.is_empty() && self.install.done {
+            self.install.project = PROJECT.to_string();
+        }
+    }
+
+    /// 每次启动器起来都记一次「现在跑的是哪一版」（R1 第 3 条）。
+    ///
+    /// 返回值是「有没有真的改到什么」—— 没改就不落盘，免得每次开机都写一遍文件。
+    pub fn stamp_launcher_version(&mut self) -> bool {
+        let v = env!("CARGO_PKG_VERSION");
+        let changed = self.install.launcher_version != v || self.launcher.version != v;
+        self.install.launcher_version = v.to_string();
+        // `[launcher] version` 同步写一份：老版本启动器、以及诊断包里的老字段还在读它
+        self.launcher.version = v.to_string();
+        changed
+    }
+
+    /// 把「这台机器上装好了」这件事记全（R1 第 1、2 条）。
+    ///
+    /// `adopted` 为真 = 这条记录是「检测到它已经在跑」补写的，不是安装流程写的。
+    pub fn mark_installed(&mut self, adopted: bool) {
+        self.install.done = true;
+        if self.install.at.is_empty() || adopted {
+            self.install.at = crate::timefmt::now_shanghai();
+        }
+        self.install.launcher_version = env!("CARGO_PKG_VERSION").to_string();
+        self.install.hunter_tag = self.hunter.tag.clone();
+        self.install.project = PROJECT.to_string();
+        self.install.app_dir = crate::redact::mask_home(&paths::app_dir().to_string_lossy());
+        self.install.runtime = runtime_label();
+        if adopted {
+            self.install.adopted_from_running = true;
+        }
+    }
+
+    /// 健康检查通过时刷一次时间戳（R1 第 3 条）。返回「值有没有变」。
+    pub fn touch_healthy(&mut self) -> bool {
+        let now = crate::timefmt::now_shanghai();
+        let changed = self.install.last_healthy_at != now;
+        self.install.last_healthy_at = now;
+        changed
     }
 
     pub fn save(&self) -> AppResult<()> {
@@ -515,6 +649,13 @@ impl LauncherConfig {
         // `~/.hunter` 下的东西一律只有属主能读（待办池 P2-11）
         paths::chmod_600(&p)?;
         Ok(())
+    }
+
+    /// 只有在真的改到什么的时候才落盘。开机那几条（版本戳、健康时间）都走它。
+    pub fn save_if(&self, changed: bool) {
+        if changed {
+            let _ = self.save();
+        }
     }
 
     pub fn apply_registry(&mut self, c: &Candidate) {
@@ -1123,9 +1264,52 @@ impl WebBind {
     }
 }
 
+/// 记一笔「容器现在是不是用户自己停的」（I12 · R3+ 的自愈靠它绕开）。
+///
+/// 界面上的「停止」、托盘上的「停止」都要写它；两边的「启动」都要清它。
+pub fn mark_stopped_by_user(v: bool) {
+    let mut cfg = LauncherConfig::load();
+    if cfg.install.stopped_by_user == v {
+        return;
+    }
+    cfg.install.stopped_by_user = v;
+    if let Err(e) = cfg.save() {
+        crate::lwarn!("记「是不是你自己停的」没写成：{}", e.msg);
+    }
+}
+
+/// 这台机器现在用的是哪套运行时，写进 `[install] runtime`（R1）。
+///
+/// 值域和 [`crate::runtime::effective::Kind`] 一致（`builtin` / `user` / `none`），
+/// **读的是现状**，不是配置里的意图。
+fn runtime_label() -> String {
+    match crate::runtime::effective::current().kind {
+        crate::runtime::effective::Kind::Builtin => "builtin".to_string(),
+        crate::runtime::effective::Kind::User => "user".to_string(),
+        crate::runtime::effective::Kind::None => "none".to_string(),
+    }
+}
+
+/// 覆盖文件里给每个服务加的重启策略（I12 · R3+）。
+///
+/// 2026-09-23 在用户 Mac 上实测：内置运行时的虚拟机 `limactl stop` / `start` 之后，
+/// 六个容器一个都没起来，`docker ps` 是空的。
+///
+/// 上游的 `docker-compose.yml` 其实**已经**写了 `restart: unless-stopped`
+/// （`x-restart` 锚点，六个服务都引了；测试机上 `docker inspect` 核过，
+/// `HostConfig.RestartPolicy.Name` 确实是 `unless-stopped`）。
+/// 这里再写一遍不是重复劳动，是**把它钉在我们自己的文件里**：
+/// 上游哪天改了锚点、或者用户拿到的是别的 tag，覆盖文件仍然保证这一条。
+///
+/// 它不能单独解决那个现场 —— `unless-stopped` 的语义是「除非你手动停过」，
+/// 而 `compose stop` / `colima stop` 走的正是「手动停过」那条路。
+/// 所以 R3+ 的第 2 条（启动器起来发现「运行环境在跑、容器没起」就自动拉起）
+/// 才是真正兜底的那一道，见 [`crate::lib`] 启动时那段。
+const RESTART_POLICY: &str = "unless-stopped";
+
 /// 生成 `docker-compose.launcher.yml`。
 ///
-/// 两件事：
+/// 三件事：
 /// 1. **所有发布出来的端口一律绑 `127.0.0.1`**（红线 4 · I7 起连 web 也收进来）。
 ///    `!override` 标签是必须的 —— compose 对 `ports` 默认做追加合并，
 ///    不加标签会变成「既听 0.0.0.0 又听 127.0.0.1」（M0 §3.4 实测）。
@@ -1133,6 +1317,8 @@ impl WebBind {
 ///    不是一个新做出来的决定（见 [`WebBind`]）。
 /// 2. 用国内源时把 `postgres` / `redis` 的 `image:` 也改写过去。
 ///    另外四个服务的镜像地址由 `.env` 的 `HUNTER_REGISTRY` 控制，不用在这里写。
+/// 3. **六个服务一律 `restart: unless-stopped`**（I12 · R3+，见 [`RESTART_POLICY`]）。
+///    `llm-shim` 在这份文件里原本一个字都没有，这一条是它出现的唯一理由。
 pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> String {
     let mut s = String::new();
     s.push_str(
@@ -1141,6 +1327,7 @@ pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> Strin
          # 作用：1) 把**所有**发布端口收回 127.0.0.1（总控规则红线 4 · I7 起连 web 也收进来）\n\
          #       2) 落实端口冲突改写后的值\n\
          #       3) 用国内镜像源时改写 postgres / redis 的镜像地址\n\
+         #       4) 六个服务一律 restart: unless-stopped —— 电脑或运行环境重启后容器自己回来\n\
          #\n\
          # `!override` 标签是必须的：compose 默认对 ports 做**追加**合并，不加这个标签会变成\n\
          # 「既监听 0.0.0.0 又监听 127.0.0.1」，红线 4 就白写了（M0 §3.4 已实测验证）。\n\
@@ -1154,7 +1341,7 @@ pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> Strin
         WebBind::Local => {
             s.push_str("  # web 也只绑本机：免费版不提供局域网访问（付费版功能）\n");
             s.push_str(&format!(
-                "  web:\n    ports: !override [\"127.0.0.1:{}:3000\"]\n",
+                "  web:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:3000\"]\n",
                 ports.web
             ));
         }
@@ -1164,19 +1351,21 @@ pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> Strin
                 "  # 新版本默认只允许本机访问 —— 运行面板上点「只允许本机访问」就能收紧（单向）。\n",
             );
             s.push_str(&format!(
-                "  web:\n    ports: !override [\"{}:3000\"]\n",
+                "  web:\n    restart: {RESTART_POLICY}\n    ports: !override [\"{}:3000\"]\n",
                 ports.web
             ));
         }
     }
     s.push_str(&format!(
-        "  api:\n    ports: !override [\"127.0.0.1:{}:8000\"]\n",
+        "  api:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:8000\"]\n",
         ports.api
     ));
     s.push_str(&format!(
-        "  opencode:\n    ports: !override [\"127.0.0.1:{}:3901\"]\n",
+        "  opencode:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:3901\"]\n",
         ports.opencode
     ));
+    // llm-shim 不发布端口，所以它在这份文件里只为了重启策略而存在（I12 · R3+）
+    s.push_str(&format!("  llm-shim:\n    restart: {RESTART_POLICY}\n"));
 
     let pg_image = if base_prefix == "docker.io/library" {
         "postgres:16-alpine".to_string()
@@ -1189,11 +1378,11 @@ pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> Strin
         format!("{base_prefix}/redis:7-alpine")
     };
     s.push_str(&format!(
-        "  postgres:\n    image: {pg_image}\n    ports: !override [\"127.0.0.1:{}:5432\"]\n",
+        "  postgres:\n    image: {pg_image}\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:5432\"]\n",
         ports.postgres
     ));
     s.push_str(&format!(
-        "  redis:\n    image: {redis_image}\n    ports: !override [\"127.0.0.1:{}:6379\"]\n",
+        "  redis:\n    image: {redis_image}\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:6379\"]\n",
         ports.redis
     ));
     s
@@ -1663,7 +1852,56 @@ mod tests {
         }
         // 上游那六个服务里 llm-shim 一个端口也不发布，所以「六个服务全部只绑本机」
         // 在覆盖文件里就是这五行 —— 剩下那一个没得可绑。
-        assert!(!s.contains("llm-shim"), "llm-shim 本来就不发布端口：\n{s}");
+        //
+        // I12 起 llm-shim **会**出现在这份文件里，但只为了 `restart:` 那一行：
+        // 它名下不许有任何 `ports:`（有的话就是我们自己把一个内部服务发布出去了）
+        let shim: Vec<&str> = s
+            .lines()
+            .skip_while(|l| l.trim() != "llm-shim:")
+            .skip(1)
+            .take_while(|l| l.starts_with("    "))
+            .collect();
+        assert!(
+            shim.iter().all(|l| !l.contains("ports:")),
+            "llm-shim 本来就不发布端口，覆盖文件里也不许给它加：{shim:?}"
+        );
+    }
+
+    /// **六个服务一律 `restart: unless-stopped`**（I12 · R3+）。
+    ///
+    /// 2026-09-23 用户 Mac 上实测：内置运行时的虚拟机 stop / start 之后，
+    /// 六个容器一个都没起来。上游的 compose 其实已经写了这一条（`x-restart` 锚点），
+    /// 这里再写一遍是**把它钉在我们自己的文件里** —— 上游改了锚点也不受影响。
+    #[test]
+    fn 覆盖文件给六个服务都写了重启策略() {
+        let ports = Ports {
+            web: 3101,
+            api: 8101,
+            opencode: 3922,
+            postgres: 5443,
+            redis: 6480,
+        };
+        for bind in [WebBind::Local, WebBind::LegacyLan] {
+            let s = render_override(&ports, "docker.io/library", bind);
+            for svc in ["web", "api", "opencode", "llm-shim", "postgres", "redis"] {
+                let body: Vec<&str> = s
+                    .lines()
+                    .skip_while(|l| l.trim() != format!("{svc}:"))
+                    .skip(1)
+                    .take_while(|l| l.starts_with("    "))
+                    .collect();
+                assert!(
+                    body.iter().any(|l| l.trim() == "restart: unless-stopped"),
+                    "{svc} 没有重启策略（{bind:?}）：{body:?}"
+                );
+            }
+            // 只数**真正的映射行**：文件头的说明里也提到了这个字符串
+            let policy_lines = s
+                .lines()
+                .filter(|l| l.trim() == "restart: unless-stopped" && l.starts_with("    "))
+                .count();
+            assert_eq!(policy_lines, 6, "六个服务各一行，不多不少：\n{s}");
+        }
     }
 
     /// 用户 2026-09-21 19:05 的决定：免费版**只允许本机访问**。

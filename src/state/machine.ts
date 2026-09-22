@@ -25,7 +25,18 @@
 
 export type StateName =
   | 'Idle'
+  /**
+   * **正在检查 Hunter 状态**（I12 · R1）。
+   *
+   * 0.1.11 及之前，`Idle` 直接渲染欢迎页，`boot_state` 是异步回来的 ——
+   * 于是一台早就装好的机器，打开启动器会先闪一下「欢迎使用 Hunter 启动器」
+   * 再跳到运行面板。方案第三节第 1 条要的就是把那一闪去掉：
+   * 先显示一张「正在检查 Hunter 状态」，**查完再决定进哪一页**。
+   */
+  | 'Booting'
   | 'Welcome'
+  /** 本项目的容器没了，但上一次的数据卷还在（I12 · R5） */
+  | 'DataFound'
   | 'CheckDocker'
   | 'InstallDockerGuide'
   | 'CheckDaemon'
@@ -81,6 +92,8 @@ export type ErrorCode =
   // 实测限流只作用于 POST /v1/chat/completions，启动器用的 /quota 与 /v1/models
   // 都不受限，所以这一条平时打不到；留着是为了别把「等一下」显示成「key 无效」
   | 'E_RATE_LIMITED'
+  // I12 · R5：这台机器上的数据比要装的这一版新。硬装会真的弄坏数据，所以停在装之前
+  | 'E_DATA_DOWNGRADE'
   | 'E_NOT_IMPLEMENTED'
   | 'E_UNKNOWN'
 
@@ -104,6 +117,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_CONFIG_WRITE',
   'E_PROJECT_CONFLICT',
   'E_RATE_LIMITED',
+  'E_DATA_DOWNGRADE',
   'E_NOT_IMPLEMENTED',
   'E_UNKNOWN',
 ]
@@ -116,6 +130,12 @@ export type Event =
   | { type: 'BOOT' }
   /** 已经装过：直接进运行面板，不重走向导（第二次打开启动器） */
   | { type: 'RESUME_READY' }
+  /** 开机复查做完了，而这台机器上什么都没有 —— 该走向导（I12 · R1） */
+  | { type: 'BOOT_FRESH' }
+  /** 开机复查做完了：容器没了，但上一次的数据卷还在（I12 · R5） */
+  | { type: 'BOOT_DATA_FOUND' }
+  /** 在「检测到上次的数据」那一页上选了「继续安装（沿用这些数据）」 */
+  | { type: 'DATA_CONTINUE' }
   | { type: 'ACCEPT_TERMS' }
   | { type: 'DOCKER_MISSING' }
   | { type: 'DOCKER_FOUND' }
@@ -252,7 +272,22 @@ export function transition(state: State, event: Event): State {
 
   switch (state.name) {
     case 'Idle':
-      if (event.type === 'BOOT') return s('Welcome')
+      // I12 · R1：开机先进「正在检查」，**不再直接渲染欢迎页**
+      if (event.type === 'BOOT') return s('Booting')
+      if (event.type === 'RESUME_READY') return s('Ready')
+      return state
+
+    case 'Booting':
+      if (event.type === 'RESUME_READY') return s('Ready')
+      if (event.type === 'BOOT_DATA_FOUND') return s('DataFound')
+      if (event.type === 'BOOT_FRESH') return s('Welcome')
+      // 复查本身失败时 Booting 页会送 BOOT_FRESH（按全新安装走）——
+      // `FAIL` 在函数开头就被截去 Error 页了，那一页在这里不是想要的结果
+      return state
+
+    case 'DataFound':
+      // 「继续安装」= 沿用这些数据，从欢迎页正常往下走
+      if (event.type === 'DATA_CONTINUE' || event.type === 'ACCEPT_TERMS') return s('Welcome')
       if (event.type === 'RESUME_READY') return s('Ready')
       return state
 
@@ -387,6 +422,8 @@ export function stepperOf(state: State): { id: StepId; status: StepStatus }[] {
 // ── 页面路由 ──────────────────────────────────────────────────────────────
 
 export type PageId =
+  | 'booting'
+  | 'data-found'
   | 'welcome'
   | 'docker'
   | 'key'
@@ -399,7 +436,10 @@ export type PageId =
   | 'error'
 
 const STATE_PAGE: Record<Exclude<StateName, 'Error'>, PageId> = {
-  Idle: 'welcome',
+  // I12 · R1：`Idle` 不再落到欢迎页 —— 那一帧正是「先闪一下欢迎页」的来源
+  Idle: 'booting',
+  Booting: 'booting',
+  DataFound: 'data-found',
   Welcome: 'welcome',
   CheckDocker: 'docker',
   InstallDockerGuide: 'docker',

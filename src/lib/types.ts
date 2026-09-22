@@ -15,12 +15,131 @@ export interface AppInfo {
 }
 
 /** 启动时问一次：装过没有、在跑没有。决定直接进运行面板还是走向导。 */
+/** 打开启动器该进哪一页（I12 · R1 的五行表）。 */
+export type BootRoute = 'welcome' | 'dashboard' | 'data-found'
+
 export interface BootState {
   installed: boolean
   running: boolean
   locale: string
   hunterTag: string
   workDir: string
+  /** 该进哪一页。**以现状为准**，不只看 install.done（I12 · R1） */
+  route: BootRoute
+  posture: Posture
+  /** 一句人话，来自后端的实测复查 */
+  headline: string
+  /** 这一次有没有替用户补写安装标记 */
+  adopted: boolean
+  launcherVersion: string
+  installedAt: string
+  lastHealthyAt: string
+  /** route === 'data-found' 时，本项目名下还剩几个数据卷 */
+  volumeCount: number
+  elapsedMs: number
+}
+
+// ── 资源监控（I12 · R2）───────────────────────────────────────────────────
+
+export type MonitorLevel = 'ok' | 'warn' | 'crit'
+
+export interface HostMetrics {
+  cpuPct: number | null
+  cpuCores: number | null
+  memUsedBytes: number | null
+  memTotalBytes: number | null
+  memPressure: string | null
+  memPressureLevel: MonitorLevel
+  diskFreeBytes: number | null
+  diskTotalBytes: number | null
+  diskMount: string | null
+  diskLevel: MonitorLevel
+  /** 拿不到的每一项都在这里配一句原因（红线 1） */
+  reasons: Record<string, string>
+}
+
+export interface RuntimeMetrics {
+  applicable: boolean
+  reason: string
+  cpus: number | null
+  memTotalBytes: number | null
+  memUsedBytes: number | null
+  memLevel: MonitorLevel
+  diskUsedBytes: number | null
+  diskTotalBytes: number | null
+  diskLevel: MonitorLevel
+  reasons: Record<string, string>
+}
+
+export interface ServiceUsage {
+  service: string
+  cpuPct: number | null
+  memBytes: number | null
+  memLimitBytes: number | null
+  restartCount: number | null
+  oomKilled: boolean | null
+}
+
+export interface ServiceMetrics {
+  services: ServiceUsage[]
+  reason: string
+}
+
+export interface VolumeInfo {
+  name: string
+  short: string
+  labelMissing: boolean
+  mountpoint: string
+  sizeBytes: number | null
+}
+
+export interface StorageMetrics {
+  volumes: VolumeInfo[]
+  volumesTotalBytes: number | null
+  dbBytes: number | null
+  imagesBytes: number | null
+  imagesFound: number
+  reasons: Record<string, string>
+}
+
+// ── 重装前检测已有数据（I12 · R5）─────────────────────────────────────────
+
+export type DataDecision = 'fresh' | 'reuse' | 'missing-secrets' | 'downgrade' | 'backup-only'
+
+export interface DataCheck {
+  decision: DataDecision
+  volumes: VolumeInfo[]
+  hasDb: boolean
+  hasSecrets: boolean
+  hasJwtSecret: boolean
+  pgVersion: string | null
+  targetPgVersion: string | null
+  migrationMax: string | null
+  targetMigrationMax: string | null
+  tableCount: number | null
+  lastWrite: string | null
+  backups: number
+  deep: boolean
+  deepSkipped: string | null
+  headline: string
+  lines: string[]
+  elapsedMs: number
+}
+
+// ── 停止 / 启动 / 重启（I12 · R3）─────────────────────────────────────────
+
+export interface StackPlan {
+  builtinRunning: boolean
+  builtinMemGb: number
+  services: string[]
+}
+
+export interface StackOpResult {
+  headline: string
+  steps: string[]
+  ready: number
+  total: number
+  elapsedMs: number
 }
 
 export type DockerRuntimeKind =

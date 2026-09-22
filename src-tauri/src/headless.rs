@@ -56,6 +56,12 @@ pub struct Args {
     /// 为什么也要一个显式开关：不带它的 `--diagnose` 在文档里写的是
     /// 「打印诊断信息」—— 一条印东西的命令不该顺手改这台机器。
     pub fix: bool,
+    /// `--data-check --deep`：连数据卷里的表数与迁移版本一起问出来（I12 · R5）。
+    ///
+    /// 为什么要一个显式开关：深查要起一个 `--rm` 的一次性 postgres，十几秒，
+    /// 而且它会让 PostgreSQL 回放 WAL（往数据卷里写一点东西）。
+    /// 一条叫「check」的命令默认不该做这种事。
+    pub deep: bool,
     /// `--assist-replay <文件>`：把一份存下来的网关响应喂给动作白名单那道闸。
     /// **不发任何网络请求**，纯离线验证安全边界（见 [`cmd_assist_replay`]）。
     pub assist_replay: Option<String>,
@@ -104,6 +110,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         version: false,
         ai: false,
         fix: false,
+        deep: false,
         assist_replay: None,
         review: None,
         review_why: None,
@@ -219,6 +226,10 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.headless = true;
                 i += 1;
             }
+            // I12：`--data-check --deep` 才起那个一次性 postgres（十几秒）
+            "--deep" => {
+                a.deep = true;
+            }
             "--ai" => {
                 a.ai = true;
                 a.action = Some("diagnose".into());
@@ -234,7 +245,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
-            | "--backups" | "--check-net" => {
+            | "--backups" | "--check-net" | "--boot-state" | "--monitor" | "--data-check" => {
                 a.action = Some(v[i].trim_start_matches("--").to_string());
                 a.headless = true;
             }
@@ -278,6 +289,9 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --takeover release      不再管理它（它原地不动）
   hunter-launcher --feedback              生成脱敏诊断包 + 预填 issue 链接（**不发送**）
   hunter-launcher --check-net           查「虚拟机有没有 DNS」与「容器连不连得上模型网关」（I10）
+  hunter-launcher --boot-state          打开启动器时会走的那一次判定：该进哪一页、装没装过（I12 · R1）
+  hunter-launcher --monitor             三层资源：这台电脑 / Hunter 运行环境 / Hunter 各服务（I12 · R2）
+  hunter-launcher --data-check [--deep] 这台机器上还有没有上一次的数据（I12 · R5）。--deep 会起一个用完就删的 postgres 去数表
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
   hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 走系统授权框装）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
@@ -342,6 +356,10 @@ pub fn run(args: &Args) -> i32 {
         Some("diagnose") if args.ai => cmd_assist(&st, args),
         Some("diagnose") => cmd_diagnose(&st, args.code.as_deref(), args.fix),
         Some("check-net") => cmd_check_net(),
+        // I12：三条只读命令，验收脚本与排障都靠它们
+        Some("boot-state") => cmd_boot_state(),
+        Some("monitor") => cmd_monitor(),
+        Some("data-check") => cmd_data_check(args.deep),
         Some("check-update") => cmd_check_update(&st),
         Some("self-update") => cmd_self_update(),
         Some("upgrade") => cmd_upgrade(&st, args),
@@ -1511,6 +1529,229 @@ fn cmd_assist_replay(path: &str) -> AppResult<()> {
 ///
 /// 启动器那一半在 headless 下**只查不装**：装要么要替换 AppImage、要么要 root 装 `.deb`，
 /// 都不是一个没有界面的进程该背着用户做的事。查到了就把下载地址打出来。
+/// `--boot-state`：打开启动器时会走的那一次判定（I12 · R1）。
+///
+/// 界面上那一步是看不见的（「正在检查 Hunter 状态」不到 1 秒就跳走了），
+/// 所以把它做成一条命令：排障时能一眼看出**启动器认为这台机器是什么状态**、
+/// 凭什么这么认为、以及它有没有替用户补写安装标记。
+///
+/// **它不是纯只读的**：和界面上那一次完全一样，会写 `[install] launcher_version`，
+/// 并在「现状说它装好了而标记说没装」时补写标记 —— 这正是要验的那件事。
+fn cmd_boot_state() -> AppResult<()> {
+    title("Hunter 启动器 · 开机判定");
+    let t0 = std::time::Instant::now();
+    let mut cfg = crate::config::LauncherConfig::load();
+    let before_done = cfg.install.done;
+    let mut dirty = cfg.stamp_launcher_version();
+
+    let rv = crate::selfcheck::review(false);
+    let volumes = if rv.posture == crate::selfcheck::Posture::Absent {
+        crate::compose::volumes_of_project()
+            .map(|v| v.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let route = crate::commands::route_of(rv.posture, volumes);
+    let adopted = route == crate::commands::BootRoute::Dashboard && !cfg.install.done;
+    if route == crate::commands::BootRoute::Dashboard {
+        cfg.mark_installed(adopted);
+        dirty = true;
+        if rv.posture == crate::selfcheck::Posture::Healthy {
+            cfg.touch_healthy();
+        }
+    }
+    cfg.save_if(dirty);
+
+    println!("  现状     {}", rv.headline);
+    println!(
+        "  服务     {} / {} 就绪{}",
+        rv.ready,
+        rv.total,
+        match rv.web_status {
+            Some(s) => format!("，网页 HTTP {s}"),
+            None => "，网页这一次没应答".to_string(),
+        }
+    );
+    if volumes > 0 {
+        println!("  数据卷   本项目名下还有 {volumes} 个");
+    }
+    println!(
+        "  该进哪   {}",
+        match route {
+            crate::commands::BootRoute::Dashboard => "运行面板",
+            crate::commands::BootRoute::DataFound => "「检测到上次的数据」",
+            crate::commands::BootRoute::Welcome => "欢迎页（全新安装）",
+        }
+    );
+    println!(
+        "  安装标记 进来时 done={before_done}，现在 done={}{}",
+        cfg.install.done,
+        if adopted {
+            "（这一次替你补写的：检测到 Hunter 已在运行）"
+        } else {
+            ""
+        }
+    );
+    println!("  记录     启动器 {}，装于 {}，上次正常运行 {}",
+        blank_dash(&cfg.install.launcher_version),
+        blank_dash(&cfg.install.at),
+        blank_dash(&cfg.install.last_healthy_at));
+    println!("\n  逐条证据：");
+    for l in &rv.lines {
+        println!("    · {l}");
+    }
+    println!("\n  用时 {} 毫秒（含复查 {} 毫秒）", t0.elapsed().as_millis(), rv.elapsed_ms);
+    Ok(())
+}
+
+fn blank_dash(s: &str) -> &str {
+    if s.is_empty() {
+        "—"
+    } else {
+        s
+    }
+}
+
+/// `--monitor`：三层资源（I12 · R2）。
+///
+/// 界面上那三张卡的数字就是这里打出来的这一组 —— 同一个函数、同一次采样。
+/// 验收时拿它和 `top` / `free` / `df` / `docker stats` 逐行对照。
+fn cmd_monitor() -> AppResult<()> {
+    title("Hunter 启动器 · 资源监控");
+    let h = crate::monitor::host();
+    println!("  [这台电脑]（sysinfo）");
+    println!("    CPU        {}{}",
+        opt_pct(h.cpu_pct),
+        h.cpu_cores.map(|c| format!("（{c} 核）")).unwrap_or_default());
+    println!("    内存       {}", opt_pair(h.mem_used_bytes, h.mem_total_bytes));
+    println!("    内存压力   {}", h.mem_pressure.clone().unwrap_or_else(|| why(&h.reasons, "memPressure")));
+    println!("    系统盘     {}{}",
+        opt_pair(h.disk_free_bytes, h.disk_total_bytes),
+        h.disk_mount.as_deref().map(|m| format!("（{m}，前一个数是剩余）")).unwrap_or_default());
+    for (k, v) in &h.reasons {
+        println!("    ! {k}：{v}");
+    }
+
+    let r = crate::monitor::runtime();
+    println!("\n  [Hunter 运行环境]（limactl shell colima-hunter）");
+    if !r.applicable {
+        println!("    不适用：{}", r.reason);
+    } else {
+        println!("    分配       {} 核 · {}", r.cpus.map(|c| c.to_string()).unwrap_or_else(|| "—".into()), opt_bytes(r.mem_total_bytes));
+        println!("    内存已用   {}", opt_pair(r.mem_used_bytes, r.mem_total_bytes));
+        println!("    磁盘已用   {}", opt_pair(r.disk_used_bytes, r.disk_total_bytes));
+        for (k, v) in &r.reasons {
+            println!("    ! {k}：{v}");
+        }
+    }
+
+    let s = crate::monitor::services();
+    println!("\n  [Hunter 各服务]（docker stats --no-stream + docker inspect）");
+    if s.services.is_empty() {
+        println!("    {}", s.reason);
+    }
+    for u in &s.services {
+        println!(
+            "    {:<10} {:>7}  {:>10}  重启 {}{}",
+            u.service,
+            opt_pct(u.cpu_pct),
+            opt_bytes(u.mem_bytes),
+            u.restart_count.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+            if u.oom_killed == Some(true) { "  ← 被系统按内存不足杀掉过" } else { "" }
+        );
+    }
+
+    let st = crate::monitor::storage();
+    println!("\n  [数据卷与镜像]（docker volume ls + docker system df -v + docker image inspect）");
+    for v in &st.volumes {
+        println!("    {:<34} {}", v.short, opt_bytes(v.size_bytes));
+    }
+    println!("    {:<34} {}", "合计", opt_bytes(st.volumes_total_bytes));
+    println!("    {:<34} {}（六个里查到 {}）", "镜像", opt_bytes(st.images_bytes), st.images_found);
+    for (k, v) in &st.reasons {
+        println!("    ! {k}：{v}");
+    }
+    Ok(())
+}
+
+fn why(m: &std::collections::BTreeMap<String, String>, k: &str) -> String {
+    m.get(k).cloned().unwrap_or_else(|| "—".to_string())
+}
+
+fn opt_pct(v: Option<f32>) -> String {
+    v.map(|x| format!("{x:.1}%")).unwrap_or_else(|| "—".into())
+}
+
+fn opt_bytes(v: Option<u64>) -> String {
+    v.map(crate::assist::probe::human_bytes)
+        .unwrap_or_else(|| "—".into())
+}
+
+fn opt_pair(a: Option<u64>, b: Option<u64>) -> String {
+    match (a, b) {
+        (Some(x), Some(y)) => format!(
+            "{} / {}",
+            crate::assist::probe::human_bytes(x),
+            crate::assist::probe::human_bytes(y)
+        ),
+        (Some(x), None) => crate::assist::probe::human_bytes(x),
+        _ => "—".to_string(),
+    }
+}
+
+/// `--data-check [--deep]`：这台机器上还有没有上一次的数据（I12 · R5）。
+fn cmd_data_check(deep: bool) -> AppResult<()> {
+    title(if deep {
+        "Hunter 启动器 · 检测已有数据（深查：会起一个用完就删的 postgres）"
+    } else {
+        "Hunter 启动器 · 检测已有数据（浅查：一个字节都不写）"
+    });
+    let c = if deep {
+        crate::datacheck::probe_deep()
+    } else {
+        crate::datacheck::probe()
+    };
+    println!("  结论     {}", c.decision.cn());
+    println!("  一句话   {}", c.headline);
+    println!("  拦不拦   {}", if c.decision.blocks_install() { "拦 —— 这一档不许往下装" } else { "不拦" });
+    println!(
+        "  数据库   {} · 密钥卷 {} · JWT_SECRET {}",
+        yesno(c.has_db),
+        yesno(c.has_secrets),
+        yesno(c.has_jwt_secret)
+    );
+    if let Some(v) = &c.pg_version {
+        println!("  PG 版本  数据卷里 {v} → 目标镜像 {}", c.target_pg_version.clone().unwrap_or_else(|| "—".into()));
+    }
+    if c.deep {
+        println!(
+            "  深查     {} 张表 · 最近写入 {} · 已应用到 {} → 目标 {}",
+            c.table_count.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+            c.last_write.clone().unwrap_or_else(|| "—".into()),
+            c.migration_max.clone().unwrap_or_else(|| "—".into()),
+            c.target_migration_max.clone().unwrap_or_else(|| "—".into()),
+        );
+    }
+    if let Some(sk) = &c.deep_skipped {
+        println!("  没深查   {sk}");
+    }
+    println!("\n  逐条证据：");
+    for l in &c.lines {
+        println!("    · {l}");
+    }
+    println!("\n  用时 {} 毫秒", c.elapsed_ms);
+    Ok(())
+}
+
+fn yesno(b: bool) -> &'static str {
+    if b {
+        "在"
+    } else {
+        "不在"
+    }
+}
+
 /// `--check-net`：把 I10 那两项必检当成一条命令（技术方案 §6 的命令行面）。
 ///
 /// 两件事，都**真的去做一次**，不猜：

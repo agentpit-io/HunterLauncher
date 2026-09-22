@@ -170,6 +170,34 @@ pub enum Action {
     Nothing,
 }
 
+/// 托盘的「启动」：运行环境没起就先起它（和界面上的 `stack_op` 同一条路，I12 · R3）。
+fn stack_start_from_tray() -> crate::err::AppResult<()> {
+    crate::config::mark_stopped_by_user(false);
+    let eff = crate::runtime::effective::current();
+    if !eff.running && eff.builtin_down() {
+        crate::linfo!("托盘启动：运行环境没在跑，先起虚拟机");
+        let mut say = |t: &str| crate::linfo!("托盘启动运行环境：{t}");
+        let mut nb = |_: u64, _: u64| {};
+        let no_cancel = || false;
+        let mut pr = crate::runtime::builtin::Progress {
+            say: &mut say,
+            bytes: &mut nb,
+            cancel: &no_cancel,
+        };
+        crate::runtime::builtin::start(&mut pr)?;
+        let mut say2 = |t: &str| crate::linfo!("托盘启动检查 DNS：{t}");
+        let mut pr2 = crate::runtime::builtin::Progress {
+            say: &mut say2,
+            bytes: &mut nb,
+            cancel: &no_cancel,
+        };
+        if let Err(e) = crate::runtime::vmdns::ensure(&mut pr2) {
+            crate::lwarn!("托盘启动：没查成虚拟机的 DNS —— {}", e.msg);
+        }
+    }
+    compose::up()
+}
+
 pub fn handle_menu(id: &str) -> Action {
     match id {
         ID_OPEN => Action::OpenHunter,
@@ -292,9 +320,15 @@ pub fn run_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
         }
         Action::Stack(action) => {
             crate::linfo!("托盘：{action}");
+            // I12 · R3：托盘这三项和面板上那三个按钮走同一条路 ——
+            // 起之前先把运行环境弄好、停之后记一笔「是你自己停的」。
+            // 唯一的差别是托盘上没地方问「顺便停运行环境吗」，所以那一问只在界面上有
             let r = match action {
-                "start" => compose::up().map(|_| "已启动".to_string()),
-                "stop" => compose::stop().map(|_| "已停止".to_string()),
+                "start" => stack_start_from_tray().map(|_| "已启动".to_string()),
+                "stop" => compose::stop().map(|_| {
+                    crate::config::mark_stopped_by_user(true);
+                    "已停止".to_string()
+                }),
                 _ => compose::restart().map(|_| "已重启".to_string()),
             };
             let msg = match r {

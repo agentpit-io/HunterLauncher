@@ -101,6 +101,17 @@ pub fn instance() -> String {
     format!("colima-{}", builtin::PROFILE)
 }
 
+/// 内置运行时那一份 `limactl` 的绝对路径。没装就说清楚 ——
+/// I12 的资源监控也要走它，所以从 `fn limactl()` 上面再包一层对外的。
+pub fn limactl_path() -> AppResult<String> {
+    limactl().ok_or_else(|| {
+        AppError::new(
+            Code::NotImplemented,
+            "内置运行时里没有 limactl，做不了这一步。".to_string(),
+        )
+    })
+}
+
 fn limactl() -> Option<String> {
     let p = crate::paths::runtime_dist()
         .join("lima")

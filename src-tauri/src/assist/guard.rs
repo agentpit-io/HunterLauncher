@@ -750,6 +750,79 @@ pub fn argv_vm_dns(argv: &[String]) -> AppResult<()> {
     ))
 }
 
+/// **在虚拟机里采资源指标**（I12 · R2）。
+///
+/// 和 [`argv_vm_dns`] 分开，是因为两张表的性质完全不同：那一张里有 `sudo`
+/// （要改 `/etc/resolv.conf`），这一张**一条 `sudo` 都没有、一个字节都不写**。
+/// 采指标这件事每 30 秒就跑一次，不该共用一张带写权限的白名单。
+///
+/// 形状只认一种：`limactl shell --workdir / colima-hunter <表里的命令>`。
+/// `limactl` 还必须是 `~/.hunter/runtime` 里那一份（I9 的隔离守卫），
+/// 而 `LIMA_HOME` / `COLIMA_HOME` 由 `proc::isolation_guard` 再核一遍。
+pub fn argv_vm_metrics(argv: &[String]) -> AppResult<()> {
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if base.trim_end_matches(".exe") != "limactl" {
+        return Err(reject_audited(
+            "argv_vm_metrics",
+            format!("采虚拟机指标只能用 limactl，收到「{}」，拒绝。", safe(prog)),
+        ));
+    }
+    if !under_runtime(prog) {
+        return Err(reject_audited(
+            "argv_vm_metrics",
+            format!(
+                "这条命令用的 limactl 不在 {} 里 —— 那不是 Hunter 自己那一份，拒绝。",
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
+            ),
+        ));
+    }
+    let inst = crate::runtime::vmdns::instance();
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let ["shell", "--workdir", "/", target, cmd @ ..] = rest.as_slice() else {
+        return Err(reject_audited(
+            "argv_vm_metrics",
+            format!(
+                "采指标只认「limactl shell --workdir / {inst} …」这一种形状，收到「{}」，拒绝。",
+                safe(&argv.join(" "))
+            ),
+        ));
+    };
+    if *target != inst {
+        return Err(reject_audited(
+            "argv_vm_metrics",
+            format!(
+                "这条命令指向虚拟机「{}」，而 Hunter 自己那台叫「{inst}」，拒绝。",
+                safe(target)
+            ),
+        ));
+    }
+    if VM_METRIC_COMMANDS.contains(&cmd) {
+        return Ok(());
+    }
+    Err(reject_audited(
+        "argv_vm_metrics",
+        format!(
+            "「{}」不在「采指标能跑的那张表」里（那张表有 {} 条，每一条都逐字写死、全是只读），拒绝。",
+            safe(&cmd.join(" ")),
+            VM_METRIC_COMMANDS.len()
+        ),
+    ))
+}
+
+/// 采资源指标时**允许在虚拟机里跑的全部命令**（I12 · R2）。
+///
+/// 全部只读、全部不带 `sudo`。加新条目之前先问一句：它会不会写任何东西。
+pub const VM_METRIC_COMMANDS: &[&[&str]] = &[
+    &["free", "-b"],
+    &["df", "-B1", "/var/lib/docker"],
+];
+
 const VM_TMP_RESOLV: &str = "/tmp/hunter-resolv.conf";
 const VM_TMP_UNIT: &str = "/tmp/hunter-dns.service";
 

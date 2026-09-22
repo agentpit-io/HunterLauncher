@@ -28,7 +28,11 @@ SETTLE="${SETTLE:-9}"
 # （用户 Mac 上 0.1.8 那次的现场），同时也是「启动器已经替你做了这几步」那一块的样子
 # I11 新增一页：error-recovered —— 错误页复查发现「其实已经好了」，
 # 界面自己切到运行面板（截出来的是那一跳之后顶上那条绿色横幅）
-PAGES=(welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error error-builtin error-recovered)
+# I12 新增两页：booting（打开启动器的第一屏「正在检查 Hunter 状态」，
+# 它在真机上停留不到 1 秒，但那正是「不再闪欢迎页」的证据，要留档）、
+# data-found（容器没了、数据卷还在时的「检测到上次的数据」）。
+# dashboard 那一页这一轮也变了 —— 上半部多了三层资源（R2）
+PAGES=(booting data-found welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

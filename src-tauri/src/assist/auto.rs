@@ -395,7 +395,15 @@ impl Orchestrator {
                 Ok(None) => &[Step::Start],
                 Err(o) => return *o,
             },
-            Preflight::FullInstall => &[Step::Docker, Step::Prepare, Step::Pull, Step::Start],
+            Preflight::FullInstall => {
+                // **写配置之前先看一眼有没有上一次的数据**（I12 · R5）。
+                // 这一步只读；查到「不能装」的那一档就在这里停住，
+                // 绝不让安装流程走到会把用户数据弄坏的地方
+                if let Some(o) = self.data_precheck() {
+                    return o;
+                }
+                &[Step::Docker, Step::Prepare, Step::Pull, Step::Start]
+            }
         };
 
         for step in steps.iter().copied() {
@@ -512,6 +520,101 @@ impl Orchestrator {
         plan
     }
 
+    /// **重装之前先看看有没有旧数据**（I12 · R5）。
+    ///
+    /// 只在「完整安装」那条路上做，而且**只读**（浅查：`docker volume ls` +
+    /// 一个 `:ro` 挂载的一次性容器读 `PG_VERSION` + 读 `.env`，一个字节都不写）。
+    ///
+    /// 四档结果对应三种做法：
+    ///
+    /// | 结果 | 做法 | 为什么 |
+    /// |---|---|---|
+    /// | 全新 / 只有备份 | 照常装 | 没有要保护的东西 |
+    /// | 都在（`Reuse`） | 照常装，并在过程流里说清「会直接沿用」 | 数据卷不删、`JWT_SECRET` 沿用，compose 起来就接上了 |
+    /// | 缺密钥卷 | **照常装**，但把后果说清楚 | 见下 |
+    /// | 降级 | **停在这里**，返回失败 | 硬装会把数据目录弄坏，这是不可逆的 |
+    ///
+    /// ## 「缺密钥卷」为什么不拦（与方案 R5 的偏离，写进报告）
+    ///
+    /// 方案 R5 写的是「停下来提示风险，给两个选项：从备份恢复密钥卷 /
+    /// 放弃这部分加密配置」。I12 只做到一半：**「从备份恢复密钥卷」这个能力
+    /// 要等 I13 的 R6**（现在的 `backup.rs` 只备份数据库与配置，不备份卷）。
+    /// 摆一个点不动的选项比不摆更糟。而另一个选项「放弃这部分加密配置」
+    /// 恰恰就是「照常装」——它不删任何东西，只是那几项加密配置解不开。
+    /// 所以这一档如实说清后果、照常往下走，等 I13 把恢复那条路补上再改成两选一。
+    fn data_precheck(&mut self) -> Option<Outcome> {
+        let t = Instant::now();
+        let ev = self
+            .bus
+            .emit(EventDraft::new(Kind::Step, "看看有没有上一次的数据"));
+        self.tick("检测已有数据");
+        let c = crate::datacheck::probe();
+        let mut d = EventDraft::new(Kind::Analyze, "查到的数据")
+            .under(ev)
+            .status(Status::Ok)
+            .detail(c.headline.clone());
+        for l in &c.lines {
+            d = d.tech(l.clone());
+        }
+        self.bus.emit(d);
+
+        use crate::datacheck::Decision;
+        match c.decision {
+            Decision::Downgrade => {
+                self.bus.finish(
+                    ev,
+                    Status::Failed,
+                    &c.headline,
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                crate::lwarn!("R5 拦下了这次安装：{}", c.headline);
+                Some(self.fail(
+                    Code::DataDowngrade,
+                    &format!(
+                        "{}\n这次安装到此为止 —— 硬装下去会把你现在的数据弄坏，那是没法撤销的。\n                         可行的两条路：把 Hunter 升到当时那一版再装；或者从备份恢复。",
+                        c.headline
+                    ),
+                ))
+            }
+            Decision::MissingSecrets => {
+                self.bus.finish(
+                    ev,
+                    Status::Warn,
+                    &c.headline,
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                self.bus.emit(
+                    EventDraft::new(Kind::Analyze, "这次安装会怎么处理")
+                        .under(ev)
+                        .status(Status::Warn)
+                        .detail(
+                            "数据库、会话、自建技能全都保留，登录也不会失效。                             只有用那把密钥加密过的几项配置解不开，需要你在 Hunter 里重新填一次。",
+                        )
+                        .tech("密钥卷会重新建一个空的，启动器不会去动数据库里的任何一行"),
+                );
+                None
+            }
+            Decision::Reuse => {
+                self.bus.finish(
+                    ev,
+                    Status::Ok,
+                    &c.headline,
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                None
+            }
+            Decision::Fresh | Decision::BackupOnly => {
+                self.bus.finish(
+                    ev,
+                    Status::Ok,
+                    &c.headline,
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                None
+            }
+        }
+    }
+
     /// 「这一套已经在跑了」的收尾：**一个安装动作都不做**。
     ///
     /// `fixed` 有值时表示刚才只把某几个服务弄起来过 —— 那句结论要跟着改，
@@ -525,11 +628,13 @@ impl Orchestrator {
         self.recover_bindings(r);
         // 它确实装好了 —— 让下一次打开启动器直接进运行面板，不再重走向导
         let mut cfg = LauncherConfig::load();
-        if !cfg.install.done {
-            cfg.install.done = true;
-            cfg.install.at = crate::timefmt::now_shanghai();
-            let _ = cfg.save();
-        }
+        // I12 · R1：`done` 之外还要记全「谁装的、装在哪、上一次好好的是什么时候」。
+        // `adopted` 为真 = 这条记录是「检测到它已经在跑」补的，不是安装流程写的 ——
+        // 这条路正是 2026-09-22 那次现场缺的那一笔
+        let adopted = !cfg.install.done;
+        cfg.mark_installed(adopted);
+        cfg.touch_healthy();
+        let _ = cfg.save();
         state.set_config(cfg.clone());
         let url = r
             .web_url
