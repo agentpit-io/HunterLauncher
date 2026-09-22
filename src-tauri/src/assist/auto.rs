@@ -66,8 +66,11 @@ pub type AnswerReader = Box<dyn Fn(&str, &[Choice]) -> Option<String> + Send + S
 pub const MAX_ROUNDS_PER_ISSUE: usize = 4;
 /// 整次安装最多几个回合。防止在多个问题之间来回兜圈。
 pub const MAX_ROUNDS_TOTAL: usize = 10;
-/// 整次安装的 token 上限。日额度 30 万的 20%。
-pub const MAX_TOKENS: u64 = 60_000;
+/// 整次安装的 token 上限。
+///
+/// 原来按「日额度 30 万的 20%」定为 6 万；2026-09-22 内置额度调到每天 1000 万后
+/// 放宽到 20 万（仍只占日额度 2%），让 `MAX_ROUNDS_TOTAL` 的回合数先于 token 预算起作用。
+pub const MAX_TOKENS: u64 = 200_000;
 
 /// 安装的几个步骤。**失败重跑的就是这一个枚举里的一项**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2181,7 +2184,7 @@ mod tests {
     fn 预算就是设计文档里那三个数() {
         assert_eq!(MAX_ROUNDS_PER_ISSUE, 4);
         assert_eq!(MAX_ROUNDS_TOTAL, 10);
-        assert_eq!(MAX_TOKENS, 60_000);
+        assert_eq!(MAX_TOKENS, 200_000);
         assert_eq!(super::super::ai::TIMEOUT, Duration::from_secs(45));
     }
 
@@ -2198,7 +2201,7 @@ mod tests {
         o.tokens = MAX_TOKENS;
         let s = o.budget_stop(1).expect("到上限要停");
         assert!(
-            s.contains("60000") || s.contains(&MAX_TOKENS.to_string()),
+            s.contains("200000") || s.contains(&MAX_TOKENS.to_string()),
             "{s}"
         );
     }
