@@ -1,0 +1,29 @@
+=== D1 · docker 可用、这一套还没装完 → 该说「接着往下装」（零点击跑掉 Safe 动作）===
+## 启动器已经替你做了这几步（全自动档）
+✓ 重新分配被占用的端口：web：3100 → 3101
+api：8100 → 8101
+opencode：3921 → 3922
+postgres：5442 → 5443
+redis：6479 → 6480
+已写进 launcher.toml 与 docker-compose.launcher.yml。改完要重启容器才生效。
+
+## Docker 现在可用，而这一套还没装完 —— 界面上会自动接着往下装
+
+## 诊断结论（确定性规则 · unknown）
+
+=== D2 · 已经装好了（6/6 在跑）→ 不许再自动装一遍 ===
+## 诊断结论（确定性规则 · unknown）
+
+=== D3 · 停掉 daemon → 诊断助手自己跑（这台是 SSH 无 tty 会话，polkit 没处问密码）===
+## 启动器已经替你做了这几步（全自动档）
+✕ 启动 systemd 的 docker 服务：「启动 systemd 的 docker 服务」没成功（退出码 Some(1)）：See system logs and 'systemctl status docker.service' for details.；用系统授权框再试也没成：这是一个既没有图形界面、标准输入也不是终端的会话（没有 DISPLAY / WAYLAND_DISPLAY，stdin 也不是 tty），polkit 没有地方问你要密码。
+
+## 诊断结论（确定性规则 · daemon-down-app-installed）
+systemd 的 docker 服务 装着，但没在跑
+Docker 的客户端在（/usr/bin/docker），但连不上后台服务。
+这台机器上 systemd 的 docker 服务 是装了的，只是进程没起来（判据：systemctl is-active docker）。
+启动器会替你把它启动起来，再等它就绪。
+
+建议动作：启动 systemd 的 docker 服务（会改动这台机器）
+  为什么：Docker 客户端在、只是后台服务没起来时，把它拉起来就好了
+  会执行：/usr/bin/systemctl start docker

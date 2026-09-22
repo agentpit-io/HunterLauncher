@@ -146,7 +146,7 @@ pub const ACTIONS: &[Spec] = &[
         level: Level::Safe,
         title: "启动容器运行时",
         why: "Docker 客户端在、只是后台服务没起来时，把它拉起来就好了",
-        desc: "启动指定的容器运行时。参数 app 只能是：orbstack / docker-desktop / colima / systemd。",
+        desc: "启动**用户自己装的**容器运行时。参数 app 只能是：orbstack / docker-desktop / colima / systemd。               colima 这一档只会去起用户 ~/.colima 里本来就有的 profile，绝不新建；               Hunter 自己的内置运行时**不走这一条**，走 start_builtin_runtime。",
         params: &[("app", "orbstack | docker-desktop | colima | systemd")],
         user_only: false,
     },
@@ -314,6 +314,16 @@ pub const ACTIONS: &[Spec] = &[
         title: "启动内置运行时的虚拟机",
         why: "内置运行时装好了，但它的虚拟机没在跑",
         desc: "对已经装好的内置运行时执行 colima start（profile 固定为 hunter），               并把 DOCKER_HOST 指到它的 socket。没有参数。",
+        params: &[],
+        user_only: false,
+    },
+    // ── I9 ────────────────────────────────────────────────────────────
+    Spec {
+        id: "repair_builtin_runtime",
+        level: Level::Safe,
+        title: "清掉上次没装成功的残骸再重建",
+        why: "内置运行时装了一半 / 虚拟机处在说不清的中间态时，起它只会一直失败",
+        desc: "删掉 colima 的 hunter profile 与它的 lima 实例目录，把内容对不上清单的文件删掉重下，               然后重新起虚拟机。**只动 ~/.hunter/runtime 里的东西**：用户的 ~/.colima、~/.lima、               别的容器与数据卷一个字节都不碰。下载回来的二进制与虚拟机镜像只有校验不过才会重下。没有参数。",
         params: &[],
         user_only: false,
     },
@@ -631,6 +641,28 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             let argv = crate::runtime::builtin::start_argv()?;
             p.argv = argv;
         }
+        "repair_builtin_runtime" => {
+            let broken = crate::runtime::builtin::broken_items();
+            let mut s = format!(
+                "删掉 colima 的 {} profile 与它的 lima 实例目录（都在 {} 里），再重新起一次虚拟机",
+                crate::runtime::builtin::PROFILE,
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
+            );
+            if broken.is_empty() {
+                s.push_str("；已经下好的文件按清单核过，内容都对得上，一个字节都不用重下");
+            } else {
+                s.push_str(&format!(
+                    "；另有 {} 个文件内容对不上清单（{}），会删掉重下",
+                    broken.len(),
+                    broken
+                        .iter()
+                        .map(|(i, _)| i.label())
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ));
+            }
+            p.summary = Some(s);
+        }
         "uninstall_builtin_runtime" => {
             p.summary = Some(format!(
                 "删掉 colima 的 {} profile 与 {}（都是启动器自己生成的）",
@@ -931,6 +963,23 @@ pub fn execute_as(
             };
             crate::runtime::builtin::start(&mut pr)?
         }
+        "repair_builtin_runtime" => {
+            let mut said = |s: &str| crate::linfo!("重建内置运行时：{s}");
+            let mut nb = |_: u64, _: u64| {};
+            let no_cancel = || false;
+            let mut pr = crate::runtime::builtin::Progress {
+                say: &mut said,
+                bytes: &mut nb,
+                cancel: &no_cancel,
+            };
+            let cleaned = crate::runtime::builtin::repair(&mut pr)?;
+            // 清完就**接着起**：只清不起对用户来说等于什么都没发生
+            if crate::runtime::builtin::needs_download() {
+                crate::runtime::builtin::install(&mut pr)?;
+            }
+            let started = crate::runtime::builtin::start(&mut pr)?;
+            format!("{cleaned}；{started}")
+        }
         "uninstall_builtin_runtime" => crate::runtime::builtin::uninstall()?,
         "reuse_existing_hunter" => {
             let want = call.args.get("project").map(|s| s.trim()).unwrap_or("");
@@ -1170,6 +1219,19 @@ pub fn runtime_label(app: &str) -> &'static str {
 /// mac 上用 `open -a`（系统自己去找 .app，比我们猜路径可靠）；Linux 上只有 systemd
 /// 这一条；Colima 三平台都是 `colima start`。找不到对应的做法就**如实拒绝**，
 /// 不硬凑一条大概能跑的命令。
+/// 用户**自己**装的那个 colima 可执行文件（不是我们下到 `~/.hunter/runtime` 里的）。
+///
+/// [`which::resolve`] 把内置运行时的 `bin` 排在所有清单最前面（I7 有意为之），
+/// 所以这里不能直接用它的结果 —— 那正是 0.1.8 拿错 colima 的那一步。
+fn user_colima_bin() -> Option<String> {
+    let ours = crate::paths::runtime_dir();
+    let p = which::resolve("colima").resolved?;
+    if std::path::Path::new(&p).starts_with(&ours) {
+        return None;
+    }
+    Some(p)
+}
+
 fn start_runtime_argv(app: &str) -> AppResult<Vec<String>> {
     match app {
         "orbstack" | "docker-desktop" => {
@@ -1190,14 +1252,45 @@ fn start_runtime_argv(app: &str) -> AppResult<Vec<String>> {
             };
             Ok(vec![open, "-a".into(), name.into()])
         }
+        // **这一档只针对用户自己装的 colima**（I9 的 P0-2）。
+        //
+        // 0.1.8 在用户 Mac 上规划出来的那条命令是
+        // `~/.hunter/runtime/bin/colima start` —— 我们自己下的那份 colima、
+        // 不带 profile、不带 COLIMA_HOME。它在用户家目录里新建并起了一台
+        // 和 Hunter 毫无关系的 `default` 虚拟机。这里把两件事分开：
+        //
+        // * 我们自己的那一套 → 如实拒绝，并指明该走 `start_builtin_runtime`；
+        // * 用户自己的那一套 → 必须指名道姓起他**原本就有**的那个 profile。
         "colima" => {
-            let c = which::resolve("colima").resolved.ok_or_else(|| {
+            let profiles = crate::runtime::effective::user_colima_profiles();
+            let Some(profile) = profiles.first().cloned() else {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    if crate::runtime::effective::builtin_state().present() {
+                        format!(
+                            "这台机器上的 colima 是 Hunter 自己下到 {} 里的那一份，不是你装的 —— \
+                             起它要用 start_builtin_runtime（profile {}、COLIMA_HOME 指向 Hunter 自己的目录），\
+                             不能走 start_runtime。",
+                            crate::redact::mask_home(
+                                &crate::paths::runtime_dir().to_string_lossy()
+                            ),
+                            crate::runtime::builtin::PROFILE
+                        )
+                    } else {
+                        "你的 ~/.colima 里一个 profile 都没有 —— 启动器不会替你新建虚拟机。"
+                            .to_string()
+                    },
+                ));
+            };
+            // 用户自己的 colima 可执行文件：**不能用我们自己那一份**
+            let c = user_colima_bin().ok_or_else(|| {
                 AppError::new(
                     Code::NotImplemented,
-                    "这台机器上没找到 colima。".to_string(),
+                    "你的 ~/.colima 里有 profile，但这台机器上找不到你自己装的 colima 命令。"
+                        .to_string(),
                 )
             })?;
-            Ok(vec![c, "start".into()])
+            Ok(vec![c, "start".into(), "--profile".into(), profile])
         }
         "systemd" => {
             if !cfg!(target_os = "linux") {
@@ -1523,5 +1616,88 @@ pub(crate) mod tests {
         let e =
             plan(&Call::new("hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2")).expect_err("该拒绝");
         assert!(!e.msg.contains("q6sK"), "{}", e.msg);
+    }
+
+    // ── I9 的 P0-2 ──────────────────────────────────────────────────────
+
+    /// 造出「用户 Mac 上 0.1.8 那次」的现场：`~/.hunter/runtime/bin/colima` 在，
+    /// 而用户自己的 `~/.colima` 里一个 profile 都没有。
+    ///
+    /// 这时 `start_runtime(colima)` **必须拒绝并指路**，不能规划出那条裸命令。
+    #[test]
+    fn 内置运行时的_colima_不走_start_runtime() {
+        let _g = crate::paths::test_home("act-colima");
+        let bin = crate::paths::runtime_bin();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("colima"), b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("colima"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let e = plan(&Call::with("start_runtime", "app", "colima"))
+            .expect_err("内置那份 colima 不该被 start_runtime 规划出来");
+        // 既要拒绝，也要**说清该走哪条路** —— 只说「不行」等于把问题丢回给下一个人
+        assert!(
+            e.msg.contains("start_builtin_runtime") || e.msg.contains("一个 profile 都没有"),
+            "{}",
+            e.msg
+        );
+    }
+
+    /// `start_builtin_runtime` 规划出来的那条命令：**profile 必须写死 hunter**。
+    #[test]
+    fn 内置运行时那条命令一定带_profile_hunter() {
+        let _g = crate::paths::test_home("act-builtin-argv");
+        let bin = crate::paths::runtime_bin();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("colima"), b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("colima"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let p = plan(&Call::new("start_builtin_runtime")).expect("该规划得出来");
+        let line = p.command_line();
+        assert!(line.contains("--profile"), "{line}");
+        assert!(
+            line.contains(crate::runtime::builtin::PROFILE),
+            "profile 必须是 hunter：{line}"
+        );
+        // 这条命令用的必须是**我们自己**那份 colima
+        assert!(
+            p.argv[0].starts_with(&crate::paths::runtime_dir().to_string_lossy().to_string()),
+            "{:?}",
+            p.argv
+        );
+    }
+
+    /// 起虚拟机时给子进程的环境：`COLIMA_HOME` / `LIMA_HOME` **必须指向
+    /// `~/.hunter/runtime`**，一个字节都不许落在用户的 `~/.colima`。
+    #[test]
+    fn 起虚拟机的环境变量钉在_hunter_自己的目录里() {
+        let _g = crate::paths::test_home("act-builtin-env");
+        let pairs = crate::runtime::builtin::env_pairs();
+        let rt = crate::paths::runtime_dir().to_string_lossy().into_owned();
+        for key in ["COLIMA_HOME", "LIMA_HOME", "DOCKER_CONFIG"] {
+            let v = pairs
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("少了 {key}"));
+            assert!(v.starts_with(&rt), "{key} 指到了 {v}，不在 {rt} 里");
+        }
+    }
+
+    /// I9 新加的那条动作要在表里，而且级别是 Safe（只动 `~/.hunter/runtime`）。
+    #[test]
+    fn 重建内置运行时这条动作在表里且级别正确() {
+        let s = spec("repair_builtin_runtime").expect("该在表里");
+        assert_eq!(s.level, Level::Safe);
+        assert!(!s.user_only);
+        // 描述里要写清「只动 ~/.hunter/runtime」—— 这是给模型看的边界
+        assert!(s.desc.contains("~/.hunter/runtime"), "{}", s.desc);
     }
 }

@@ -460,6 +460,21 @@ export interface AssistState {
   done: boolean
   /** 整份诊断报文（已脱敏）。「复制诊断信息」用的就是它 */
   reportText: string
+  /**
+   * 现在可以接着往下装了（I9 的 P0-3）：docker 好了，而这一套还没装完。
+   * 后端已经自己把安装跑起来了，界面只要回到过程流那一页。
+   */
+  canResumeInstall: boolean
+  /** 全自动档下规则层**自己跑掉**的那几个动作。做了什么必须看得见 */
+  autoRan: AssistAutoRan[]
+}
+
+/** 规则层自动执行过的一条。 */
+export interface AssistAutoRan {
+  id: string
+  title: string
+  ok: boolean
+  text: string
 }
 
 /** 「查看本机将要发送的数据」。lines 就是 queue.jsonl 的原文。 */

@@ -1,0 +1,61 @@
+
+=================== 场景 B · 内置运行时残骸 + 没有可用 Docker → 必须判 E_BUILTIN_DOWN，走内置主线 ===================
+
+[总览] 开始安装 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+… 检查 Docker
+[总览] 检查 Docker · 已自动解决 0 个问题 · 回合 0/10 · token 0
+× 检查 Docker　Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
+[总览] 正在解决：Hunter 自己那台虚拟机没起来 · 已自动解决 0 个问题 · 回合 1/10 · token 0
+! 发现问题：Hunter 自己那台虚拟机没起来　Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
+   … 分析中…
+   ✓ 分析中…　查了 5 个端口
+   ✓ 找到原因　Hunter 自己那套运行时上次已经装好了，只是虚拟机没起来 —— 用本机那份已经校验过的系统镜像把 profile hunter 起起来就行，不用下东西。
+   … 正在处理：启动内置运行时的虚拟机
+   … 启动内置运行时的虚拟机
+   ✓ 正在启动虚拟机（本机没有预先下好的系统镜像，colima 会自己去下一份）
+   × 启动内置运行时的虚拟机　colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。
+   × 正在处理：启动内置运行时的虚拟机　colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。
+   … 换个办法再试一次　刚才那个办法没成，还有别的路可以走
+… 检查 Docker
+[总览] 检查 Docker · 已自动解决 0 个问题 · 回合 1/10 · token 0
+× 检查 Docker　Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
+[总览] 正在解决：Hunter 自己那台虚拟机没起来 · 已自动解决 0 个问题 · 回合 2/10 · token 0
+! 发现问题：Hunter 自己那台虚拟机没起来　Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
+   … 分析中…
+   ✓ 分析中…　查了 5 个端口
+   ✓ 找到原因　刚才起那台虚拟机没成。上次装到一半很可能留下了残骸 —— 把 Hunter 自己的这台虚拟机清掉重建一次（只动 ~/.hunter/runtime，你的 ~/.colima、别的容器和数据卷一个字节都不碰）。
+   … 正在处理：清掉上次没装成功的残骸再重建
+   … 清掉上次没装成功的残骸再重建
+   ✓ 正在清掉上次没装成功的那台虚拟机（只动 Hunter 自己的，profile hunter）
+   ✓ colima 已经删掉了 hunter 这台虚拟机
+   ✓ 正在启动虚拟机（本机没有预先下好的系统镜像，colima 会自己去下一份）
+   × 清掉上次没装成功的残骸再重建　colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。
+   × 正在处理：清掉上次没装成功的残骸再重建　colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。
+× 没能自动装好　Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
+[总览] 失败 · 已自动解决 0 个问题 · 回合 2/10 · token 0
+
+事件流：/home/support/.hunter-i9b/logs/assist-events.jsonl
+审计日志：/home/support/.hunter-i9b/logs/assist-audit.log
+统计：自动解决 0 个问题 · 2 个修复回合 · 0 token · 用时 2 秒
+
+✗ E_BUILTIN_DOWN: Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
+  日志：/home/support/.hunter-i9b/logs/launcher.log
+---- 假 colima 收到的每一条命令 ----
+argv: start --profile hunter --vm-type vz --cpu 2 --memory 4 --disk 30
+COLIMA_HOME=/home/support/.hunter-i9b/runtime/colima
+LIMA_HOME=/home/support/.hunter-i9b/runtime/lima
+---
+argv: delete --profile hunter --force
+COLIMA_HOME=/home/support/.hunter-i9b/runtime/colima
+LIMA_HOME=/home/support/.hunter-i9b/runtime/lima
+---
+argv: start --profile hunter --vm-type vz --cpu 2 --memory 4 --disk 30
+COLIMA_HOME=/home/support/.hunter-i9b/runtime/colima
+LIMA_HOME=/home/support/.hunter-i9b/runtime/lima
+---
+---- 审计 ----
+{"action":"autopilot_start","args":{},"at":"2026-09-22 16:57:47","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 16:57:48","by":"orchestrator","level":"Safe","result":"开始执行（已过动作表与授权判定）"}
+{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 16:57:48","by":"orchestrator","level":"Safe","result":"失败：colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。"}
+{"action":"repair_builtin_runtime","args":{},"at":"2026-09-22 16:57:49","by":"orchestrator","level":"Safe","result":"开始执行（已过动作表与授权判定）"}
+{"action":"repair_builtin_runtime","args":{},"at":"2026-09-22 16:57:49","by":"orchestrator","level":"Safe","result":"失败：colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。"}

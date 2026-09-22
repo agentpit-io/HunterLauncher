@@ -545,6 +545,28 @@ impl Orchestrator {
         match step {
             Step::Docker => {
                 crate::runtime::which::invalidate();
+                crate::runtime::env::invalidate();
+                // **先问「现在生效的运行时是谁」**（I9 的 P0-1）。
+                //
+                // 0.1.8 这里第一句就是 `docker::detect()`，而它找到的那个 docker
+                // 是我们自己下到 `~/.hunter/runtime/bin` 里的那一份（`which` 有意
+                // 把它排在最前面）。于是「我们自己那台虚拟机没起来」被报成了
+                // 「用户的 Docker 装了没运行」，内置主线一步都没走到。
+                let eff = crate::runtime::effective::current();
+                crate::linfo!("{}", eff.one_line());
+                if eff.builtin_down() {
+                    return Err(AppError::new(
+                        Code::BuiltinRuntimeDown,
+                        format!(
+                            "Hunter 自己那套运行时{}。这不是你装的 Docker —— \
+                             它是上一次安装下到 {} 里的，该走内置那条路把它起起来。",
+                            eff.builtin.cn(),
+                            crate::redact::mask_home(
+                                &crate::paths::runtime_dir().to_string_lossy()
+                            )
+                        ),
+                    ));
+                }
                 let d = crate::runtime::docker::detect();
                 if !d.installed {
                     return Err(AppError::new(
@@ -1130,6 +1152,15 @@ impl Orchestrator {
                         ok: true,
                         text,
                     })
+            } else if call.id == "start_builtin_runtime" || call.id == "repair_builtin_runtime" {
+                // 起虚拟机要一分钟起步、重建还可能重下几百 MB ——
+                // 和 `install_runtime` 一样走带真实进度的那条执行体（I9）
+                self.run_builtin_action(issue, &call)
+                    .map(|text| actions::Outcome {
+                        id: call.id.clone(),
+                        ok: true,
+                        text,
+                    })
             } else {
                 actions::execute_as(&call, self.mode, true, by)
             };
@@ -1183,7 +1214,28 @@ impl Orchestrator {
             return Ok(true);
         }
 
-        // 一个都没成。**不把活儿丢回给用户**（I8 第〇节）：能做的都做过了，
+        // 一个都没成。**但「这个办法没成」不等于「没有别的办法」**（I9）。
+        //
+        // 刚才失败的那个动作已经进了 `failed_actions`，规则层下一回合看到它
+        // 就会换一条路 —— 内置运行时那条链正是这样设计的：
+        // `start_builtin_runtime` 起不来 → 下一回合 `repair_builtin_runtime`
+        // （清掉残骸重建）。原来这里无条件 `Ok(false)`，于是第二条路
+        // **一次都没有机会跑**：测试机上复现内置运行时残骸时，
+        // 启动器起了一次虚拟机没成，当场就说「没能自动装好」收场了。
+        //
+        // 所以先问一句：下一回合还有没有**不一样的**办法？有就接着走
+        // （回合上限、token 预算那几道闸在 `run_step_with_repair` 里照常管着）。
+        if self.rule_plan(step, e, &ev).is_some() {
+            self.bus.emit(
+                EventDraft::new(Kind::Verify, "换个办法再试一次")
+                    .under(issue)
+                    .status(Status::Running)
+                    .detail("刚才那个办法没成，还有别的路可以走"),
+            );
+            return Ok(true);
+        }
+
+        // 真的没别的办法了。**不把活儿丢回给用户**（I8 第〇节）：能做的都做过了，
         // 剩下的只有如实说清楚卡在哪，以及诊断包那条路
         if let Some((what, why)) = cannot_do(e) {
             self.say_cannot(issue, &what, &why);
@@ -1199,6 +1251,18 @@ impl Orchestrator {
         // 这一次安装里**已经失败过**的动作不再提第二次。
         // 场景 2 首轮实测：`systemctl start docker` 没权限、退出码 1，
         // 规则层每一回合都原样再提一次，三个回合白花 4 分 39 秒。
+        //
+        // **第一条被滤掉就整条作废**（I9 实测补的）：一个计划里第一条是「做事」的，
+        // 后面跟着的多半是「等它生效」。头一条没了，剩下的 `wait_daemon` 单独跑
+        // 只会干等到超时 —— 测试机上复现内置运行时残骸时，第 3 回合就是这样
+        // **白等了 121 秒**，而且事件流里「找到原因」那张卡片说的还是
+        // 「清掉残骸重建」，跟实际做的事对不上（讲解员说了谎，哪怕不是故意的）。
+        if calls
+            .first()
+            .is_some_and(|c| self.failed_actions.contains(&c.id))
+        {
+            return None;
+        }
         let calls: Vec<Call> = calls
             .into_iter()
             .filter(|c| !self.failed_actions.contains(&c.id))
@@ -1319,12 +1383,68 @@ impl Orchestrator {
                     crate::runtime::builtin::Decision::Unsupported(_) => None,
                 }
             }
+            // ②′ **内置运行时装了但虚拟机没起来**（I9 的 P0-1）。
+            //
+            //    这一条是 0.1.8 在用户 Mac 上没走到的那条主线。三种情形，
+            //    三条不同的路，全都零 token：
+            //
+            //    | 现场 | 怎么办 |
+            //    |---|---|
+            //    | 文件缺了几个（0.1.7 装过一半） | `install_runtime` —— 只下缺的那几个，下完接着起 |
+            //    | 文件齐了、虚拟机没起来 | `start_builtin_runtime` |
+            //    | 起过一次没起来（这一回合已经试过了） | `repair_builtin_runtime` —— 清掉 profile 重建 |
+            Code::BuiltinRuntimeDown => {
+                use crate::runtime::effective::BuiltinState;
+                let st = crate::runtime::effective::builtin_state();
+                // 这一次安装里已经起过一次没成 —— 别再原样试第二遍，直接清残骸重建
+                if self.failed_actions.contains("start_builtin_runtime")
+                    || self.failed_actions.contains("install_runtime")
+                {
+                    return Some((
+                        vec![
+                            Call::new("repair_builtin_runtime"),
+                            Call::with("wait_daemon", "seconds", "120"),
+                        ],
+                        "刚才起那台虚拟机没成。上次装到一半很可能留下了残骸 —— \
+                         把 Hunter 自己的这台虚拟机清掉重建一次（只动 ~/.hunter/runtime，\
+                         你的 ~/.colima、别的容器和数据卷一个字节都不碰）。"
+                            .to_string(),
+                    ));
+                }
+                match st {
+                    BuiltinState::Partial(miss) => Some((
+                        vec![Call::new("install_runtime")],
+                        format!(
+                            "上一次安装没装完，Hunter 自己那套运行时还缺 {}。把缺的补齐再起虚拟机 —— \
+                             已经下好并校验过的文件一个字节都不会重下。",
+                            miss.join("、")
+                        ),
+                    )),
+                    BuiltinState::Stopped => Some((
+                        vec![
+                            Call::new("start_builtin_runtime"),
+                            Call::with("wait_daemon", "seconds", "120"),
+                        ],
+                        format!(
+                            "Hunter 自己那套运行时上次已经装好了，只是虚拟机没起来 —— \
+                             用本机那份已经校验过的系统镜像把 profile {} 起起来就行，不用下东西。",
+                            crate::runtime::builtin::PROFILE
+                        ),
+                    )),
+                    // 走到这里说明状态在这两次判定之间变了（虚拟机自己起来了 /
+                    // 目录被删了）。**不硬猜**，让下一圈重新判
+                    BuiltinState::Running | BuiltinState::Absent => None,
+                }
+            }
             // ③ 装了没起：把它点起来再等
             Code::DaemonDown => {
                 let app = ev
                     .report
                     .apps
                     .iter()
+                    // **`builtin` 不在这条路上**（I9）：它不是「用户装的运行时」，
+                    // 起它要带 COLIMA_HOME 与 profile，走的是上面 ②′ 那一条
+                    .filter(|a| a.id != "builtin")
                     .find(|a| a.installed == Some(true) && a.running == Some(false))?;
                 // 能不能真的启动（这个平台上有没有办法）现在就判，判不了就不提这个方案
                 actions::plan(&Call::with("start_runtime", "app", &app.id)).ok()?;
@@ -1828,6 +1948,116 @@ impl Orchestrator {
             Err(e) => bus.finish(head, Status::Failed, &e.msg, None),
         }
         Ok(r?.message)
+    }
+
+    /// 起 / 重建内置运行时的**带事件版本**（I9）。
+    ///
+    /// 为什么不走 [`actions::execute_as`] 那条通路：那一条给 `builtin` 的
+    /// `Progress` 是三个空闭包，进度只进日志。起一台虚拟机要一分钟起步，
+    /// 重建还可能顺带重下几百 MB —— 界面上只挂一行「正在处理」是不行的
+    /// （`install_runtime` 早就是这么处理的，这里只是把同样的待遇给另外两条）。
+    ///
+    /// **三道门一道没少**：动作表校验 + 守卫 + 审计，与 `run_install_runtime`
+    /// 完全一致，下面那段就是从它那儿照搬的。
+    fn run_builtin_action(&mut self, parent: u64, call: &Call) -> AppResult<String> {
+        let plan = match actions::plan(call) {
+            Ok(p) => p,
+            Err(e) => {
+                guard::audit(
+                    &call.id,
+                    &call.args,
+                    Proposer::Orchestrator,
+                    None,
+                    &format!("拒绝：{}", e.msg),
+                );
+                return Err(e);
+            }
+        };
+        guard::audit(
+            &call.id,
+            &call.args,
+            Proposer::Orchestrator,
+            Some(plan.level),
+            "开始执行（已过动作表与授权判定）",
+        );
+        let bus = self.bus.clone();
+        let head = bus.emit(
+            EventDraft::new(Kind::Action, plan.title.clone())
+                .under(parent)
+                .status(Status::Running),
+        );
+        let t0 = Instant::now();
+        let b2 = bus.clone();
+        let mut say = |line: &str| {
+            if line.trim().is_empty() {
+                return;
+            }
+            b2.emit(
+                EventDraft::new(Kind::Action, line)
+                    .under(head)
+                    .status(Status::Ok),
+            );
+        };
+        let b3 = bus.clone();
+        let mut last = 0u64;
+        let mut bytes = move |got: u64, total: u64| {
+            if got < last + 4 * 1024 * 1024 && got < total {
+                return;
+            }
+            last = got;
+            let pct = got
+                .checked_mul(100)
+                .and_then(|x| x.checked_div(total))
+                .unwrap_or(0);
+            b3.finish(
+                head,
+                Status::Running,
+                &format!(
+                    "{pct}% · 已下载 {} / {}",
+                    crate::assist::probe::human_bytes(got),
+                    crate::assist::probe::human_bytes(total)
+                ),
+                None,
+            );
+        };
+        let c = self.cancel.clone();
+        let cancel = move || c.load(Ordering::Relaxed);
+        let mut pr = crate::runtime::builtin::Progress {
+            say: &mut say,
+            bytes: &mut bytes,
+            cancel: &cancel,
+        };
+        let r: AppResult<String> = (|| {
+            if call.id == "repair_builtin_runtime" {
+                let cleaned = crate::runtime::builtin::repair(&mut pr)?;
+                if crate::runtime::builtin::needs_download() {
+                    crate::runtime::builtin::install(&mut pr)?;
+                }
+                let started = crate::runtime::builtin::start(&mut pr)?;
+                return Ok(format!("{cleaned}；{started}"));
+            }
+            crate::runtime::builtin::start(&mut pr)
+        })();
+        match &r {
+            Ok(t) => bus.finish(
+                head,
+                Status::Ok,
+                &first_line(t),
+                Some(t0.elapsed().as_millis() as u64),
+            ),
+            Err(e) => bus.finish(head, Status::Failed, &e.msg, None),
+        }
+        guard::audit(
+            &call.id,
+            &call.args,
+            Proposer::Orchestrator,
+            Some(plan.level),
+            &match &r {
+                Ok(t) => format!("成功：{}", first_line(t)),
+                Err(e) => format!("失败：{}", e.msg),
+            },
+        );
+        r
     }
 
     /// 发一张「需要你」卡片并**阻塞等待**用户点。按钮文案是结论不是问句。
@@ -2566,5 +2796,150 @@ mod tests {
         assert!(!h.answer(TAKEOVER_PREFIX));
         // 「和它并存」也收得下（它只是把话说死，什么都不改）
         assert!(h.answer("coexist"));
+    }
+
+    // ── I9 ──────────────────────────────────────────────────────────────
+
+    fn make_builtin_tools() {
+        let bin = crate::paths::runtime_bin();
+        std::fs::create_dir_all(&bin).unwrap();
+        let lima = crate::paths::runtime_dist().join("lima").join("bin");
+        std::fs::create_dir_all(&lima).unwrap();
+        let cli = crate::paths::runtime_docker_config().join("cli-plugins");
+        std::fs::create_dir_all(&cli).unwrap();
+        for p in [
+            bin.join("docker"),
+            bin.join("colima"),
+            lima.join("limactl"),
+            cli.join("docker-compose"),
+        ] {
+            std::fs::write(&p, b"#!/bin/sh\nexit 0\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+    }
+
+    /// **总指挥这一侧的同一个 P0**：`E_BUILTIN_DOWN` 必须走内置主线，
+    /// 零 token、不碰用户的 colima。
+    #[test]
+    fn 内置运行时没起来时总指挥走内置主线() {
+        let _g = crate::paths::test_home("auto-builtin-down");
+        make_builtin_tools();
+        let o = orch(Mode::Auto);
+        let ev = ev_empty();
+        let e = AppError::new(Code::BuiltinRuntimeDown, "内置运行时装好了，虚拟机没起来");
+        let (calls, why) = o
+            .rule_plan_raw(Step::Docker, &e, &ev)
+            .expect("这一条规则层必须认得出来");
+        assert_eq!(calls[0].id, "start_builtin_runtime", "{calls:?}");
+        assert!(
+            !calls.iter().any(|c| c.id == "start_runtime"),
+            "绝不能提 start_runtime：{calls:?}"
+        );
+        assert!(why.contains("hunter"), "{why}");
+    }
+
+    /// 起过一次没成 → 第二回合改成「清残骸重建」，而不是原样再试一遍。
+    /// （0.1.8 那次日志里同一条裸 `colima start` 被执行了四次。）
+    #[test]
+    fn 起过一次没成就清残骸重建而不是再试一遍() {
+        let _g = crate::paths::test_home("auto-builtin-repair");
+        make_builtin_tools();
+        let mut o = orch(Mode::Auto);
+        o.failed_actions.insert("start_builtin_runtime".to_string());
+        let ev = ev_empty();
+        let e = AppError::new(Code::BuiltinRuntimeDown, "虚拟机还是没起来");
+        let (calls, why) = o
+            .rule_plan_raw(Step::Docker, &e, &ev)
+            .expect("第二回合也要有办法");
+        assert_eq!(calls[0].id, "repair_builtin_runtime", "{calls:?}");
+        // 话里要写清**清的范围**（这是承诺，不是措辞）
+        assert!(why.contains("~/.hunter/runtime"), "{why}");
+        assert!(why.contains("~/.colima"), "{why}");
+    }
+
+    /// 装了一半 → 先补齐（`install_runtime`），不是直接去起一台起不来的虚拟机。
+    #[test]
+    fn 内置运行时装了一半时总指挥先补齐() {
+        let _g = crate::paths::test_home("auto-builtin-partial");
+        let bin = crate::paths::runtime_bin();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("docker"), b"x").unwrap();
+        let o = orch(Mode::Auto);
+        let ev = ev_empty();
+        let e = AppError::new(Code::BuiltinRuntimeDown, "还缺几个文件");
+        let (calls, why) = o
+            .rule_plan_raw(Step::Docker, &e, &ev)
+            .expect("装了一半也要认得出来");
+        assert_eq!(calls[0].id, "install_runtime", "{calls:?}");
+        assert!(why.contains("还缺"), "{why}");
+    }
+
+    /// `E_DAEMON_DOWN` 那条路上，`builtin` **不能**被当成「用户装了但没起」。
+    #[test]
+    fn daemon_down_那条路不碰_builtin() {
+        let _g = crate::paths::test_home("auto-daemon-down");
+        let o = orch(Mode::Auto);
+        let mut ev = ev_empty();
+        ev.report.apps = vec![crate::assist::probe::AppPresence {
+            id: "builtin".into(),
+            label: "Hunter 内置运行时".into(),
+            installed: Some(true),
+            running: Some(false),
+            evidence: "测试".into(),
+        }];
+        let e = AppError::new(Code::DaemonDown, "daemon 没起");
+        assert!(
+            o.rule_plan_raw(Step::Docker, &e, &ev).is_none(),
+            "builtin 不该走 start_runtime 那条"
+        );
+    }
+
+    /// 计划的**头一条**已经失败过时，整条计划作废 —— 不能把后面那条
+    /// 「等它生效」单独拎出来跑。
+    ///
+    /// 测试机上复现内置运行时残骸时真撞到了：第 3 回合只剩一条 `wait_daemon`，
+    /// 白等 121 秒；而事件流里「找到原因」写的还是「清掉残骸重建」。
+    #[test]
+    fn 头一条动作失败过就不要单独跑后面那条等待() {
+        let _g = crate::paths::test_home("auto-lead-failed");
+        make_builtin_tools();
+        let mut o = orch(Mode::Auto);
+        let ev = ev_empty();
+        let e = AppError::new(Code::BuiltinRuntimeDown, "虚拟机没起来");
+        // 头一条还没失败过：计划里既有「起虚拟机」也有「等它就绪」
+        let (calls, _) = o.rule_plan(Step::Docker, &e, &ev).expect("该有计划");
+        assert_eq!(calls[0].id, "start_builtin_runtime");
+        assert!(calls.iter().any(|c| c.id == "wait_daemon"), "{calls:?}");
+
+        // 起虚拟机失败过 → 换成「清残骸重建」，头一条仍然是「做事」的那一条
+        o.failed_actions.insert("start_builtin_runtime".to_string());
+        let (calls, _) = o.rule_plan(Step::Docker, &e, &ev).expect("该换一条路");
+        assert_eq!(calls[0].id, "repair_builtin_runtime");
+
+        // 重建也失败过 → **整条作废**，不许只剩一条 wait_daemon 去干等
+        o.failed_actions
+            .insert("repair_builtin_runtime".to_string());
+        assert!(
+            o.rule_plan(Step::Docker, &e, &ev).is_none(),
+            "只剩 wait_daemon 的计划不该再出"
+        );
+    }
+
+    /// I9 的 P0-3：`can_resume_install` 的判据得站得住。
+    ///
+    /// 没有可用的 docker 时一律为假 —— 不然会在 daemon 还没起来的时候
+    /// 把安装反复踢起来。
+    #[test]
+    fn 没有可用的_docker_时不会自动续装() {
+        let _g = crate::paths::test_home("auto-resume-no-docker");
+        if crate::runtime::effective::current().usable() {
+            // 这台机器上真有一个在跑的 docker（测试机就是），这一条断言不了
+            return;
+        }
+        assert!(!crate::assist::can_resume_install());
     }
 }

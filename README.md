@@ -5,7 +5,7 @@
 **把 [HunterCode 开源版](https://github.com/agentpit-io/hunter-community) 的部署，从「clone → 改 .env → 敲命令行」变成「下载 → 填一把 key → 等几分钟」。**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-amber.svg)](LICENSE)
-[![状态](https://img.shields.io/badge/状态-v0.1.8%20预发布%20·%20未签名-orange.svg)](https://github.com/agentpit-io/HunterLauncher/releases)
+[![状态](https://img.shields.io/badge/状态-v0.1.9%20预发布%20·%20未签名-orange.svg)](https://github.com/agentpit-io/HunterLauncher/releases)
 [![平台](https://img.shields.io/badge/平台-Windows%20·%20macOS%20·%20Linux-1e293b.svg)](#三平台支持)
 
 </div>
@@ -54,6 +54,13 @@ Windows 的 UAC），而且只在最后一条兜底路线上才会用到。启�
 
 版本与校验和全部写死在程序里、下完逐个核对。本机已经有 OrbStack / Docker Desktop /
 Colima 的话它一条都不走，一个字节都不下。
+
+**之前装过、没装成功也没关系（0.1.9 起）**：启动器认得出自己上一次留下的东西，
+**接着上次装，不会重来一遍**。已经下好并核过校验和的文件一个字节都不重下，
+内容对不上的删掉重下，虚拟机起不来就清掉重建一次。整个过程只动 `~/.hunter/runtime`
+这一个文件夹 —— 你的 `~/.colima`、`~/.lima`、`~/.docker/config.json`、
+别人的容器与数据卷，一个字节都不碰。这不是一句承诺，是写在执行层的守卫：
+任何一条不带隔离参数的 colima 命令在**真正执行之前**就会被拒掉并记进审计日志。
 
 **你自己在系统里配好的网络代理，启动器会沿用**（只读出来用，绝不修改），
 并且传给它起的每一个子进程与虚拟机 —— 直连不通时自动走它重试。
@@ -319,7 +326,7 @@ A small cross-platform desktop app (Tauri 2 + React) that turns deploying
 from *"clone the repo, edit `.env`, run docker compose"* into
 *"download, paste one key, wait a few minutes."*
 
-**Status: v0.1.8, prerelease.** Installers for all three platforms are published on the
+**Status: v0.1.9, prerelease.** Installers for all three platforms are published on the
 [Releases page](https://github.com/agentpit-io/HunterLauncher/releases); they are **unsigned**,
 so every release is marked as a prerelease and your OS will warn you the first time you open it
 (see the Chinese section above for how to allow it). Linux is tested on real hardware;
@@ -335,6 +342,15 @@ Homebrew itself first if needed). When administrator rights are genuinely requir
 system shows its own password dialog** — the launcher never draws a password box, never stores a
 password, and never writes one to a log. It also **reuses the network proxy you already configured**
 (read-only; it never modifies your network settings) and passes it to every subprocess and to the VM.
+
+**A half-finished previous install is not a problem (since 0.1.9).** The launcher recognises what
+its own earlier run left behind and *continues* that install rather than starting over: files that
+still match their pinned checksums are reused byte for byte, corrupted ones are re-fetched, and a VM
+that refuses to start is torn down and rebuilt. All of this happens strictly inside
+`~/.hunter/runtime` — your `~/.colima`, `~/.lima`, `~/.docker/config.json`, and anyone else's
+containers and volumes are never touched. That is not a promise in prose: every `colima` command the
+launcher emits is checked *immediately before `spawn`*, and one without the right `COLIMA_HOME` and
+`--profile` is refused and written to the audit log.
 
 **What it does.** Detects (or installs) a container runtime; validates a single
 `hunt_tools_` key against the Hunter gateway and shows your daily model quota; pulls the six

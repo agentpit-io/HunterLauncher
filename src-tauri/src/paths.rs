@@ -208,6 +208,46 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
+/// 测试专用：把 `HUNTER_HOME` 指到一个**空的临时目录**，并在 guard 析构时还原。
+///
+/// I9 加的。在这之前每个模块各自抄一遍「存旧值 → set_var → 断言 → 还原」，
+/// 抄漏一次（忘了还原、或者忘了拿 [`env_lock`]）就会让**别的文件里的测试**
+/// 莫名其妙地红 —— 而且红的位置和肇事者毫无关系，最难查的那一类。
+/// 现在只有这一份实现，锁与还原都在 `Drop` 里。
+#[cfg(test)]
+pub(crate) struct TestHome {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    old: Option<String>,
+    dir: PathBuf,
+}
+
+#[cfg(test)]
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+        match &self.old {
+            Some(v) => std::env::set_var("HUNTER_HOME", v),
+            None => std::env::remove_var("HUNTER_HOME"),
+        }
+    }
+}
+
+/// 拿一个干净的临时 `HUNTER_HOME`。`tag` 只用来区分目录名，随便起。
+#[cfg(test)]
+pub(crate) fn test_home(tag: &str) -> TestHome {
+    let guard = env_lock();
+    let old = std::env::var("HUNTER_HOME").ok();
+    let dir = std::env::temp_dir().join(format!("hunter-t-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建临时工作目录");
+    std::env::set_var("HUNTER_HOME", &dir);
+    TestHome {
+        _guard: guard,
+        old,
+        dir,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,67 @@
+2026-09-22 14:48:40 [info] 启动器 0.1.8 启动 · macos x86_64
+2026-09-22 14:48:41 [info] 托盘已建立：11 个菜单项
+2026-09-22 14:48:41 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:48:41 [info] 检测到你设置了网络代理（HTTPS 127.0.0.1:7897 · HTTP 127.0.0.1:7897 · SOCKS 127.0.0.1:7897，来自系统设置），已沿用（只读取，不修改你的网络设置）
+2026-09-22 14:48:41 [info] 子进程 PATH 补了 4 个目录：<用户目录>/.hunter/runtime/bin、<用户目录>/.hunter/runtime/dist/lima/bin、/usr/local/bin、<用户目录>/.local/bin；DOCKER_CONFIG=<用户目录>/.hunter/runtime/docker-config；检测到你设置了网络代理（HTTPS 127.0.0.1:7897 · HTTP 127.0.0.1:7897 · SOCKS 127.0.0.1:7897，来自系统设置），已沿用
+2026-09-22 14:48:41 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:48:41 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:48:57 [info] key 校验：valid=true reason=Ok
+2026-09-22 14:49:02 [info] 自更新检查：已经是最新版 0.1.8
+2026-09-22 14:49:13 [info] 用户授权：档位 auto（全自动），没有 Docker 时允许自动安装=true，时间 2026-09-22 14:49:13
+2026-09-22 14:49:13 [info] AI 自动安装开始（授权档位 auto，预算：单问题 4 回合 / 整次 10 回合 / 60000 token）
+2026-09-22 14:49:13 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:49:13 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:49:13 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:14 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:14 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:14 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:14 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:15 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:15 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:49:15 [info] 检测到你设置了网络代理（HTTPS 127.0.0.1:7897 · HTTP 127.0.0.1:7897 · SOCKS 127.0.0.1:7897，来自系统设置），已沿用（只读取，不修改你的网络设置）
+2026-09-22 14:49:15 [info] 诊断助手执行动作 start_runtime（Safe · auto）：<用户目录>/.hunter/runtime/bin/colima start
+2026-09-22 14:50:15 [error] AI 自动安装失败（E_DAEMON_DOWN）：docker 命令在，但连不上后台服务（daemon 没起）。
+2026-09-22 14:50:15 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:50:16 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:50:16 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:50:16 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:50:16 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:50:17 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:50:17 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:50:19 [info] 诊断助手（规则层）：daemon-down-app-installed · confident=true · 动作 1 个
+2026-09-22 14:52:52 [info] 诊断助手执行动作 start_runtime（Safe · confirm）：<用户目录>/.hunter/runtime/bin/colima start
+2026-09-22 14:52:53 [info] 诊断助手执行规则层动作 start_runtime：ok=true
+2026-09-22 14:52:53 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:52:53 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:52:53 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:52:53 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:52:53 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:52:53 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:52:54 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:52:55 [info] 诊断助手（规则层）：daemon-down-app-installed · confident=true · 动作 1 个
+2026-09-22 14:52:58 [info] 诊断助手执行动作 start_runtime（Safe · confirm）：<用户目录>/.hunter/runtime/bin/colima start
+2026-09-22 14:52:59 [info] 诊断助手执行规则层动作 start_runtime：ok=true
+2026-09-22 14:52:59 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:52:59 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:53:00 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:53:00 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:53:00 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:53:00 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:53:00 [warn] docker ps 查已发布端口失败（这一路跳过）：failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+2026-09-22 14:53:01 [info] 诊断助手（规则层）：daemon-down-app-installed · confident=true · 动作 1 个
+2026-09-22 14:53:18 [info] 诊断助手（AI 第 1 轮）：自动执行 0 个 · 待确认 1 个 · 拒绝 0 个 · token 6851
+2026-09-22 14:53:24 [info] 诊断助手执行动作 start_builtin_runtime（Safe · confirm）：<用户目录>/.hunter/runtime/bin/colima start --profile hunter --vm-type vz --cpu 4 --memory 4 --disk 60
+2026-09-22 14:54:27 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:54:27 [info] 子进程 PATH 补了 4 个目录：<用户目录>/.hunter/runtime/bin、<用户目录>/.hunter/runtime/dist/lima/bin、/usr/local/bin、<用户目录>/.local/bin；DOCKER_CONFIG=<用户目录>/.hunter/runtime/docker-config；DOCKER_HOST=unix://<用户目录>/.hunter/runtime/colima/hunter/docker.sock；检测到你设置了网络代理（HTTPS 127.0.0.1:7897 · HTTP 127.0.0.1:7897 · SOCKS 127.0.0.1:7897，来自系统设置），已沿用
+2026-09-22 14:54:27 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:54:32 [info] 诊断助手（AI 第 2 轮）：自动执行 0 个 · 待确认 0 个 · 拒绝 0 个 · token 7285
+2026-09-22 14:57:40 [info] 诊断助手执行动作 start_runtime（Safe · confirm）：<用户目录>/.hunter/runtime/bin/colima start
+2026-09-22 14:57:41 [info] 诊断助手执行规则层动作 start_runtime：ok=true
+2026-09-22 14:57:41 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:57:42 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:57:43 [info] 诊断助手（规则层）：unknown · confident=false · 动作 0 个
+2026-09-22 14:58:13 [info] 诊断包已导出：<用户目录>/.hunter/diagnostics/hunter-diagnostics-20260922-145813.zip · 24253 字节
+2026-09-22 14:58:19 [info] 诊断包已导出：<用户目录>/.hunter/diagnostics/hunter-diagnostics-20260922-145819.zip · 24391 字节
+2026-09-22 14:58:45 [info] docker 定位：<用户目录>/.hunter/runtime/bin/docker（已知位置）
+2026-09-22 14:58:46 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 14:58:47 [info] 诊断助手（规则层）：unknown · confident=false · 动作 0 个

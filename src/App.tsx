@@ -24,8 +24,33 @@ import * as ipc from './lib/ipc'
 import type { Overlay as OverlayName } from './state/context'
 
 export function App() {
-  const { overlay, setOverlay } = useStore()
+  const { overlay, setOverlay, send } = useStore()
   const app = useAsync(() => ipc.appInfo(), [])
+
+  /**
+   * **修好了就接着装**（I9 的 P0-3）。
+   *
+   * 后端（规则层或 AI）跑完某个动作之后，只要 Docker 变成可用、而这一套还没装完，
+   * 它就自己把安装主流程重新跑起来并发一条 `assist://resume`。界面这边要做的
+   * 只有一件事：回到过程流那一页，别把用户留在「没能自动装好」那张卡片上。
+   *
+   * 0.1.8 在用户 Mac 上缺的正是这一步：14:54 内置运行时已经起来了、
+   * docker 29.5.2 可用，界面却一直停在失败态，`~/.hunter/app/` 到最后是空的。
+   */
+  useEffect(() => {
+    let un: (() => void) | undefined
+    void ipc
+      .onAssistResume(() => {
+        setOverlay(null)
+        send({ type: 'RESUME_INSTALL' })
+      })
+      .then((f) => {
+        un = f
+      })
+    return () => un?.()
+    // send / setOverlay 引用稳定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 托盘「查看日志 / 反馈 / 设置」把界面带到对应的那一页
   useEffect(() => {

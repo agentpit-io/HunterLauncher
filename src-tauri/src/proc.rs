@@ -34,6 +34,7 @@ pub fn run(program: &str, args: &[&str]) -> AppResult<Ran> {
 }
 
 pub fn run_with_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppResult<Ran> {
+    isolation_guard(program, args, env)?;
     let mut cmd = base_command(program);
     cmd.args(args);
     for (k, v) in env {
@@ -79,6 +80,7 @@ fn run_cmd_timeout(
     timeout: Duration,
     env: &[(&str, &str)],
 ) -> AppResult<Ran> {
+    isolation_guard(program, args, env)?;
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);
@@ -159,6 +161,29 @@ fn run_cmd_timeout(
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
+}
+
+/// **虚拟机隔离守卫**（I9 的 P0-2），挂在真正 `spawn` 之前的那一刻。
+///
+/// 为什么挂在这里而不是只挂在动作表里：动作表那一道
+/// （[`crate::assist::guard::argv`]）只看得到 AI / 规则层提出来的动作，
+/// 而 0.1.8 那条闯祸的 `colima start` 是**动作表自己规划出来的**
+/// （`start_runtime_argv("colima")`）—— 提案那一侧没有人觉得它有问题。
+/// 挂在 `proc` 这一层，意味着**不管这条命令是谁写的、走的哪条路**，
+/// 只要它最终要变成一个进程，就必须先回答「你用的是谁的 COLIMA_HOME、
+/// 动的是哪一台虚拟机」。
+///
+/// 只对 colima / limactl 生效，别的程序零开销（一次 basename 比对）。
+fn isolation_guard(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppResult<()> {
+    let base = std::path::Path::new(program)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| program.to_ascii_lowercase());
+    let base = base.trim_end_matches(".exe");
+    if base != "colima" && base != "limactl" {
+        return Ok(());
+    }
+    crate::assist::guard::colima_call(program, args, env)
 }
 
 /// 判断一个程序在不在 PATH 上。

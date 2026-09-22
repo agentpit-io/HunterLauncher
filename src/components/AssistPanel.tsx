@@ -114,6 +114,27 @@ export function AssistPanel({
         </div>
       </div>
 
+      {/* 全自动档下启动器**已经自己跑掉**的那几个动作（I9 的 P0-3）。
+          0.1.8 在用户 Mac 上，自动安装失败之后每一步都要用户点一下确认 —— wording-ok（这是在描述改掉的旧行为）
+          他点了四次，而他在授权页上选的是全自动。现在不再让他点，
+          但**做了什么必须看得见**，所以照样一条条列出来。 */}
+      {st.autoRan.length > 0 && (
+        <div className="mt-[14px] flex flex-col gap-[8px] rounded-lg border border-line bg-panel-soft px-[14px] py-[12px]">
+          <div className="text-xs text-muted">{t.assist.autoRanTitle}</div>
+          {st.autoRan.map((r) => (
+            <div key={r.id} className="flex items-start gap-2 text-sm leading-[1.5]">
+              <span className={r.ok ? 'shrink-0 text-ok' : 'shrink-0 text-danger'}>
+                {r.ok ? '✓' : '✕'}
+              </span>
+              <div className="min-w-0">
+                <span className="text-ink">{r.title}</span>
+                <span className="ml-2 break-words text-body">{r.text}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {rule.actions.length > 0 && (
         <div className="mt-[14px] flex flex-col gap-[10px]">
           {rule.actions.map((a) => (

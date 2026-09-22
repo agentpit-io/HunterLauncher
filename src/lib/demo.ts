@@ -48,7 +48,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.8'
+export const DEMO_LAUNCHER_VERSION = '0.1.9'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -613,12 +613,93 @@ export const demoAssist: AssistState = {
   maxRounds: 3,
   degraded: null,
   done: false,
+  // 演示数据里也带上 I9 那两个字段 —— 形状要和真实的一模一样
+  canResumeInstall: false,
+  autoRan: [
+    {
+      id: 'start_builtin_runtime',
+      title: '启动内置运行时的虚拟机',
+      ok: true,
+      text: '演示数据：内置运行时已就绪（profile hunter，用时 62 秒）',
+    },
+  ],
   reportText:
     '系统: linux x86_64 Ubuntu 24.04.3 LTS\n启动器: ' +
     DEMO_LAUNCHER_VERSION +
     '\n错误码: E_DOCKER_MISSING\n（演示数据，不是这台机器的真实现场）\n',
 }
 
+
+/**
+ * I9 · 内置运行时残骸那一页的诊断快照。
+ *
+ * 界面上要同时看见两件事：
+ *  ① 规则层认出来的是「Hunter 自己那台虚拟机没起来」，不是「你的 Docker 没开」；
+ *  ② **启动器已经自己做了哪几步** —— 全自动档下不再让用户点，但做了什么必须看得见。
+ */
+export const demoAssistBuiltin: AssistState = {
+  enabled: true,
+  hasKey: true,
+  rule: {
+    rule: 'builtin-runtime-down',
+    code: 'E_BUILTIN_DOWN',
+    title: 'Hunter 自己那台虚拟机没起来',
+    detail:
+      'Hunter 自己那套运行时已经装好了（在 ~/.hunter/runtime 里），只是它的虚拟机没在跑。\n' +
+      '这不是你电脑上的 Docker，也不是你装的 Colima —— 启动器不会去碰你的 ~/.colima。\n' +
+      '把 profile hunter 这台虚拟机起起来就行，系统镜像本机已经有、校验过，不用下东西。\n' +
+      '（判据：看 ~/.hunter/runtime 下的四件工具 + socket 连不连得上（装好了，虚拟机没起来））',
+    actions: [
+      {
+        id: 'start_builtin_runtime',
+        kind: 'mutating',
+        title: '启动内置运行时的虚拟机',
+        why: '内置运行时装好了，但它的虚拟机没在跑',
+        argv: [
+          '~/.hunter/runtime/bin/colima',
+          'start',
+          '--profile',
+          'hunter',
+          '--vm-type',
+          'vz',
+          '--cpu',
+          '4',
+          '--memory',
+          '4',
+          '--disk',
+          '60',
+        ],
+        summary: null,
+      },
+    ],
+    confident: true,
+  },
+  turns: [],
+  pending: [],
+  totalTokens: 0,
+  rounds: 0,
+  maxRounds: 3,
+  degraded: null,
+  done: false,
+  canResumeInstall: false,
+  autoRan: [
+    {
+      id: 'repair_builtin_runtime',
+      title: '清掉上次没装成功的残骸再重建',
+      ok: true,
+      text: '演示数据：已清掉 ~/.hunter/runtime/colima/hunter；已清掉 ~/.hunter/runtime/lima/colima-hunter',
+    },
+    {
+      id: 'start_builtin_runtime',
+      title: '启动内置运行时的虚拟机',
+      ok: false,
+      text: '演示数据：colima 说起好了，但 ~/.hunter/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。',
+    },
+  ],
+  reportText:
+    '当前生效运行时：内置运行时（Colima profile hunter）（装好了，虚拟机没起来，socket ~/.hunter/runtime/colima/hunter/docker.sock 连不上）\n' +
+    '（演示数据，不是这台机器的真实现场）\n',
+}
 
 // ── I5 · AI 自动驾驶安装的演示数据（只在 VITE_DEMO=1 的开发构建里存在） ──
 //

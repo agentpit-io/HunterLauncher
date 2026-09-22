@@ -472,3 +472,33 @@ describe('Docker 页一次点击就该走到下一页（M2 修的 UX 问题）',
     expect(pageOf({ name: 'CheckDaemon' })).toBe('docker')
   })
 })
+
+describe('I9 · 修好了就接着装（P0-3）', () => {
+  it('E_BUILTIN_DOWN 在 ERROR_CODES 里，重试回到自动安装那一页', () => {
+    expect(ERROR_CODES).toContain('E_BUILTIN_DOWN')
+    const err = transition({ name: 'AutoInstalling' }, { type: 'FAIL', code: 'E_BUILTIN_DOWN' })
+    expect(err).toMatchObject({ name: 'Error', code: 'E_BUILTIN_DOWN', from: 'AutoInstalling' })
+    expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'AutoInstalling' })
+  })
+
+  it('RESUME_INSTALL 能把界面从错误页拉回安装页', () => {
+    // 0.1.8 在用户 Mac 上：AI 14:54 把内置运行时起起来了，界面却一直停在这张卡片上，
+    // ~/.hunter/app 到最后是空的。这一条就是那个缺口。
+    const err = transition({ name: 'AutoInstalling' }, { type: 'FAIL', code: 'E_BUILTIN_DOWN' })
+    expect(err.name).toBe('Error')
+    expect(transition(err, { type: 'RESUME_INSTALL' })).toEqual({ name: 'AutoInstalling' })
+  })
+
+  it('RESUME_INSTALL 从任何状态都能进（后端已经开跑了，界面只是跟上）', () => {
+    for (const from of ['Ready', 'Done', 'CheckDaemon', 'Welcome'] as const) {
+      expect(transition({ name: from }, { type: 'RESUME_INSTALL' })).toEqual({
+        name: 'AutoInstalling',
+      })
+    }
+  })
+
+  it('已经在安装页上时 RESUME_INSTALL 原地不动（别把过程流重挂一遍）', () => {
+    const at = { name: 'AutoInstalling' } as const
+    expect(transition(at, { type: 'RESUME_INSTALL' })).toBe(at)
+  })
+})

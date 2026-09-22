@@ -1,0 +1,12 @@
+{"action":"consent","args":{"allow_install_runtime":"true"},"at":"2026-09-21 22:00:08","by":"user","level":null,"result":"授权档位 auto（自动驾驶）；没有 Docker 时允许自动安装运行时"}
+{"action":"autopilot_start","args":{},"at":"2026-09-21 22:00:08","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"install_runtime","args":{},"at":"2026-09-21 22:00:15","by":"user","level":"Sensitive","result":"授权页已勾选，免二次确认"}
+{"action":"install_runtime","args":{},"at":"2026-09-21 22:00:15","by":"orchestrator","level":"Sensitive","result":"开始执行（已过动作表与授权判定）"}
+{"action":"install_runtime","args":{},"at":"2026-09-21 22:03:41","by":"orchestrator","level":"Sensitive","result":"失败：虚拟机没起来（colima start 退出码 Some(1)）：time=\"2026-09-21T22:03:41+08:00\" level=fatal msg=\"error starting vm: error at 'creating and starting': error getting qcow image: error during image download: error resolving download URL 'https://github.com/abiosoft/colima-core/releases/download/v0.10.4/ubuntu-24.04-minimal-cloudimg-amd64-docker.raw.gz': resolve redirect failed for 'https://github.com/abiosoft/colima-core/releases/download/v0.10.4/ubuntu-24.04-minimal-cloudimg-amd64-docker.raw.gz': connection timed out. Check your network connection or try again later\""}
+{"action":"manual_step","args":{"command":"brew install --cask orbstack（或者去 orbstack.dev 下载）"},"at":"2026-09-21 22:14:47","by":"user","level":null,"result":"用户放弃"}
+{"action":"consent","args":{"allow_install_runtime":"true"},"at":"2026-09-22 14:49:13","by":"user","level":null,"result":"授权档位 auto（全自动）；没有 Docker 时允许自动安装运行时"}
+{"action":"autopilot_start","args":{},"at":"2026-09-22 14:49:13","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"start_runtime","args":{"app":"colima"},"at":"2026-09-22 14:52:53","by":"user","level":"Safe","result":"成功：退出码 Some(0)"}
+{"action":"start_runtime","args":{"app":"colima"},"at":"2026-09-22 14:52:59","by":"user","level":"Safe","result":"成功：退出码 Some(0)"}
+{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 14:54:27","by":"user","level":"Safe","result":"成功：内置运行时已就绪（profile hunter，用时 62 秒，socket 在 <用户目录>/.hunter/runtime/colima/hunter/docker.sock）"}
+{"action":"start_runtime","args":{"app":"colima"},"at":"2026-09-22 14:57:41","by":"user","level":"Safe","result":"成功：退出码 Some(0)"}

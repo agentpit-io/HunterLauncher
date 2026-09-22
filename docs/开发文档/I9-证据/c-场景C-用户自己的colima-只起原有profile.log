@@ -1,0 +1,23 @@
+--- C1：用户自己的 colima（~/.colima/myprofile 本来就有）---
+## 诊断结论（确定性规则 · daemon-down-app-installed）
+你自己的 Colima 装着，但没在跑
+Docker 的客户端在（/usr/bin/docker），但连不上后台服务。
+这台机器上 你自己的 Colima 是装了的，只是进程没起来（判据：读 ~/.colima 下的 profile 目录（myprofile）+ 看它们的 docker.sock 在不在（不跑 colima 命令，免得碰你的 ~/.colima））。
+启动器会替你把它启动起来，再等它就绪。
+
+建议动作：启动 Colima（会改动这台机器）
+  为什么：Docker 客户端在、只是后台服务没起来时，把它拉起来就好了
+  会执行：/tmp/ubin/colima start --profile myprofile
+
+
+--- C2：把 ~/.colima 清空（用户那边一个 profile 都没有）→ 不得新建 ---
+## 诊断结论（确定性规则 · daemon-down-app-installed）
+systemd 的 docker 服务 装着，但没在跑
+Docker 的客户端在（/usr/bin/docker），但连不上后台服务。
+这台机器上 systemd 的 docker 服务 是装了的，只是进程没起来（判据：systemctl is-active docker）。
+启动器会替你把它启动起来，再等它就绪。
+
+--- ~/.colima 现在还在吗（启动器不许把它建出来）---
+不在 —— 正确
+--- 用户那个假 colima 被调用过吗 ---
+（一次都没调）

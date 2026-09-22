@@ -131,10 +131,40 @@ pub fn wait_daemon(max: Duration, say: &mut dyn FnMut(&str)) -> bool {
 fn run_route(route: Route, p: &mut builtin::Progress) -> AppResult<String> {
     match route {
         Route::Builtin => {
+            // ① **先核一遍已经躺在本机的那几个文件**（I9 的 P0-1）。
+            //    用户 Mac 上就是这种机器：0.1.7 装过一半，文件都在，
+            //    但谁也没问过它们内容对不对。对不上的删掉，下一句就会重下
+            for line in builtin::drop_broken_items() {
+                (p.say)(&line);
+            }
             if builtin::needs_download() {
                 builtin::install(p)?;
             }
-            let started = builtin::start(p)?;
+            // ② 起。起不来而且看得出有残骸 —— **清掉那台虚拟机再起一次**，
+            //    清的范围只在 `~/.hunter/runtime` 里（`builtin::repair` 里逐个过守卫）
+            let started = match builtin::start(p) {
+                Ok(s) => s,
+                Err(first) if builtin::has_residue() => {
+                    (p.say)(&format!(
+                        "虚拟机没起来（{}）。看样子上次装到一半留下了残骸，清掉重建一次",
+                        first.msg
+                    ));
+                    builtin::repair(p)?;
+                    if builtin::needs_download() {
+                        builtin::install(p)?;
+                    }
+                    builtin::start(p).map_err(|second| {
+                        AppError::new(
+                            second.code,
+                            format!(
+                                "清掉残骸重建之后还是起不来。第一次：{}；重建后：{}",
+                                first.msg, second.msg
+                            ),
+                        )
+                    })?
+                }
+                Err(e) => return Err(e),
+            };
             // 装好之后把 docker 路径钉进设置：下次开启动器不用再探一遍
             pin_docker_path();
             if !wait_daemon(Duration::from_secs(180), p.say) {

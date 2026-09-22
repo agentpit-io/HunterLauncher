@@ -59,7 +59,24 @@ pub struct SubEnv {
     pub docker_config: Option<String>,
     /// 给子进程的 `DOCKER_HOST`（I7 内置运行时起的那台虚拟机的 socket）；
     /// `None` = 原样继承（用本机默认的 `/var/run/docker.sock`）
+    ///
+    /// I9 起这个值来自 [`super::effective`]，而且**内置运行时是当前生效运行时时
+    /// 一律给**（哪怕虚拟机还没起来、socket 还不存在）。
+    /// 0.1.7 之前的写法是「socket 文件存在才给」，后果在用户 Mac 上是：
+    /// 内置运行时没起来的那 5 分钟里，每一条 `docker ps` 都悄悄打在
+    /// `/var/run/docker.sock` 上，端口冲突检测整条被跳过（I9 的 P0-4）。
+    /// 指向一个还不存在的 socket 会得到一句「连不上我们自己那台虚拟机」——
+    /// 那正是实话。
     pub docker_host: Option<String>,
+    /// 给子进程的 `COLIMA_HOME` / `LIMA_HOME`（I9 的 P0-2）。
+    ///
+    /// 内置运行时装着时**一律指向 `~/.hunter/runtime`**。0.1.8 在用户 Mac 上
+    /// 执行的那条裸 `colima start` 用的是默认的 `~/.colima`，在他家目录里
+    /// 新建并起了一台和 Hunter 毫无关系的 `default` 虚拟机（1.4 GB）。
+    /// 把这两个变量钉在子进程环境里，是「不碰用户的 `~/.colima`」这件事的
+    /// **第一道**保证；第二道是 [`crate::assist::guard::colima_call`]。
+    pub colima_home: Option<String>,
+    pub lima_home: Option<String>,
     /// 用户自己配的网络代理（I8）。**只读来的，不改他的设置**。
     ///
     /// 0.1.7 在用户 Mac 上失败的第二个根因就是这里空着：他系统里配了
@@ -87,6 +104,9 @@ impl SubEnv {
         };
         if let Some(h) = &self.docker_host {
             head.push_str(&format!("；DOCKER_HOST={}", crate::redact::mask_home(h)));
+        }
+        if let Some(h) = &self.colima_home {
+            head.push_str(&format!("；COLIMA_HOME={}", crate::redact::mask_home(h)));
         }
         if !self.proxy.is_empty() {
             // 只说「沿用了代理」与主机端口，不打用户名密码（代理地址里可能有）
@@ -209,6 +229,8 @@ pub fn build_path(base: &str, candidates: &[String], exists: &dyn Fn(&str) -> bo
         added,
         docker_config: None,
         docker_host: None,
+        colima_home: None,
+        lima_home: None,
         proxy: Vec::new(),
     }
 }
@@ -217,18 +239,36 @@ pub fn build_path(base: &str, candidates: &[String], exists: &dyn Fn(&str) -> bo
 fn compute() -> SubEnv {
     let base = std::env::var("PATH").unwrap_or_default();
     let mut e = build_path(&base, &candidate_dirs(), &usable);
-    // 内置运行时装着时用它自己那一份配置（compose 作为 CLI 插件就在里面），
-    // 否则才看「隔离 docker 配置」这个开关。两者都没有就原样继承。
-    e.docker_config = if super::builtin::is_installed() {
-        Some(
-            crate::paths::runtime_docker_config()
-                .to_string_lossy()
-                .into_owned(),
-        )
-    } else {
-        crate::dockercfg::isolated_dir_if_enabled().map(|p| p.to_string_lossy().into_owned())
-    };
-    e.docker_host = super::builtin::docker_host();
+    let eff = super::effective::current();
+    // 用**内置运行时自己那一份** `DOCKER_CONFIG`（compose 作为 CLI 插件就在里面）——
+    // 但只在内置运行时确实是当前生效的那一个时（I9）。
+    //
+    // I8 的写法是「装着就用」。测试机上真跑出来的后果：机器上留着一套
+    // 0.1.7 的残骸（工具在、虚拟机起不来），而用户自己的 Docker 好好跑着 ——
+    // `DOCKER_CONFIG` 却被指到残骸那一份，于是 `docker compose config` 用的是
+    // **残骸里那个坏掉的 compose 插件**，报一句 `Run 'docker --help' for more
+    // information`，安装当场卡死。
+    //
+    // 一句话：**我们的残骸不该把用户一套好好的 Docker 弄坏。**
+    // 谁生效就用谁的配置，和 `DOCKER_HOST` 同一个口径。
+    e.docker_config =
+        if eff.kind == super::effective::Kind::Builtin && super::builtin::is_installed() {
+            Some(
+                crate::paths::runtime_docker_config()
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        } else {
+            crate::dockercfg::isolated_dir_if_enabled().map(|p| p.to_string_lossy().into_owned())
+        };
+    // **谁生效就给谁的 DOCKER_HOST**（I9 的 P0-4）。判定只在 `effective` 里做一次。
+    e.docker_host = eff.docker_host;
+    // 内置运行时哪怕只装了一半，colima / limactl 的家也必须钉在 `~/.hunter/runtime`
+    // 里 —— 这是「不碰用户 `~/.colima`」的第一道保证（I9 的 P0-2）
+    if super::effective::builtin_state().present() {
+        e.colima_home = Some(crate::paths::colima_home().to_string_lossy().into_owned());
+        e.lima_home = Some(crate::paths::lima_home().to_string_lossy().into_owned());
+    }
     e.proxy = crate::netproxy::current().env_pairs();
     e
 }
@@ -278,6 +318,12 @@ pub fn apply(cmd: &mut std::process::Command) {
     }
     if let Some(h) = &e.docker_host {
         cmd.env("DOCKER_HOST", h);
+    }
+    if let Some(h) = &e.colima_home {
+        cmd.env("COLIMA_HOME", h);
+    }
+    if let Some(h) = &e.lima_home {
+        cmd.env("LIMA_HOME", h);
     }
     for (k, v) in &e.proxy {
         cmd.env(k, v);

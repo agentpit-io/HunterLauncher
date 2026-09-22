@@ -37,6 +37,15 @@ const DEMO_STATES: Record<string, State> = {
     from: 'Starting',
     detail: 'opencode 在 180 秒内没有变成 healthy（docker compose ps 的 Health 字段一直是 starting）',
   },
+  // I9：上一次没装成功留下的内置运行时残骸（用户 Mac 上 0.1.8 那次的现场）。
+  // 这一页同时也是「启动器已经替你做了这几步」那一块的样子
+  'error-builtin': {
+    name: 'Error',
+    code: 'E_BUILTIN_DOWN',
+    from: 'CheckDocker',
+    detail:
+      'Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 ~/.hunter/runtime 里的，该走内置那条路把它起起来。',
+  },
 }
 
 function initialState(): State {

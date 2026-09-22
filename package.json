@@ -1,6 +1,6 @@
 {
   "name": "hunter-launcher",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "Hunter 启动器 · 把 hunter-community 的部署变成「下载 → 填一把 key → 等几分钟」",

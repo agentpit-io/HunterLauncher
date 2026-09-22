@@ -4,6 +4,7 @@ pub mod brew;
 pub mod builtin;
 pub mod chain;
 pub mod docker;
+pub mod effective;
 pub mod elevate;
 pub mod env;
 pub mod manifest;

@@ -437,7 +437,8 @@ export async function assistDiagnose(ctx: {
   errorMessage?: string
   stage?: string
 }): Promise<AssistState> {
-  if (DEMO) return demo.demoAssist
+  // I9：残骸那一页要显示的是另一条规则（以及「启动器已经替你做了这几步」那一块）
+  if (DEMO) return demoPage() === 'error-builtin' ? demo.demoAssistBuiltin : demo.demoAssist
   return call<AssistState>('assist_diagnose', {
     errorCode: ctx.errorCode ?? null,
     errorMessage: ctx.errorMessage ?? null,
@@ -503,6 +504,8 @@ export function onLauncherUpdate(cb: (u: LauncherUpdate) => void): Promise<Unlis
 export const EV_ASSIST = 'assist://event'
 export const EV_ASSIST_SUMMARY = 'assist://summary'
 export const EV_ASSIST_DONE = 'assist://done'
+/** 「修好了，接着装」：后端已经把安装重新跑起来了，界面回到过程流那一页（I9）。 */
+export const EV_ASSIST_RESUME = 'assist://resume'
 
 /**
  * 用户在一次授权页上做的选择。Rust 侧会写配置、写日志、写审计。
@@ -560,6 +563,16 @@ export function onAssistSummary(cb: (s: AssistSummary) => void): Promise<Unliste
 
 export function onAssistDone(cb: (o: AssistOutcome) => void): Promise<UnlistenFn> {
   return on<AssistOutcome>(EV_ASSIST_DONE, cb)
+}
+
+/**
+ * 后端修好 Docker、自己把安装接着跑起来了（I9 的 P0-3）。
+ *
+ * 0.1.8 在用户 Mac 上缺的正是这一步：AI 14:54 把内置运行时起起来了，
+ * 界面却还停在「没能自动装好」，`~/.hunter/app/` 到最后都是空的。
+ */
+export function onAssistResume(cb: () => void): Promise<UnlistenFn> {
+  return on<unknown>(EV_ASSIST_RESUME, () => cb())
 }
 
 // ── I7 · 内置运行时 / 接管 / 一键反馈 ────────────────────────────────────

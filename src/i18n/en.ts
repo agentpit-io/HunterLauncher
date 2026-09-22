@@ -173,6 +173,7 @@ const en: Dict = {
     collecting: 'Collecting diagnostics…',
     collectFailed: (e: string) => `Failed to collect diagnostics: ${e}`,
     ruleBadge: 'Rule',
+    autoRanTitle: 'The launcher already did these for you',
     aiBadge: 'AI suggestion',
     roundLabel: (n: number, max: number) => `Round ${n} / ${max}`,
     tokensThisRound: (n: number) => `~${n} tokens this round`,
@@ -609,7 +610,11 @@ const en: Dict = {
     viewLogs: 'View logs',
     codes: {
       E_DOCKER_MISSING: { title: 'Docker not found', hint: 'The launcher needs Docker to deploy Hunter. Install it, then check again.' },
-      E_DAEMON_DOWN: { title: 'Docker daemon is not running', hint: 'Start Docker Desktop / OrbStack, or run sudo systemctl start docker.' },
+      E_DAEMON_DOWN: { title: 'Docker daemon is not running', hint: 'The launcher already tried to start it for you and did not succeed. What it tried, and where it stopped, is listed below.' },
+      E_BUILTIN_DOWN: {
+        title: "Hunter's own VM is not running",
+        hint: 'This is not the Docker on your machine: a previous install placed a Hunter-only runtime under ~/.hunter/runtime, and its VM is currently down. The launcher will start it, and rebuild it if that fails — touching nothing outside ~/.hunter/runtime.',
+      },
       E_WSL_MISSING: { title: 'WSL2 is missing', hint: 'Run wsl --install, reboot, then come back.' },
       E_KEY_INVALID: { title: 'Invalid key', hint: 'The gateway rejected this key (wrong key, or it has been revoked).' },
       E_QUOTA_EXHAUSTED: { title: "Today's quota is used up", hint: 'It resets at 00:00 Asia/Shanghai, or switch to your own model key now.' },

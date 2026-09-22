@@ -12,6 +12,14 @@ use std::fmt;
 pub enum Code {
     DockerMissing,
     DaemonDown,
+    /// 内置运行时（`~/.hunter/runtime` 里那一套）装着，但它的虚拟机没起来（I9）。
+    ///
+    /// **和 `DaemonDown` 分开是有代价的，但必须分**：0.1.8 在用户 Mac 上把这个
+    /// 现场判成了 `DaemonDown`，于是规则层给出「Colima 装着但没在运行，把它启动
+    /// 起来」，执行的是一条裸 `colima start`（我们自己的 colima + 用户的
+    /// `~/.colima`），在他家目录里建了一台没人要的虚拟机，而内置主线一步都没走。
+    /// 两个现场的解法完全不同，错误码必须也不同。
+    BuiltinRuntimeDown,
     WslMissing,
     KeyInvalid,
     QuotaExhausted,
@@ -66,6 +74,7 @@ impl Code {
         match self {
             Code::DockerMissing => "E_DOCKER_MISSING",
             Code::DaemonDown => "E_DAEMON_DOWN",
+            Code::BuiltinRuntimeDown => "E_BUILTIN_DOWN",
             Code::WslMissing => "E_WSL_MISSING",
             Code::KeyInvalid => "E_KEY_INVALID",
             Code::QuotaExhausted => "E_QUOTA_EXHAUSTED",
@@ -90,6 +99,7 @@ impl Code {
         match self {
             Code::DockerMissing => "没有找到 Docker",
             Code::DaemonDown => "Docker 装了，但没在运行",
+            Code::BuiltinRuntimeDown => "Hunter 自己那台虚拟机没起来",
             Code::WslMissing => "Windows 缺少 WSL2",
             Code::KeyInvalid => "这把 key 网关不认",
             Code::QuotaExhausted => "今日免费额度已用完",
@@ -113,6 +123,41 @@ impl Code {
 impl fmt::Display for Code {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl Code {
+    /// **全部错误码，一份清单**（I9）。
+    ///
+    /// 在这之前同一张表在三个地方各抄了一份：这里的单测、`headless::code_from_str`、
+    /// 前端的 `ERROR_CODES`。I9 加 `E_BUILTIN_DOWN` 时漏改了 `code_from_str`，
+    /// 结果命令行上打出来的是 `E_UNKNOWN: Hunter 自己那台虚拟机没起来` ——
+    /// 一句话里两个互相矛盾的说法。Rust 这一侧现在只有这一份。
+    pub const ALL: &'static [Code] = &[
+        Code::DockerMissing,
+        Code::DaemonDown,
+        Code::BuiltinRuntimeDown,
+        Code::WslMissing,
+        Code::KeyInvalid,
+        Code::QuotaExhausted,
+        Code::RateLimited,
+        Code::PullFailed,
+        Code::PortInUse,
+        Code::PortConflict,
+        Code::CredHelper,
+        Code::StartTimeout,
+        Code::ProxyBlock,
+        Code::UpdateFailed,
+        Code::ComposeFetch,
+        Code::ConfigWrite,
+        Code::ProjectConflict,
+        Code::NotImplemented,
+        Code::Unknown,
+    ];
+
+    /// 从 `E_XXX` 反查。认不得就是 `None`（**不猜成 Unknown**，让调用方自己决定）。
+    pub fn from_str(s: &str) -> Option<Code> {
+        Code::ALL.iter().copied().find(|c| c.as_str() == s)
     }
 }
 
@@ -173,30 +218,23 @@ mod tests {
 
     #[test]
     fn 每个错误码都有标题且不重复() {
-        let all = [
-            Code::DockerMissing,
-            Code::DaemonDown,
-            Code::WslMissing,
-            Code::KeyInvalid,
-            Code::QuotaExhausted,
-            Code::RateLimited,
-            Code::PullFailed,
-            Code::PortInUse,
-            Code::PortConflict,
-            Code::CredHelper,
-            Code::StartTimeout,
-            Code::ProxyBlock,
-            Code::UpdateFailed,
-            Code::ComposeFetch,
-            Code::ConfigWrite,
-            Code::ProjectConflict,
-            Code::NotImplemented,
-            Code::Unknown,
-        ];
         let mut seen = std::collections::HashSet::new();
-        for c in all {
+        for c in Code::ALL.iter().copied() {
             assert!(!c.title().is_empty());
             assert!(seen.insert(c.as_str()), "错误码重复：{}", c.as_str());
         }
+    }
+
+    /// **每一个错误码都要能从字符串反查回来。**
+    ///
+    /// I9 加 `E_BUILTIN_DOWN` 时漏改了 `headless::code_from_str` 里那份手抄的清单，
+    /// 于是命令行上打出来的是 `E_UNKNOWN: Hunter 自己那台虚拟机没起来`。
+    /// 现在只有 `Code::ALL` 一份表，这条测试保证反查不会再漏。
+    #[test]
+    fn 每个错误码都能从字符串反查回来() {
+        for c in Code::ALL.iter().copied() {
+            assert_eq!(Code::from_str(c.as_str()), Some(c), "{}", c.as_str());
+        }
+        assert_eq!(Code::from_str("E_NOT_A_REAL_CODE"), None);
     }
 }

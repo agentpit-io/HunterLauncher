@@ -49,6 +49,12 @@ pub struct Args {
     /// 为什么要一个显式开关：`--diagnose` 是给脚本用的路径，问 AI 要花用户的额度，
     /// 不能在他没要求的时候悄悄花掉。默认只跑第一层（确定性规则，零 token）。
     pub ai: bool,
+    /// `--diagnose --fix`：规则层有把握、而且授权档位是 `auto` 时，
+    /// **把 Safe 级动作自己跑掉**，再重新采一遍现场（I9 的 P0-3）。
+    ///
+    /// 为什么也要一个显式开关：不带它的 `--diagnose` 在文档里写的是
+    /// 「打印诊断信息」—— 一条印东西的命令不该顺手改这台机器。
+    pub fix: bool,
     /// `--assist-replay <文件>`：把一份存下来的网关响应喂给动作白名单那道闸。
     /// **不发任何网络请求**，纯离线验证安全边界（见 [`cmd_assist_replay`]）。
     pub assist_replay: Option<String>,
@@ -96,6 +102,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         help: false,
         version: false,
         ai: false,
+        fix: false,
         assist_replay: None,
         review: None,
         review_why: None,
@@ -216,6 +223,13 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.action = Some("diagnose".into());
                 a.headless = true;
             }
+            "--fix" => {
+                a.fix = true;
+                if a.action.is_none() {
+                    a.action = Some("diagnose".into());
+                }
+                a.headless = true;
+            }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
@@ -251,6 +265,7 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --logs [服务名]       看容器日志（已脱敏）
   hunter-launcher --diagnose            打印脱敏诊断信息 + 确定性规则的结论（零 token）
   hunter-launcher --diagnose --ai       再问一轮 AI 诊断助手（会花你的 hunter 额度）
+  hunter-launcher --diagnose --fix      规则层有把握时，把 Safe 级动作自己跑掉再复查（零 token）
   hunter-launcher --diagnose --code E_PULL_FAILED  按指定错误码跑一遍规则层
   hunter-launcher --assist-replay <文件>  把一份存下来的网关响应喂给动作白名单（离线，不联网）
   hunter-launcher --review <动作id,…>     让复核员真的审一遍这个计划（会花你的 hunter 额度）
@@ -323,7 +338,7 @@ pub fn run(args: &Args) -> i32 {
             )),
         },
         Some("diagnose") if args.ai => cmd_assist(&st, args),
-        Some("diagnose") => cmd_diagnose(&st, args.code.as_deref()),
+        Some("diagnose") => cmd_diagnose(&st, args.code.as_deref(), args.fix),
         Some("check-update") => cmd_check_update(&st),
         Some("self-update") => cmd_self_update(),
         Some("upgrade") => cmd_upgrade(&st, args),
@@ -494,27 +509,11 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
     }
 }
 
+/// 从 `E_XXX` 反查错误码。**清单只有 [`Code::ALL`] 一份**（I9）——
+/// 这里原先手抄了一份，加 `E_BUILTIN_DOWN` 时漏改，命令行上就打出了
+/// 「E_UNKNOWN: Hunter 自己那台虚拟机没起来」这种自相矛盾的话。
 fn code_from_str(s: &str) -> Option<Code> {
-    [
-        Code::DockerMissing,
-        Code::DaemonDown,
-        Code::WslMissing,
-        Code::KeyInvalid,
-        Code::QuotaExhausted,
-        Code::PullFailed,
-        Code::PortInUse,
-        Code::PortConflict,
-        Code::StartTimeout,
-        Code::ProxyBlock,
-        Code::UpdateFailed,
-        Code::ComposeFetch,
-        Code::ConfigWrite,
-        Code::ProjectConflict,
-        Code::RateLimited,
-        Code::NotImplemented,
-    ]
-    .into_iter()
-    .find(|c| c.as_str() == s)
+    Code::from_str(s)
 }
 
 // ── 安装 ──────────────────────────────────────────────────────────────────
@@ -900,7 +899,7 @@ fn cmd_logs(service: Option<&str>) -> AppResult<()> {
     Ok(())
 }
 
-fn cmd_diagnose(st: &AppState, code: Option<&str>) -> AppResult<()> {
+fn cmd_diagnose(st: &AppState, code: Option<&str>, fix: bool) -> AppResult<()> {
     let cfg = st.config();
     let d = crate::runtime::docker::detect();
     let ps = compose::ps().unwrap_or_default();
@@ -965,7 +964,28 @@ fn cmd_diagnose(st: &AppState, code: Option<&str>) -> AppResult<()> {
     //
     // **只跑规则层，不调 AI**：`--diagnose` 是一条给脚本用的路径，
     // 不该在用户没要求的时候悄悄去网关花他的额度。
-    let rule = crate::assist::diagnose(code, None, None, st.hunter_key())?.rule;
+    // `--fix` 时走带自动修复的那一条（I9 的 P0-3）：全自动档下规则层有把握的
+    // Safe 动作自己跑掉，再重新采一遍现场。不带 `--fix` 就是只读的。
+    let snap = if fix {
+        crate::assist::diagnose_and_fix(code, None, None, st.hunter_key())?
+    } else {
+        crate::assist::diagnose(code, None, None, st.hunter_key())?
+    };
+    if !snap.auto_ran.is_empty() {
+        s.push_str("\n## 启动器已经替你做了这几步（全自动档）\n");
+        for r in &snap.auto_ran {
+            s.push_str(&format!(
+                "{} {}：{}\n",
+                if r.ok { "✓" } else { "✕" },
+                r.title,
+                r.text
+            ));
+        }
+    }
+    if snap.can_resume_install {
+        s.push_str("\n## Docker 现在可用，而这一套还没装完 —— 界面上会自动接着往下装\n");
+    }
+    let rule = snap.rule;
     s.push_str(&format!("\n## 诊断结论（确定性规则 · {}）\n", rule.rule));
     s.push_str(&format!("{}\n{}\n", rule.title, rule.detail));
     for a in &rule.actions {
@@ -1005,7 +1025,7 @@ fn cmd_diagnose(st: &AppState, code: Option<&str>) -> AppResult<()> {
 ///   （`actions::execute(_, false)` 本来也会直接拒绝）。
 /// * 每一轮的 token 消耗都打出来，跑完给一个合计。
 fn cmd_assist(st: &AppState, args: &Args) -> AppResult<()> {
-    cmd_diagnose(st, args.code.as_deref())?;
+    cmd_diagnose(st, args.code.as_deref(), args.fix)?;
     title("AI 诊断助手");
 
     if !crate::config::LauncherConfig::load().assist.enabled {
@@ -1810,6 +1830,11 @@ mod tests {
     fn 光_diagnose_不会去问_ai() {
         assert!(!a(&["--diagnose"]).ai);
         assert!(a(&["--diagnose", "--ai"]).ai);
+        // I9：`--fix` 也要显式给 —— 不带它的 `--diagnose` 一个字节都不改这台机器
+        assert!(!a(&["--diagnose"]).fix);
+        assert!(a(&["--diagnose", "--fix"]).fix);
+        assert_eq!(a(&["--fix"]).action.as_deref(), Some("diagnose"));
+        assert!(!a(&["--diagnose", "--fix"]).ai, "--fix 不该顺带把 AI 打开");
     }
 
     /// I5：`--auto` 与 `--assist-mode`。

@@ -691,6 +691,232 @@ pub fn argv_privileged(argv: &[String]) -> AppResult<()> {
     }
 }
 
+// ── colima / limactl 隔离守卫（I9 的 P0-2） ──────────────────────────────
+
+/// colima 的哪些子命令是**对着某一台虚拟机**动手的。
+///
+/// `list` / `version` / `template` 不针对某个 profile（在我们自己的 `COLIMA_HOME`
+/// 里 `list` 只会列出我们自己那一个），所以它们不要求 `--profile`。
+const COLIMA_PROFILE_SUBCOMMANDS: &[&str] = &[
+    "start",
+    "stop",
+    "restart",
+    "delete",
+    "status",
+    "ssh",
+    "ssh-config",
+    "nerdctl",
+    "kubernetes",
+    "update",
+    "prune",
+];
+
+/// 从 argv 里取 `--profile <名字>` / `-p <名字>` / `--profile=<名字>`。
+fn colima_profile(rest: &[String]) -> Option<String> {
+    if let Some(w) = rest
+        .windows(2)
+        .find(|w| w[0] == "--profile" || w[0] == "-p")
+    {
+        return Some(w[1].clone());
+    }
+    rest.iter()
+        .find_map(|a| a.strip_prefix("--profile=").map(str::to_string))
+}
+
+/// 这条 colima 命令针对的是某一台具体的虚拟机吗。
+fn colima_targets_profile(rest: &[String]) -> bool {
+    rest.iter()
+        .any(|a| COLIMA_PROFILE_SUBCOMMANDS.contains(&a.as_str()))
+}
+
+/// **每一条 colima / limactl 命令都要过这里。**
+///
+/// ## 这一道拦的是什么
+///
+/// 0.1.8 在用户 Mac 上（2026-09-22 14:49:15）执行了
+/// `~/.hunter/runtime/bin/colima start` —— 我们自己下的 colima，
+/// 却用了**默认**的 `COLIMA_HOME=~/.colima`、**没有** `--profile`。
+/// 后果是在用户家目录里新建并启动了一台和 Hunter 毫无关系的 `default` 虚拟机
+/// （2 核 2 GB，`~/.colima` 占 1.4 GB）。承诺里写着「只在 `~/.hunter` 里动东西」，
+/// 那一条当场就破了。
+///
+/// ## 判据（两条路，都是代码，不是提示词）
+///
+/// | 情形 | 放行条件 |
+/// |---|---|
+/// | 用**我们自己**那套 colima | `COLIMA_HOME` 解析后必须落在 `~/.hunter/runtime` 里，且 profile 必须是 `hunter` |
+/// | 起**用户原有**的 profile | `--profile <名字>` 里的名字必须是 `~/.colima` 里**本来就有**的目录，且子命令只能是 `start` |
+///
+/// 两条都不满足 —— 包括「没写 `--profile`」这种最危险的写法 —— 一律拒绝并记审计。
+///
+/// `env` 是这一次调用额外加的环境变量；没写进去的按
+/// [`crate::runtime::env::current`] 给子进程的那一份算（`base_command` 会套上它）。
+pub fn colima_call(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppResult<()> {
+    let base = Path::new(program)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| program.to_ascii_lowercase());
+    let base = base.trim_end_matches(".exe").to_string();
+    if base != "colima" && base != "limactl" {
+        return Ok(());
+    }
+    let rest: Vec<String> = args.iter().map(|s| s.to_ascii_lowercase()).collect();
+
+    // 这一次调用最终会看到的 COLIMA_HOME：本次显式给的优先，其次是
+    // `runtime::env` 给所有子进程的那一份，最后才是启动器自己的进程环境
+    let home = env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("COLIMA_HOME"))
+        .map(|(_, v)| (*v).to_string())
+        .or_else(|| crate::runtime::env::current().colima_home)
+        .or_else(|| std::env::var("COLIMA_HOME").ok())
+        .unwrap_or_default();
+    let ours = colima_home_is_ours(&home);
+    let profile = colima_profile(&rest);
+
+    // limactl 只走我们自己那条路（colima 会去 $PATH 上找它）。
+    // 它没有 `--profile`，靠 LIMA_HOME 隔离
+    if base == "limactl" {
+        let lima = env
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("LIMA_HOME"))
+            .map(|(_, v)| (*v).to_string())
+            .or_else(|| crate::runtime::env::current().lima_home)
+            .or_else(|| std::env::var("LIMA_HOME").ok())
+            .unwrap_or_default();
+        if !under_runtime(&lima) {
+            return Err(reject_audited(
+                "colima_call",
+                format!(
+                    "limactl 的 LIMA_HOME 是「{}」，不在 {} 里 —— \
+                     那会动到你自己的虚拟机，拒绝。",
+                    safe(&lima),
+                    crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
+                ),
+            ));
+        }
+        return Ok(());
+    }
+
+    // ── 路 A：用我们自己那一套 ──
+    if ours {
+        if colima_targets_profile(&rest) {
+            match profile.as_deref() {
+                Some(p) if p == crate::runtime::builtin::PROFILE => return Ok(()),
+                Some(p) => {
+                    return Err(reject_audited(
+                        "colima_call",
+                        format!(
+                            "这条 colima 命令在 Hunter 自己的 COLIMA_HOME 里指向 profile「{}」，\
+                             而我们只该动「{}」，拒绝。",
+                            safe(p),
+                            crate::runtime::builtin::PROFILE
+                        ),
+                    ))
+                }
+                None => {
+                    return Err(reject_audited(
+                        "colima_call",
+                        format!(
+                            "这条 colima 命令没写 `--profile {}` —— \
+                             不写的话 colima 会去动名叫 default 的那一台，拒绝。",
+                            crate::runtime::builtin::PROFILE
+                        ),
+                    ))
+                }
+            }
+        }
+        // list / version 之类：在我们自己的 COLIMA_HOME 里，碰不到用户的东西
+        return Ok(());
+    }
+
+    // ── 路 B：起用户原有的那一台 ──
+    //
+    // 只允许 `start`，而且 profile 必须是他 `~/.colima` 里**本来就有**的。
+    // 「不得新建」这一条就写在这里：名字对不上目录，就是新建。
+    let Some(p) = profile else {
+        return Err(reject_audited(
+            "colima_call",
+            format!(
+                "这条 colima 命令的 COLIMA_HOME 是「{}」（不是 Hunter 自己的 {}），\
+                 又没写 `--profile` —— 它会在你家目录里新建一台虚拟机，拒绝。",
+                safe(&home),
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
+            ),
+        ));
+    };
+    let existing = crate::runtime::effective::user_colima_profiles();
+    if !existing.iter().any(|x| x.eq_ignore_ascii_case(&p)) {
+        return Err(reject_audited(
+            "colima_call",
+            format!(
+                "profile「{}」不在你 ~/.colima 里已有的那几个（看到的是：{}）—— \
+                 启动器不会替你新建虚拟机，拒绝。",
+                safe(&p),
+                if existing.is_empty() {
+                    "一个都没有".to_string()
+                } else {
+                    existing.join("、")
+                }
+            ),
+        ));
+    }
+    if !rest.iter().any(|a| a == "start") {
+        return Err(reject_audited(
+            "colima_call",
+            format!(
+                "对你自己的 colima，启动器只做 `start`，不做别的（这条是 {}），拒绝。",
+                safe(&rest.join(" "))
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// 这个 `COLIMA_HOME` 是我们自己的那一个吗。
+fn colima_home_is_ours(home: &str) -> bool {
+    if home.trim().is_empty() {
+        return false;
+    }
+    match (
+        canon_for_write(Path::new(home)),
+        canon_for_write(&crate::paths::colima_home()),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        // 目录还没建出来时按字符串比（第一次装的时候就是这种情况）
+        _ => norm_path(home) == norm_path(&crate::paths::colima_home().to_string_lossy()),
+    }
+}
+
+/// 这个路径落在 `~/.hunter/runtime` 里吗。
+fn under_runtime(p: &str) -> bool {
+    if p.trim().is_empty() {
+        return false;
+    }
+    let rt = crate::paths::runtime_dir();
+    match (canon_for_write(Path::new(p)), canon_for_write(&rt)) {
+        (Ok(a), Ok(b)) => a.starts_with(&b),
+        _ => norm_path(p).starts_with(&norm_path(&rt.to_string_lossy())),
+    }
+}
+
+fn norm_path(s: &str) -> String {
+    s.trim().trim_end_matches(['/', '\\']).to_string()
+}
+
+/// 拒绝 + 记一条审计。**拒绝这件事本身要留痕**，否则「它想干什么、被拦下了没有」
+/// 事后查不出来（I9 任务书 P0-2 点名要求）。
+fn reject_audited(action: &str, msg: String) -> AppError {
+    audit(
+        action,
+        &std::collections::BTreeMap::new(),
+        Proposer::Orchestrator,
+        None,
+        &format!("拒绝：{msg}"),
+    );
+    reject(msg)
+}
+
 // ── 审计日志 ──────────────────────────────────────────────────────────────
 
 /// `~/.hunter/logs/assist-audit.log`
@@ -979,8 +1205,13 @@ mod tests {
 
     #[test]
     fn 路径守卫解得开_双点_与软链() {
+        // **这一条原来没拿 `HUNTER_HOME` 那把锁**，靠的是「跑测试这台机器上
+        // 恰好有一个 ~/.hunter/app 目录」。I9 新加的几条测试会把 `HUNTER_HOME`
+        // 指到临时目录，它就当场红了 —— 红在这里，肇事者在别的文件里，
+        // 正是 I7 记过一次的那类「一直坏着、只是还没被看见」。顺手修掉。
+        let _g = crate::paths::test_home("guard-writable");
         let root = crate::paths::root();
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join("app")).unwrap();
         // 正常的：~/.hunter 下的文件
         assert!(writable_path(&root.join("launcher.toml")).is_ok());
         assert!(writable_path(&root.join("app").join(".env")).is_ok());
@@ -1027,6 +1258,10 @@ mod tests {
 
     #[test]
     fn 审计能写能读() {
+        // **自己的临时工作目录**：审计日志是一个追加文件，两条测试并行写同一个
+        // 文件、又各自 `audit_tail(1)`，必然互相把对方的那一行顶掉。
+        // 这个race 以前一直在（只是没撞上），I9 新加的几条审计把它撞出来了。
+        let _g = crate::paths::test_home("guard-audit-rw");
         let mut args = std::collections::BTreeMap::new();
         args.insert("port".to_string(), "8100".to_string());
         audit(
@@ -1044,6 +1279,7 @@ mod tests {
 
     #[test]
     fn 审计里不会出现_key() {
+        let _g = crate::paths::test_home("guard-audit-key");
         let mut args = std::collections::BTreeMap::new();
         args.insert(
             "x".to_string(),
@@ -1263,5 +1499,137 @@ mod tests {
         assert!(argv_privileged(&a(&["dpkg", "-i", &other.to_string_lossy()])).is_err());
         let _ = std::fs::remove_file(&deb);
         let _ = std::fs::remove_file(&other);
+    }
+
+    // ── I9 的 P0-2：colima / limactl 隔离守卫 ────────────────────────────
+
+    /// 把 `COLIMA_HOME` 指到 Hunter 自己那一份的 env 对。
+    fn ours_env() -> Vec<(String, String)> {
+        vec![(
+            "COLIMA_HOME".to_string(),
+            crate::paths::colima_home().to_string_lossy().into_owned(),
+        )]
+    }
+
+    fn pairs(v: &[(String, String)]) -> Vec<(&str, &str)> {
+        v.iter().map(|(k, x)| (k.as_str(), x.as_str())).collect()
+    }
+
+    /// **这一条就是 0.1.8 在用户 Mac 上闯的祸**（2026-09-22 14:49:15）：
+    /// 我们自己下的 colima + 默认的 `~/.colima` + 没有 `--profile`。
+    /// 它在用户家目录里建了一台没人要的 `default` 虚拟机（1.4 GB）。
+    #[test]
+    fn 裸的_colima_start_必须被拒绝() {
+        let _g = crate::paths::test_home("guard-colima-bare");
+        let bin = crate::paths::runtime_bin().join("colima");
+        // 显式给一个空的 COLIMA_HOME —— 模拟「谁都没设，用默认的 ~/.colima」
+        let e = colima_call(&bin.to_string_lossy(), &["start"], &[("COLIMA_HOME", "")])
+            .expect_err("裸 colima start 必须被拒");
+        assert!(
+            e.msg.contains("新建") || e.msg.contains("--profile"),
+            "拒绝的理由要说清是为什么：{}",
+            e.msg
+        );
+        // **拒绝要留痕**
+        let tail = audit_tail(5).join("\n");
+        assert!(tail.contains("colima_call"), "拒绝没写进审计：{tail}");
+        assert!(tail.contains("拒绝"), "{tail}");
+    }
+
+    /// 带齐隔离参数的那一条（`start_builtin_runtime` 真正发出去的那条）必须放行。
+    #[test]
+    fn 带上_colima_home_与_profile_hunter_才放行() {
+        let _g = crate::paths::test_home("guard-colima-ok");
+        let bin = crate::paths::runtime_bin().join("colima");
+        let env = ours_env();
+        colima_call(
+            &bin.to_string_lossy(),
+            &["start", "--profile", "hunter", "--vm-type", "vz"],
+            &pairs(&env),
+        )
+        .expect("带齐隔离参数的必须放行");
+    }
+
+    /// 在我们自己的 `COLIMA_HOME` 里指向别的 profile —— 也拒。
+    /// 「只动 hunter 这一台」不因为家目录对了就放松。
+    #[test]
+    fn 我们自己的_colima_home_里也只许动_hunter() {
+        let _g = crate::paths::test_home("guard-colima-other");
+        let bin = crate::paths::runtime_bin().join("colima");
+        let env = ours_env();
+        let e = colima_call(
+            &bin.to_string_lossy(),
+            &["start", "--profile", "default"],
+            &pairs(&env),
+        )
+        .expect_err("profile 不是 hunter 要拒");
+        assert!(e.msg.contains("hunter"), "{}", e.msg);
+    }
+
+    /// 用户 `~/.colima` 里**没有**的 profile —— 拒。
+    /// 「不得新建」这条红线就写在这里：名字对不上目录，就是新建。
+    #[test]
+    fn 不许在用户家目录里新建_profile() {
+        let _g = crate::paths::test_home("guard-colima-new");
+        let e = colima_call(
+            "/usr/local/bin/colima",
+            &["start", "--profile", "hunter-launcher-造出来的"],
+            &[("COLIMA_HOME", "/home/someone/.colima")],
+        )
+        .expect_err("用户那边没有这个 profile，要拒");
+        assert!(e.msg.contains("不会替你新建"), "{}", e.msg);
+    }
+
+    /// `list` / `version` 这种不针对某一台虚拟机的，在我们自己的家目录里放行。
+    #[test]
+    fn 不针对某一台虚拟机的子命令在我们自己家目录里放行() {
+        let _g = crate::paths::test_home("guard-colima-list");
+        let bin = crate::paths::runtime_bin().join("colima");
+        let env = ours_env();
+        colima_call(&bin.to_string_lossy(), &["list"], &pairs(&env)).expect("list 该放行");
+        colima_call(&bin.to_string_lossy(), &["version"], &pairs(&env)).expect("version 该放行");
+    }
+
+    /// limactl 靠 `LIMA_HOME` 隔离：不指向 `~/.hunter/runtime` 就拒。
+    #[test]
+    fn limactl_的_lima_home_必须在我们自己的目录里() {
+        let _g = crate::paths::test_home("guard-lima");
+        let ok = crate::paths::lima_home().to_string_lossy().into_owned();
+        colima_call("/x/limactl", &["list"], &[("LIMA_HOME", ok.as_str())]).expect("该放行");
+        let e = colima_call("/x/limactl", &["list"], &[("LIMA_HOME", "/home/u/.lima")])
+            .expect_err("指向用户的 ~/.lima 要拒");
+        assert!(e.msg.contains("LIMA_HOME"), "{}", e.msg);
+    }
+
+    /// 别的程序一律不受这道守卫影响（零开销、零误伤）。
+    #[test]
+    fn 这道守卫只管_colima_与_limactl() {
+        let _g = crate::paths::test_home("guard-colima-other-prog");
+        colima_call("/usr/bin/docker", &["ps"], &[]).expect("docker 不归这道管");
+        colima_call("/usr/bin/echo", &["start"], &[]).expect("echo 不归这道管");
+    }
+
+    /// **守卫挂在真正 spawn 之前**：不管谁写的这条命令，它都到不了 `fork`。
+    /// 这一条走的是 [`crate::proc`] 的正门，不是直接调守卫函数。
+    #[test]
+    fn 裸的_colima_start_到不了_spawn() {
+        let _g = crate::paths::test_home("guard-colima-proc");
+        // 造一个真的能跑的假 colima：守卫要是没拦住，它会成功返回 0
+        let bin = crate::paths::runtime_bin().join("colima");
+        std::fs::create_dir_all(crate::paths::runtime_bin()).unwrap();
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let e =
+            crate::proc::run_with_env(&bin.to_string_lossy(), &["start"], &[("COLIMA_HOME", "")])
+                .expect_err("守卫必须在 spawn 之前拦住它");
+        assert!(
+            e.msg.contains("--profile") || e.msg.contains("新建"),
+            "{}",
+            e.msg
+        );
     }
 }

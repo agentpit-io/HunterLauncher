@@ -178,6 +178,7 @@ const zhCN = {
     collecting: '正在收集现场信息…',
     collectFailed: (e: string) => `收集现场信息时出错了：${e}`,
     ruleBadge: '规则',
+    autoRanTitle: '启动器已经替你做了这几步',
     aiBadge: 'AI 建议',
     roundLabel: (n: number, max: number) => `第 ${n} / ${max} 轮`,
     tokensThisRound: (n: number) => `本轮约 ${n} tokens`,
@@ -616,8 +617,16 @@ const zhCN = {
     viewLogs: '查看日志',
     codes: {
       E_DOCKER_MISSING: { title: '没有找到 Docker', hint: '启动器需要 Docker 才能部署 Hunter。装好之后回来重新检测。' },
-      E_DAEMON_DOWN: { title: 'Docker 守护进程没在跑', hint: '请启动 Docker Desktop / OrbStack，或执行 sudo systemctl start docker。' },
-      E_WSL_MISSING: { title: 'Windows 缺少 WSL2', hint: '执行 wsl --install 并重启电脑，再回来继续。' },
+      // I9：这两条原来写的是「请执行 sudo systemctl start docker」「执行 wsl --install」——
+      // 正是 2026-09-21 22:10 那条原则要消灭的话。启动器自己会去启动它
+      // （mac 上 open -a、Linux 上先直接试、不行走系统授权框），做不到才落到这一页，
+      // 所以这里说的是「启动器试过了、没成」，不是支使用户去敲命令。
+      E_DAEMON_DOWN: { title: 'Docker 守护进程没在跑', hint: '启动器已经试过替你把它启动起来，没有成功。下面写了它试了什么、卡在哪一步。' },
+      E_WSL_MISSING: { title: 'Windows 缺少 WSL2', hint: '这台 Windows 上没有 WSL2，而装它需要管理员权限并重启电脑 —— 这一步启动器替不了你。' },
+      E_BUILTIN_DOWN: {
+        title: 'Hunter 自己那台虚拟机没起来',
+        hint: '这不是你电脑上的 Docker：上一次安装在 ~/.hunter/runtime 里装了一套只服务 Hunter 的运行时，它的虚拟机现在没在跑。启动器会自己把它起起来，起不来就清掉残骸重建一次 —— 整个过程只动 ~/.hunter/runtime，你的 ~/.colima、别的容器和数据卷一个字节都不会碰。',
+      },
       E_KEY_INVALID: { title: 'key 无效', hint: '这把 key 网关不认（可能填错了，或者已被吊销）。' },
       E_QUOTA_EXHAUSTED: { title: '今日额度已用完', hint: '明天 00:00（上海）恢复，或者现在切换成自带模型 key。' },
       E_PULL_FAILED: { title: '镜像拉取失败', hint: '已重试 3 次仍然失败。可以换一个镜像源，或者从离线包导入。' },

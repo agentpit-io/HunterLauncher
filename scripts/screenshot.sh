@@ -24,7 +24,9 @@ SETTLE="${SETTLE:-9}"
 # I7 新增三页：auto-review（复核卡片）、auto-takeover-offer（「直接用它」那张不阻塞的卡片）、
 # takeover（接管态的运行面板）
 # I7 又新增两页：dashboard-lan / settings-lan（升级上来、网页端口还对局域网开着的老机器）
-PAGES=(welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error)
+# I9 新增一页：error-builtin —— 上一次没装成功留下的内置运行时残骸
+# （用户 Mac 上 0.1.8 那次的现场），同时也是「启动器已经替你做了这几步」那一块的样子
+PAGES=(welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error error-builtin)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

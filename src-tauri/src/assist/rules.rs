@@ -45,6 +45,13 @@ pub struct Suggestion {
 
 /// 跑一遍规则。永远返回一条 —— 认不出来也要说句话，不能留给用户一片空白。
 pub fn diagnose(r: &Report) -> Suggestion {
+    // **这一条排在所有 docker 规则前面**（I9 的 P0-1）：
+    // 「Hunter 自己那台虚拟机没起来」与「用户的 Docker 没起来」是两个现场，
+    // 顺序反了就会走成 0.1.8 在用户 Mac 上那样 —— 用裸 `colima start`
+    // 去「启动用户的 Colima」，而用户根本没装过 Colima。
+    if let Some(s) = builtin_runtime_down(r) {
+        return s;
+    }
     if let Some(s) = daemon_down(r) {
         return s;
     }
@@ -69,15 +76,87 @@ pub fn diagnose(r: &Report) -> Suggestion {
     unknown(r)
 }
 
+/// **Hunter 自己那套内置运行时装着、虚拟机没起来**（I9 的 P0-1）。
+///
+/// 0.1.8 在用户 Mac 上这个现场被判成了 `daemon-down-app-installed`，
+/// 给出的动作是「启动 Colima」—— 而用户从来没装过 Colima，
+/// 那份 colima 是我们自己下到 `~/.hunter/runtime/bin` 里的。
+/// 执行的裸 `colima start` 在他家目录里建了一台没人要的虚拟机（1.4 GB）。
+///
+/// 判据只看两件事，都是确定性的：内置运行时装了点东西、它的 socket 连不上。
+fn builtin_runtime_down(r: &Report) -> Option<Suggestion> {
+    // daemon 已经连上了就不是这个现场（哪怕连的是用户自己的 Docker）
+    if r.daemon_running {
+        return None;
+    }
+    // **判据来自侦察员采的那份现场，不去现查**（I9 自审）。
+    //
+    // 原先这里直接调 `effective::current()`，两个毛病：同一次诊断里现场被采了两遍
+    // （规则层看到的可能和报文里写的不是同一件事）；以及**这条规则在任何一台
+    // 装着 Docker 的机器上都测不了** —— 开发机与测试机都常驻 docker，
+    // `current()` 永远返回「用户那一套」，分支一次都跑不到。
+    let a = r.apps.iter().find(|x| x.id == "builtin")?;
+    if a.running == Some(true) {
+        return None;
+    }
+    // 工具齐了（installed = true）→ 起它；还缺文件（false）→ 先补齐
+    let tools_ready = a.installed == Some(true);
+    let rt = crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy());
+    let (call, detail) = if tools_ready {
+        (
+            Call::new("start_builtin_runtime"),
+            format!(
+                "Hunter 自己那套运行时已经装好了（在 {rt} 里），只是它的虚拟机没在跑。\n\
+                 这不是你电脑上的 Docker，也不是你装的 Colima —— 启动器不会去碰你的 ~/.colima。\n\
+                 把 profile {} 这台虚拟机起起来就行，系统镜像本机已经有、校验过，不用下东西。\n\
+                 （判据：{}）",
+                crate::runtime::builtin::PROFILE,
+                a.evidence
+            ),
+        )
+    } else {
+        (
+            Call::new("install_runtime"),
+            format!(
+                "上一次安装没有装完：Hunter 自己那套运行时还缺几个文件。\n\
+                 这不是你电脑上的 Docker —— 它是启动器自己下到 {rt} 里的一套，\
+                 只服务 Hunter，不改你系统里的任何东西。\n\
+                 把缺的那几个补齐再起虚拟机就行；已经下好并校验过的文件一个字节都不会重下。\n\
+                 （判据：{}）",
+                a.evidence
+            ),
+        )
+    };
+    // 规划不出来（这个平台上装不了内置运行时，例如 Linux）时**照样出这条结论** ——
+    // 少一个按钮不该让整条规则失效、掉到优先级更低的规则上去。
+    // 这是 I4 在 `daemon_down` 那条上踩过一次的坑，同一个教训不踩第二遍。
+    let planned = actions::plan(&call);
+    let detail = match &planned {
+        Ok(_) => detail,
+        Err(e) => format!("{detail}\n启动器在这个平台上做不了这一步：{}", e.msg),
+    };
+    Some(Suggestion {
+        rule: "builtin-runtime-down".into(),
+        code: Some("E_BUILTIN_DOWN".into()),
+        title: "Hunter 自己那台虚拟机没起来".into(),
+        detail,
+        actions: planned.into_iter().collect(),
+        // 判据全是文件与 socket，查得清清楚楚 —— 这一条不必花 token
+        confident: true,
+    })
+}
+
 /// 「装了但没起来」。这一条是 I4 点名要**不走 AI** 的那一个。
 fn daemon_down(r: &Report) -> Option<Suggestion> {
     if !r.docker_installed || r.daemon_running {
         return None;
     }
-    // 装了、但进程没起 —— 两个条件都要，「读不到」不算
+    // 装了、但进程没起 —— 两个条件都要，「读不到」不算。
+    // **`builtin` 排除掉**（I9）：它不是用户装的，起它走 `builtin-runtime-down`
     let candidate = r
         .apps
         .iter()
+        .filter(|a| a.id != "builtin")
         .find(|a| a.installed == Some(true) && a.running == Some(false))?;
 
     // 启动动作规划不出来（这个平台上没法替他点）时**照样出这条建议** ——
@@ -85,9 +164,12 @@ fn daemon_down(r: &Report) -> Option<Suggestion> {
     // （I4 自审：原先这里是 `.ok()?`，在没有 GUI 应用的平台上会静悄悄地掉到「端口被占」）
     let planned = actions::plan(&Call::with("start_runtime", "app", &candidate.id));
     let tail = match &planned {
-        Ok(_) => "点下面那个按钮把它启动，起来之后再点「重新检测」。".to_string(),
+        // I9：全自动档下这一步由启动器自己执行（见 `assist::diagnose_and_fix`），
+        // 所以话不该是「点下面那个按钮」——「逐步确认」档才会真出一个按钮。
+        // 0.1.8 的用户在授权页上选的是全自动，界面却让他连点了四次。
+        Ok(_) => "启动器会替你把它启动起来，再等它就绪。".to_string(),
         Err(e) => format!(
-            "启动器在这个平台上没法替你启动它（{}），请手动打开 {} 之后再点「重新检测」。",
+            "启动器在这个平台上没法替你启动它（{}）—— 这一步只能由 {} 自己来。",
             e.msg, candidate.label
         ),
     };
@@ -335,6 +417,7 @@ mod tests {
             os: "macos".into(),
             arch: "aarch64".into(),
             os_version: Some("15.1".into()),
+            effective_runtime: "当前生效运行时：测试（测试）".into(),
             error_code: None,
             error_message: None,
             stage: Some("docker".into()),
@@ -649,6 +732,184 @@ mod tests {
             let s = diagnose(&c);
             assert!(!s.title.is_empty(), "{}", s.rule);
             assert!(!s.detail.is_empty(), "{}", s.rule);
+        }
+    }
+
+    // ── I9 的 P0-1 ──────────────────────────────────────────────────────
+
+    /// 把内置运行时那四件工具真的摆到临时 `HUNTER_HOME` 里 ——
+    /// `start_builtin_runtime` 要规划得出命令，就得有一个真的 colima 文件。
+    fn make_builtin_tools() {
+        let bin = crate::paths::runtime_bin();
+        std::fs::create_dir_all(&bin).unwrap();
+        for p in [bin.join("docker"), bin.join("colima")] {
+            std::fs::write(&p, b"#!/bin/sh\nexit 0\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+    }
+
+    /// **用户 Mac 上 0.1.8 那次的现场，一比一复现。**
+    ///
+    /// 报文里：docker「装了」（那份 docker 正是我们自己下的）、daemon 连不上、
+    /// `builtin` 这一条是「装好了、没在跑」。
+    ///
+    /// 0.1.8 对着它给出的是 `daemon-down-app-installed` +「启动 Colima」，
+    /// 执行的是一条裸 `colima start`。I9 之后必须是 `builtin-runtime-down` +
+    /// `start_builtin_runtime`，而且**绝不能**出现 `start_runtime`。
+    #[test]
+    fn 内置运行时残骸走内置主线而不是启动用户的_colima() {
+        let _g = crate::paths::test_home("rules-residue");
+        make_builtin_tools();
+
+        let mut r = base();
+        r.daemon_running = false;
+        r.docker_installed = true;
+        r.docker_path = Some(
+            crate::paths::runtime_bin()
+                .join("docker")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        r.apps = vec![
+            app_ev(
+                "builtin",
+                "Hunter 内置运行时",
+                Some(true),
+                Some(false),
+                "看 ~/.hunter/runtime 下的四件工具 + socket 连不连得上（装好了，虚拟机没起来）",
+            ),
+            // **0.1.8 的报文里同时还有一条「Colima 装了没在跑」** ——
+            // 那条正是我们自己那份 colima 被认成了用户的。规则必须先命中内置那条
+            app_ev("colima", "你自己的 Colima", Some(true), Some(false), "测试"),
+        ];
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "builtin-runtime-down", "{}", s.detail);
+        assert_eq!(s.code.as_deref(), Some("E_BUILTIN_DOWN"));
+        assert!(s.confident, "判据全是文件与 socket，不必问模型");
+        assert_eq!(s.actions.len(), 1, "{:?}", s.actions);
+        assert_eq!(s.actions[0].id, "start_builtin_runtime");
+        // 真正要跑的那条命令必须带 profile hunter
+        let line = s.actions[0].command_line();
+        assert!(line.contains("--profile"), "{line}");
+        assert!(line.contains(crate::runtime::builtin::PROFILE), "{line}");
+        // 用的必须是我们自己那份 colima
+        assert!(
+            line.contains(&crate::paths::runtime_dir().to_string_lossy().to_string()),
+            "{line}"
+        );
+        // 话要说清楚：这不是用户装的 Docker
+        assert!(s.detail.contains("不是你电脑上的 Docker"), "{}", s.detail);
+        assert!(s.detail.contains("不会去碰你的 ~/.colima"), "{}", s.detail);
+    }
+
+    /// 装了一半（0.1.7 那种机器）→ 先补齐缺的那几个，而不是直接去起虚拟机。
+    #[test]
+    fn 内置运行时装了一半时先补齐再起() {
+        let _g = crate::paths::test_home("rules-partial");
+        let mut r = base();
+        r.daemon_running = false;
+        r.apps = vec![app_ev(
+            "builtin",
+            "Hunter 内置运行时",
+            Some(false),
+            Some(false),
+            "看 ~/.hunter/runtime 下的四件工具（装了一半（还缺 colima、limactl））",
+        )];
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "builtin-runtime-down");
+        assert!(s.detail.contains("还缺"), "{}", s.detail);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                s.actions.first().map(|a| a.id.as_str()),
+                Some("install_runtime")
+            );
+        } else {
+            // Linux / Windows 上装不了内置运行时 —— **结论照给，做不到就说清楚**
+            assert!(s.actions.is_empty(), "{:?}", s.actions);
+            assert!(s.detail.contains("做不了这一步"), "{}", s.detail);
+        }
+    }
+
+    /// daemon 已经连上了（用户自己的 Docker 在跑）→ 这条规则必须让路，
+    /// 哪怕 `~/.hunter/runtime` 里躺着一套没起来的内置运行时。
+    #[test]
+    fn 用户的_docker_在跑时内置那条规则让路() {
+        let _g = crate::paths::test_home("rules-user-first");
+        let mut r = base(); // base() 里 daemon_running = true
+        r.apps = vec![app_ev(
+            "builtin",
+            "Hunter 内置运行时",
+            Some(true),
+            Some(false),
+            "测试",
+        )];
+        assert_ne!(diagnose(&r).rule, "builtin-runtime-down");
+    }
+
+    /// 内置运行时的虚拟机在跑 → 也让路（那就不是这个现场了）。
+    #[test]
+    fn 内置运行时在跑时这条规则不触发() {
+        let _g = crate::paths::test_home("rules-builtin-running");
+        let mut r = base();
+        r.daemon_running = false;
+        r.apps = vec![app_ev(
+            "builtin",
+            "Hunter 内置运行时",
+            Some(true),
+            Some(true),
+            "测试",
+        )];
+        assert_ne!(diagnose(&r).rule, "builtin-runtime-down");
+    }
+
+    /// `builtin` 这一条**不许**落进「装了但没起来」那条规则里 ——
+    /// 那条规则会给出 `start_runtime`，而 `start_runtime` 碰的是用户的 colima。
+    #[test]
+    fn builtin_不算用户装的运行时() {
+        let _g = crate::paths::test_home("rules-builtin-not-user");
+        let mut r = base();
+        r.daemon_running = false;
+        // 只有 builtin 一条，而且它「在跑」—— 上面那条内置规则不触发，
+        // 于是必须掉到别的规则上去，**但绝不能是 daemon-down-app-installed**
+        r.apps = vec![app_ev(
+            "builtin",
+            "Hunter 内置运行时",
+            Some(true),
+            Some(true),
+            "测试",
+        )];
+        // 造一个「装了但没起」的形状：installed=true、running=false
+        r.apps[0].running = Some(false);
+        let s = diagnose(&r);
+        assert_eq!(
+            s.rule, "builtin-runtime-down",
+            "内置运行时不是用户装的东西，不该走 daemon-down：{}",
+            s.detail
+        );
+        assert!(
+            !s.actions.iter().any(|a| a.id == "start_runtime"),
+            "{:?}",
+            s.actions
+        );
+    }
+
+    fn app_ev(
+        id: &str,
+        label: &str,
+        installed: Option<bool>,
+        running: Option<bool>,
+        evidence: &str,
+    ) -> AppPresence {
+        AppPresence {
+            id: id.into(),
+            label: label.into(),
+            installed,
+            running,
+            evidence: evidence.into(),
         }
     }
 }

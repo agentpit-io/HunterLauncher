@@ -150,11 +150,33 @@ pub fn disk_image_dir() -> PathBuf {
 /// 这台机器要的那份虚拟机镜像，**下好了就返回它的路径**。
 ///
 /// 返回 `Some` 的条件是文件真的在那儿；不核 sha512（那是下载时做的事，
-/// 而且 colima 自己还要再核一遍）。
+/// 而且 colima 自己还要再核一遍）。要「连内容一起核」请用
+/// [`verified_disk_image`]（I9 起 `start_argv` 走的是那一个）。
 pub fn disk_image_path() -> Option<PathBuf> {
     let item = manifest::disk_image_for_host()?;
     let p = disk_image_dir().join(item.file);
     p.is_file().then_some(p)
+}
+
+/// 同上，但**先按清单核一遍 sha256 与 sha512**（I9 的 P0-1）。
+///
+/// 核不过就返回 `Err(那一句说得清的话)`。为什么要在这儿核而不是只信下载时那一次：
+/// 用户 Mac 上这个文件已经躺了一天，中间经历过一次装到一半被放弃、
+/// 一次磁盘写满、若干次 `colima start`。**「上次下载时是好的」不等于「现在是好的」**，
+/// 而 colima 拿到坏文件只会报一句它自己的 sha512 对不上 ——
+/// 那句话里没有「残骸」两个字，查起来要绕一大圈。
+pub fn verified_disk_image() -> Result<Option<PathBuf>, String> {
+    let Some(item) = manifest::disk_image_for_host() else {
+        return Ok(None);
+    };
+    let p = disk_image_dir().join(item.file);
+    if !p.is_file() {
+        return Ok(None);
+    }
+    match verify_file(&p, item) {
+        Ok(_) => Ok(Some(p)),
+        Err(why) => Err(format!("{}{}", item.file, why)),
+    }
 }
 
 /// 清单里这一条落地之后应该在哪儿。
@@ -210,6 +232,57 @@ pub fn is_installed() -> bool {
 /// 还有东西要下吗（含 I8 新加的虚拟机镜像）。
 pub fn needs_download() -> bool {
     !missing_items().is_empty()
+}
+
+/// **已经落地的文件里，有哪几条内容对不上清单**（I9）。
+///
+/// [`missing_items`] 只问「文件在不在」，这里问「文件对不对」。两个问题分开，
+/// 是因为算哈希要读几百 MB —— 每次开启动器都算一遍没有道理。
+///
+/// 什么时候该问这一条：**走内置主线之前**（任务书 P0-1 明写「校验 disk-image
+/// 清单与 sha512」）。0.1.7 那次装到一半被用户中断、磁盘写满、或者
+/// `colima start` 自己把镜像改坏了，留下的都是「文件在、内容不对」的残骸；
+/// 只看「在不在」的话，我们会拿着一个坏文件去 `--disk-image`，
+/// colima 按它内置的 sha512 一核对不上，报出来的错和「残骸」两个字毫无关系。
+///
+/// 返回 `(组件, 说不上哪里不对的那一句)`。
+pub fn broken_items() -> Vec<(&'static Item, String)> {
+    let mut out = Vec::new();
+    for item in manifest::for_host() {
+        if !placed(item) {
+            continue;
+        }
+        // 解压成一棵树的（lima）没法按整包哈希核 —— 那一条只能看目录在不在
+        if matches!(item.unpack, Unpack::TarGz | Unpack::TarGzPick(_)) {
+            continue;
+        }
+        let p = dest_path(item);
+        if let Err(why) = verify_file(&p, item) {
+            out.push((item, format!("{}{}", item.file, why)));
+        }
+    }
+    out
+}
+
+/// 把内容对不上的那几个文件删掉，好让 [`install`] 重新下一份。
+///
+/// **只删 `~/.hunter/runtime` 里的东西**，而且每一个都过
+/// [`crate::assist::guard::writable_path`]。返回删掉了哪几条（给人看的话）。
+pub fn drop_broken_items() -> Vec<String> {
+    let mut said = Vec::new();
+    for (item, why) in broken_items() {
+        let p = dest_path(item);
+        match crate::assist::guard::writable_path(&p) {
+            Ok(real) => {
+                if std::fs::remove_file(&real).is_ok() {
+                    crate::lwarn!("内置运行时的 {why} —— 已删掉，等下重新下一份");
+                    said.push(format!("{} 内容对不上清单，已删掉重下", item.label()));
+                }
+            }
+            Err(e) => crate::lwarn!("要删 {} 却被守卫拦下：{}", p.display(), e.msg),
+        }
+    }
+    said
 }
 
 /// 虚拟机在跑吗（socket 在 = colima 起着）。
@@ -320,9 +393,22 @@ pub enum Decision {
 }
 
 pub fn decide() -> Decision {
-    let d = super::docker::detect();
-    if d.installed && d.daemon_running {
-        return Decision::AlreadyRunning(d.runtime_label.unwrap_or_else(|| "Docker".to_string()));
+    // **顺序按 I9 的 P0-1 改过**：先问内置运行时，再问用户自己的 Docker。
+    //
+    // 0.1.8 之前这里第一句是 `docker::detect()`，而 `detect` 找到的那个 docker
+    // 很可能正是**我们自己下的那一份**（`which` 把 `runtime/bin` 排在最前面）。
+    // 用户 Mac 上的后果：残骸被当成「用户装的 Docker、只是 daemon 没起」，
+    // 内置主线根本没走到。
+    let eff = super::effective::current();
+    if eff.builtin.running() {
+        return Decision::AlreadyRunning(format!("内置运行时（Colima profile {PROFILE}）"));
+    }
+    if eff.kind == super::effective::Kind::User && eff.running {
+        let d = super::docker::detect();
+        if d.installed && d.daemon_running {
+            return Decision::AlreadyRunning(d.runtime_label.unwrap_or_else(|| eff.label.clone()));
+        }
+        return Decision::AlreadyRunning(eff.label);
     }
     if is_installed() && !needs_download() {
         return Decision::StartBuiltin;
@@ -336,8 +422,13 @@ pub fn decide() -> Decision {
             Err(_) => Decision::StartBuiltin,
         };
     }
-    // 装了但没跑的（OrbStack / Docker Desktop / Colima）优先点它，不另装一套
+    // 装了但没跑的（OrbStack / Docker Desktop / 用户自己的 Colima）优先点它，
+    // 不另装一套。**`builtin` 那一条要排除掉** —— 它不是「用户装的」，
+    // 走到这里说明内置运行时连半截都没有（上面两个 `is_installed()` 已经返回过了）
     for a in crate::assist::probe::runtime_apps() {
+        if a.id == "builtin" {
+            continue;
+        }
         if a.installed == Some(true) && a.running == Some(false) {
             return Decision::StartExisting(a.id);
         }
@@ -809,9 +900,16 @@ pub fn start_argv() -> AppResult<Vec<String>> {
         "--disk".into(),
         disk.to_string(),
     ];
-    if let Some(img) = disk_image_path() {
-        v.push("--disk-image".into());
-        v.push(img.to_string_lossy().into_owned());
+    // **核过内容的才交给 colima**（I9）。核不过就当没有这份镜像：
+    // 宁可让 colima 自己去下（慢、但会成），也不要拿一个坏文件去换一句
+    // 看不懂的 sha512 错误。核不过的那个文件由 `drop_broken_items` 负责删掉重下
+    match verified_disk_image() {
+        Ok(Some(img)) => {
+            v.push("--disk-image".into());
+            v.push(img.to_string_lossy().into_owned());
+        }
+        Ok(None) => {}
+        Err(why) => crate::lwarn!("本地那份虚拟机镜像{why} —— 这一次不用它"),
     }
     for (k, val) in crate::netproxy::current().for_vm() {
         // colima 的 --env 收的是 KEY=VALUE；大小写两份都给（VM 里跑的程序两种都有）
@@ -891,11 +989,19 @@ pub fn start(p: &mut Progress) -> AppResult<String> {
     if let Some(note) = vm_proxy_note() {
         (p.say)(&note);
     }
-    if disk_image_path().is_some() {
-        (p.say)("正在启动虚拟机（系统镜像刚才已经下好并校验过了，这一步不再下东西）");
-    } else {
-        // 清单里没有这台机器的镜像时如实说明：colima 会自己去下
-        (p.say)("正在启动虚拟机（本机没有预先下好的系统镜像，colima 会自己去下一份）");
+    // **说的必须是刚才真的做过的事**（红线 1）：核过了才说「校验过了」
+    match verified_disk_image() {
+        Ok(Some(_)) => {
+            (p.say)("正在启动虚拟机（系统镜像刚刚按清单核过 sha256 与 sha512，这一步不再下东西）")
+        }
+        Ok(None) => {
+            // 清单里没有这台机器的镜像时如实说明：colima 会自己去下
+            (p.say)("正在启动虚拟机（本机没有预先下好的系统镜像，colima 会自己去下一份）")
+        }
+        Err(why) => (p.say)(&format!(
+            "本地那份系统镜像{why} —— 这一次不用它，让 colima 自己去下一份",
+            why = why
+        )),
     }
     let t = Instant::now();
     let (prog, args) = argv.split_first().expect("start_argv 至少有一项");
@@ -933,6 +1039,104 @@ pub fn start(p: &mut Progress) -> AppResult<String> {
         "内置运行时已就绪（profile {PROFILE}，用时 {secs} 秒，socket 在 {}）",
         crate::redact::mask_home(&socket_path().to_string_lossy())
     ))
+}
+
+// ── 修残骸（I9 的 P0-1） ─────────────────────────────────────────────────
+
+/// 这个 profile 的虚拟机目录（`$COLIMA_HOME/<profile>`）。
+fn profile_dir() -> PathBuf {
+    crate::paths::colima_home().join(PROFILE)
+}
+
+/// lima 那一侧对应的实例目录（colima 建的实例叫 `colima-<profile>`）。
+fn lima_instance_dir() -> PathBuf {
+    crate::paths::lima_home().join(format!("colima-{PROFILE}"))
+}
+
+/// 内置运行时有残骸吗（**装了、但那台虚拟机处在一个说不清的中间态**）。
+///
+/// 判据：profile 目录在、socket 却不在。正常停机的 colima 也是这个样子，
+/// 所以这一条**不能**单独拿来做「要重建」的依据 —— 它只是「值得看一眼」。
+/// 真正决定重建的是「`colima start` 起不来」那一刻（见 [`repair`] 的调用点）。
+pub fn has_residue() -> bool {
+    profile_dir().is_dir() && !is_running()
+}
+
+/// **重建那台虚拟机**：删掉 profile 与它的 lima 实例，再把内容对不上的文件重下。
+///
+/// 三条边界，一条都不松：
+///
+/// 1. 删的每一个目录都先过 [`crate::assist::guard::writable_path`]，
+///    解析之后必须落在 `~/.hunter` 里 —— 用户的 `~/.colima` / `~/.lima`
+///    一个字节都不碰（任务书 P0-2 的红线）；
+/// 2. 下载回来的二进制与虚拟机镜像**不删**（那是 436 MB，删了就得重下）；
+///    只有 [`broken_items`] 认定内容对不上的才删；
+/// 3. `colima delete` 这一步失败**不算失败** —— 目录照样删干净，
+///    因为残骸的定义本来就是「colima 自己也说不清它是什么状态」。
+///
+/// 返回给用户看的那一句（**真实做了什么**，做不到的如实说）。
+pub fn repair(p: &mut Progress) -> AppResult<String> {
+    let mut said: Vec<String> = Vec::new();
+
+    // ① 让 colima 自己先试着删。带全隔离参数，profile 写死 hunter
+    if let Some(c) = colima_bin() {
+        let args = ["delete", "--profile", PROFILE, "--force"];
+        let pairs = env_pairs();
+        let env: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        (p.say)("正在清掉上次没装成功的那台虚拟机（只动 Hunter 自己的，profile hunter）");
+        match crate::proc::run_timeout_env(
+            &c.to_string_lossy(),
+            &args,
+            Duration::from_secs(300),
+            &env,
+        ) {
+            Ok(r) if r.ok() => said.push("colima 已经删掉了 hunter 这台虚拟机".to_string()),
+            Ok(r) => said.push(format!(
+                "colima delete 退出码 {:?}（{}）—— 目录照样清干净",
+                r.status,
+                r.err_line()
+            )),
+            Err(e) => said.push(format!(
+                "colima delete 没跑起来（{}）—— 目录照样清干净",
+                e.msg
+            )),
+        }
+    }
+
+    // ② 目录层面再清一遍。**每一个都过守卫**
+    for dir in [profile_dir(), lima_instance_dir()] {
+        if !dir.exists() {
+            continue;
+        }
+        let real = crate::assist::guard::writable_path(&dir)?;
+        match std::fs::remove_dir_all(&real) {
+            Ok(()) => said.push(format!(
+                "已清掉 {}",
+                crate::redact::mask_home(&real.to_string_lossy())
+            )),
+            Err(e) => {
+                return Err(AppError::new(
+                    Code::ConfigWrite,
+                    format!(
+                        "清 {} 失败：{e}",
+                        crate::redact::mask_home(&real.to_string_lossy())
+                    ),
+                ))
+            }
+        }
+    }
+
+    // ③ 内容对不上的文件删掉重下（下载那一步由调用方的 install 接着做）
+    said.extend(drop_broken_items());
+
+    super::which::invalidate();
+    super::env::invalidate();
+    let line = said.join("；");
+    (p.say)(&line);
+    Ok(line)
 }
 
 // ── 卸载 ──────────────────────────────────────────────────────────────────

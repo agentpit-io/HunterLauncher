@@ -59,6 +59,10 @@ export type ErrorCode =
   // 来回换了三次 —— 这是**本机配置**的问题，换源永远修不好
   | 'E_CRED_HELPER'
   | 'E_START_TIMEOUT'
+  // I9 补的：Hunter 自己那套内置运行时（~/.hunter/runtime）装着、虚拟机没起来。
+  // 和 E_DAEMON_DOWN 分开，是因为两个现场的解法完全不同 —— 0.1.8 在用户 Mac 上
+  // 把前者判成了后者，于是去「启动用户的 Colima」，而用户根本没装过 Colima
+  | 'E_BUILTIN_DOWN'
   | 'E_PROXY_BLOCK'
   | 'E_UPDATE_FAILED'
   // 下面三个方案 §18 没有，是实现时按真实失败模式补的：
@@ -85,6 +89,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_PORT_CONFLICT',
   'E_CRED_HELPER',
   'E_START_TIMEOUT',
+  'E_BUILTIN_DOWN',
   'E_PROXY_BLOCK',
   'E_UPDATE_FAILED',
   'E_COMPOSE_FETCH',
@@ -133,6 +138,13 @@ export type Event =
   | { type: 'UPGRADE_FAILED'; detail?: string }
   | { type: 'BACK' }
   | { type: 'RETRY' }
+  /**
+   * 后端把 Docker 修好并已经自己把安装接着跑起来了（I9 的 P0-3）。
+   *
+   * 和 `RETRY` 的区别：`RETRY` 是用户点的，`RESUME_INSTALL` 是后端说的，
+   * **从任何状态都能进**（包括错误页）—— 界面只是跟上后端已经发生的事实。
+   */
+  | { type: 'RESUME_INSTALL' }
   | { type: 'FAIL'; code: ErrorCode; detail?: string }
 
 export const INITIAL_STATE: State = { name: 'Idle' }
@@ -166,6 +178,7 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   E_PORT_CONFLICT: 'AutoInstalling',
   E_CRED_HELPER: 'AutoInstalling',
   E_START_TIMEOUT: 'AutoInstalling',
+  E_BUILTIN_DOWN: 'AutoInstalling',
   E_COMPOSE_FETCH: 'AutoInstalling',
   E_CONFIG_WRITE: 'AutoInstalling',
 }
@@ -187,6 +200,15 @@ function fail(from: State, code: ErrorCode, detail?: string): State {
 export function transition(state: State, event: Event): State {
   // FAIL 在任何状态下都能把机器推进 Error
   if (event.type === 'FAIL') return fail(state, event.code, event.detail)
+
+  // **RESUME_INSTALL 也是任何状态下都能进**（I9 的 P0-3）。
+  //
+  // 它不是「用户想重试」，是后端**已经**把安装重新跑起来了 ——
+  // 界面这边只是跟上一个既成事实。从错误页进得去，从运行面板也进得去；
+  // 已经在那一页上就原地不动（那一页自己会从快照里把事件补齐）。
+  if (event.type === 'RESUME_INSTALL') {
+    return state.name === 'AutoInstalling' ? state : s('AutoInstalling')
+  }
 
   if (state.name === 'Error') {
     if (event.type === 'RETRY') return s(RETRY_TARGET[state.code] ?? state.from)

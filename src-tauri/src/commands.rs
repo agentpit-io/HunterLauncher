@@ -1374,12 +1374,14 @@ pub async fn assist_diagnose(
         // key 也要带上：界面右下角要据此显示「还没填 key」还是不显示，
         // 而向导途中 key 只在内存里（见 assist::ask 的注释）
         let k = state(&app).hunter_key();
-        crate::assist::diagnose(
+        let st = crate::assist::diagnose_and_fix(
             error_code.as_deref(),
             error_message.as_deref(),
             stage.as_deref(),
             k,
-        )
+        )?;
+        maybe_resume_install(&app, &st);
+        Ok(st)
     })
     .await
 }
@@ -1405,7 +1407,9 @@ pub async fn assist_confirm(
 ) -> Result<crate::assist::AssistState> {
     blocking(move || {
         let k = state(&app).hunter_key();
-        crate::assist::confirm(&action_id, next_round, k)
+        let st = crate::assist::confirm(&action_id, next_round, k)?;
+        maybe_resume_install(&app, &st);
+        Ok(st)
     })
     .await
 }
@@ -1418,9 +1422,39 @@ pub async fn assist_rule_action(
 ) -> Result<crate::assist::AssistState> {
     blocking(move || {
         let k = state(&app).hunter_key();
-        crate::assist::run_rule_action(&action_id, k)
+        let st = crate::assist::run_rule_action(&action_id, k)?;
+        maybe_resume_install(&app, &st);
+        Ok(st)
     })
     .await
+}
+
+/// **修好了就接着装**（I9 的 P0-3）。
+///
+/// 诊断助手（规则层或模型）跑完任何一个动作之后调一次：只要 docker 变成可用、
+/// 而这一套 Hunter 还没装完，就**自己把安装主流程重新跑起来**，
+/// 并发一条 `assist://resume` 让界面回到过程流那一页。
+///
+/// 0.1.8 在用户 Mac 上缺的正是这一步：14:54:27 内置运行时已经起来了、
+/// docker 29.5.2 可用，可 `~/.hunter/app/` 到 14:58 还是空的 ——
+/// 没写 `.env`、没写 compose、没拉镜像、容器 0 个，界面停在「没能自动装好」。
+/// 修好了却不往下走，对用户来说和没修一样。
+///
+/// 两道闸门防止它乱来：
+/// * 已经有一次安装在跑（`busy`）就什么都不做；
+/// * `can_resume_install()` 说装完了就什么都不做。
+fn maybe_resume_install(app: &tauri::AppHandle, st: &crate::assist::AssistState) {
+    if !st.can_resume_install {
+        return;
+    }
+    if state(app).busy.load(Ordering::SeqCst) {
+        return;
+    }
+    crate::linfo!("Docker 现在可用了，而这一套还没装完 —— 自动接着往下装");
+    let _ = app.emit(EV_ASSIST_RESUME, ());
+    if let Err(e) = assist_auto_start(app.clone(), None) {
+        crate::lwarn!("自动接着装没能起来：{e}");
+    }
 }
 
 #[tauri::command]
@@ -1445,6 +1479,8 @@ impl crate::assist::events::Sink for TauriSink {
 
 pub const EV_ASSIST_SUMMARY: &str = "assist://summary";
 pub const EV_ASSIST_DONE: &str = "assist://done";
+/// 「修好了，接着装」——后端已经自己把安装重新跑起来了，界面回到过程流那一页（I9）。
+pub const EV_ASSIST_RESUME: &str = "assist://resume";
 
 /// 正在跑的那一次自动安装。用户点「需要你」卡片时要找得到它。
 type AutoSlot = std::sync::Mutex<Option<crate::assist::auto::Handle>>;

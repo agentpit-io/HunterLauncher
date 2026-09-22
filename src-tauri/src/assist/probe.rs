@@ -24,7 +24,9 @@ pub const LOG_LINES: usize = 40;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppPresence {
-    /// 动作白名单里的 id（orbstack / docker-desktop / colima / systemd）
+    /// 动作白名单里的 id（orbstack / docker-desktop / colima / systemd），
+    /// 外加 I9 新增的 `builtin` —— **它不是「用户装了什么」，是我们自己装的那一套**，
+    /// 所以 `start_runtime` 永远不会收到这个 id（规则层看到它走的是内置主线）。
     pub id: String,
     pub label: String,
     /// 装没装。读不到就是 `None`
@@ -72,6 +74,15 @@ pub struct Report {
     pub error_message: Option<String>,
     /// 现在走到向导的哪一步
     pub stage: Option<String>,
+
+    /// **现在生效的容器运行时是谁**（I9）。一行人话，来自
+    /// [`crate::runtime::effective::current`]。
+    ///
+    /// 这一条是 I9 加的，因为 0.1.8 那次失败里模型拿到的证据**恰好缺了它**：
+    /// 报文里写着「docker 装了、daemon 没在跑」，却没有一个字说明那个 docker
+    /// 是我们自己下到 `~/.hunter/runtime` 里的、它对应的 daemon 是我们自己
+    /// 那台还没起来的虚拟机。模型于是照着「用户装了 Colima」去想办法。
+    pub effective_runtime: String,
 
     pub docker_installed: bool,
     pub daemon_running: bool,
@@ -132,6 +143,11 @@ pub fn collect(
         .iter()
         .filter_map(|s| s.port)
         .collect();
+    // **现场只采一次**（I9）。原来这里是 `port_free()` 逐个端口调，而那个函数
+    // 每次都自己 `Survey::collect()` —— 5 个端口就是 5 次 `docker ps` + 5 次 `lsof`。
+    // 用户 Mac 上 0.1.8 的日志里那一串重复的「docker ps 查已发布端口失败」
+    // （同一秒内 5 到 7 条）就是这么来的：既慢，又把日志刷得没法看。
+    let survey = crate::ports::Survey::collect();
     let ports = cfg
         .hunter
         .ports
@@ -140,9 +156,7 @@ pub fn collect(
         .map(|(name, port)| PortState {
             service: (*name).to_string(),
             port: *port,
-            // 第二个参数早就不起作用了（探测一律按通配地址来，那是更保守的一头）。
-            // I7 起 web 也只绑本机，这里连表面上的区分也不留了。
-            free: crate::config::port_free(*port, true),
+            free: survey.verdict(*port, &[crate::config::PROJECT]).free,
             ours: ours.contains(port),
         })
         .collect();
@@ -160,6 +174,8 @@ pub fn collect(
         error_code: error_code.map(str::to_string),
         error_message: error_message.map(clean),
         stage: stage.map(str::to_string),
+
+        effective_runtime: clean(&crate::runtime::effective::current().one_line()),
 
         docker_installed: d.installed,
         daemon_running: d.daemon_running,
@@ -228,8 +244,9 @@ impl Report {
         if let Some(st) = &self.stage {
             s.push_str(&format!("卡在: {st}\n"));
         }
+        s.push_str(&format!("\n{}\n", self.effective_runtime));
         s.push_str(&format!(
-            "\nDocker: 装了={} daemon在跑={} 运行时={} 客户端={} 服务端={}\ncompose: {} / {}\n",
+            "Docker: 装了={} daemon在跑={} 运行时={} 客户端={} 服务端={}\ncompose: {} / {}\n",
             self.docker_installed,
             self.daemon_running,
             self.docker_runtime,
@@ -350,20 +367,53 @@ pub fn runtime_apps() -> Vec<AppPresence> {
         }
     }
 
-    // Colima 三平台都可能有
-    let colima = which::resolve("colima");
-    if colima.found() || cfg!(target_os = "macos") {
-        let running = colima.resolved.as_ref().and_then(|c| {
-            crate::proc::run_timeout(c, &["status"], Duration::from_secs(15))
-                .ok()
-                .map(|r| r.ok())
+    // 内置运行时（I9）。**必须排在「用户自己的 Colima」前面，而且分成两条**：
+    //
+    // 0.1.8 在用户 Mac 上把 `~/.hunter/runtime/bin/colima`（我们自己下的那一份）
+    // 当成了「用户装的 Colima」，于是规则层给出「Colima 装着但没在运行，把它启动
+    // 起来」，执行的是一条裸 `colima start` —— 用默认的 `~/.colima` 在他家目录里
+    // 新建了一台虚拟机。**我们自己的东西不能出现在「用户装了什么」这张表里。**
+    let bs = crate::runtime::effective::builtin_state();
+    if bs.present() {
+        out.push(AppPresence {
+            id: "builtin".into(),
+            label: "Hunter 内置运行时".into(),
+            installed: Some(matches!(
+                bs,
+                crate::runtime::effective::BuiltinState::Stopped
+                    | crate::runtime::effective::BuiltinState::Running
+            )),
+            running: Some(bs.running()),
+            evidence: format!(
+                "看 ~/.hunter/runtime 下的四件工具 + {} 这个 socket 连不连得上（{}）",
+                crate::redact::mask_home(&crate::runtime::builtin::socket_path().to_string_lossy()),
+                bs.cn()
+            ),
+        });
+    }
+
+    // 用户**自己**的 Colima：只认 `~/.colima` 里本来就有的 profile。
+    //
+    // 判定全靠读目录与 socket，**一条 `colima status` 都不跑** ——
+    // 跑它会用默认的 `COLIMA_HOME`，而 0.1.8 正是这样把 `~/.colima` 建起来的。
+    let profiles = crate::runtime::effective::user_colima_profiles();
+    if !profiles.is_empty() {
+        let running = profiles.iter().any(|p| {
+            crate::paths::home()
+                .join(".colima")
+                .join(p)
+                .join("docker.sock")
+                .exists()
         });
         out.push(AppPresence {
             id: "colima".into(),
-            label: "Colima".into(),
-            installed: Some(colima.found()),
-            running,
-            evidence: "找 colima 可执行文件 + colima status".into(),
+            label: "你自己的 Colima".into(),
+            installed: Some(true),
+            running: Some(running),
+            evidence: format!(
+                "读 ~/.colima 下的 profile 目录（{}）+ 看它们的 docker.sock 在不在（不跑 colima 命令，免得碰你的 ~/.colima）",
+                profiles.join("、")
+            ),
         });
     }
 
@@ -604,6 +654,7 @@ mod tests {
             os: "macos".into(),
             arch: "aarch64".into(),
             os_version: Some("15.1".into()),
+            effective_runtime: "当前生效运行时：测试（测试）".into(),
             error_code: Some("E_DOCKER_MISSING".into()),
             // 和 `collect` 一样走 clean —— 这里测的是「采集路径过了脱敏之后报文是干净的」
             error_message: Some(clean(&format!("用 key {FAKE} 校验过了"))),
@@ -700,6 +751,7 @@ mod tests {
             os: "linux".into(),
             arch: "x86_64".into(),
             os_version: None,
+            effective_runtime: "当前生效运行时：测试（测试）".into(),
             error_code: None,
             error_message: None,
             stage: None,

@@ -62,6 +62,28 @@ pub struct AssistState {
     pub done: bool,
     /// 整份诊断报文（**已脱敏**）。界面上「复制诊断信息」用的就是它
     pub report_text: String,
+    /// **现在可以接着往下装了**（I9 的 P0-3）。
+    ///
+    /// 为真的条件有两条，缺一不可：docker 后台服务连得上了，而且这台机器上
+    /// 这一套 Hunter 还没装完。界面拿到它就自己回到安装页，不再把用户
+    /// 晾在一张「没能自动装好」的卡片上 —— 0.1.8 在用户 Mac 上正是这样：
+    /// 14:54 AI 把内置运行时起起来了、docker 好了，安装却一步都没往下走，
+    /// `~/.hunter/app/` 到最后还是空的。
+    pub can_resume_install: bool,
+    /// 规则层这一次**自动替用户执行**了哪几个动作（全自动档才会有）。
+    /// 界面上照样一条条显示出来 —— 自动做了什么必须看得见。
+    pub auto_ran: Vec<AutoRan>,
+}
+
+/// 一条「规则层自动执行了」的记录。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoRan {
+    pub id: String,
+    pub title: String,
+    pub ok: bool,
+    /// 执行结果那一句（已脱敏）
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +108,8 @@ struct Live {
     rule: rules::Suggestion,
     session: Option<ai::Session>,
     degraded: Option<Degraded>,
+    /// 这一段会话里规则层**自动**跑过的动作（全自动档，I9 的 P0-3）
+    auto_ran: Vec<AutoRan>,
 }
 
 fn slot() -> &'static Mutex<Option<Live>> {
@@ -108,8 +132,38 @@ pub fn diagnose(
     stage: Option<&str>,
     key: Option<String>,
 ) -> AppResult<AssistState> {
+    diagnose_inner(error_code, error_message, stage, key, false, Vec::new(), 0)
+}
+
+/// 同上，**但全自动档下会把规则层给的 Safe 动作自己跑掉**（I9 的 P0-3）。
+///
+/// 界面走这一条；命令行的 `--diagnose` 走上面那条只读的。
+/// 分成两个入口是因为 `--diagnose` 在文档里写的是「打印诊断信息」——
+/// 一条印东西的命令不该顺手改机器。
+pub fn diagnose_and_fix(
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+    stage: Option<&str>,
+    key: Option<String>,
+) -> AppResult<AssistState> {
+    diagnose_inner(error_code, error_message, stage, key, true, Vec::new(), 0)
+}
+
+/// 同一个问题最多自动跑几轮动作。到头了就停下来如实说，不无限试（I9）。
+const MAX_AUTO_ROUNDS: usize = 3;
+
+fn diagnose_inner(
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+    stage: Option<&str>,
+    key: Option<String>,
+    auto_fix: bool,
+    mut auto_ran: Vec<AutoRan>,
+    round: usize,
+) -> AppResult<AssistState> {
     // 定位缓存先清掉：用户很可能刚装完 Docker 或刚把 OrbStack 点起来
     crate::runtime::which::invalidate();
+    crate::runtime::env::invalidate();
     let report = probe::collect(error_code, error_message, stage);
     let rule = rules::diagnose(&report);
     crate::linfo!(
@@ -118,17 +172,112 @@ pub fn diagnose(
         rule.confident,
         rule.actions.len()
     );
+
+    // **全自动档下，规则层有把握的 Safe / ReadOnly 动作自己跑掉**（I9 的 P0-3）。
+    //
+    // 0.1.8 在用户 Mac 上，自动安装失败之后界面掉进了「每一步都要你点确认」
+    // 的模式 —— 日志里 14:52:52 / 14:52:58 / 14:53:24 / 14:57:40 四次
+    // 「Safe · confirm」，**用户点了四次**。可他在授权页上选的是全自动。
+    // 档位是 auto 就不该再问：把关的门一道没少（动作表 + 守卫 + 级别判定），
+    // 只是不再让用户去按那个按钮。
+    let mode = crate::config::LauncherConfig::load().assist.mode();
+    if auto_fix && mode == guard::Mode::Auto && rule.confident && round < MAX_AUTO_ROUNDS {
+        let todo: Vec<actions::Plan> = rule
+            .actions
+            .iter()
+            .filter(|p| !mode.needs_confirm(p.level))
+            .filter(|p| !p.user_only)
+            .filter(|p| !auto_ran.iter().any(|r| r.id == p.id))
+            .cloned()
+            .collect();
+        let mut any = false;
+        for p in &todo {
+            let call = rule_call(p);
+            crate::linfo!(
+                "诊断助手（全自动档）自己执行规则层动作 {}（{}）",
+                call.id,
+                p.level.cn()
+            );
+            match actions::execute_as(&call, mode, false, guard::Proposer::Rule) {
+                Ok(o) => {
+                    auto_ran.push(AutoRan {
+                        id: o.id.clone(),
+                        title: p.title.clone(),
+                        ok: true,
+                        text: o.text.clone(),
+                    });
+                    any = true;
+                }
+                Err(e) => {
+                    auto_ran.push(AutoRan {
+                        id: p.id.clone(),
+                        title: p.title.clone(),
+                        ok: false,
+                        text: e.msg.clone(),
+                    });
+                    // 后面那几个多半是接着这一个来的，前一个没成就别白试
+                    break;
+                }
+            }
+        }
+        if any {
+            // 跑过动作就**重新采一遍现场**（验证员的老规矩：不问模型「好了吗」，
+            // 自己重跑一遍看结果）
+            return diagnose_inner(
+                error_code,
+                error_message,
+                stage,
+                key,
+                auto_fix,
+                auto_ran,
+                round + 1,
+            );
+        }
+    }
+
     let mut g = lock()?;
     *g = Some(Live {
         report,
         rule,
         session: None,
         degraded: None,
+        auto_ran,
     });
     // key 要带进来：向导途中它只在内存里（`.env` 还没写出来），
     // 不带的话界面右下角会写「还没填 key」—— 而用户上一步刚填过
     // （I4 场景 1 的界面截图上一眼就看出来了）
     snapshot_with(g.as_ref().expect("刚写进去"), key.as_deref())
+}
+
+/// **现在可以接着往下装了吗**（I9 的 P0-3）。
+///
+/// 两条都要成立：
+///
+/// 1. docker 后台服务连得上了（[`crate::runtime::effective`] 说了算）；
+/// 2. 这一套 Hunter 还**没装完** —— 判据是 compose 文件与 `.env` 有没有落地、
+///    六个容器起没起齐。装完了还自动重装一遍是另一种毛病。
+///
+/// 为什么需要它：0.1.8 在用户 Mac 上 14:54:27 已经把内置运行时起起来了
+/// （docker 29.5.2 可用，本地 Claude 事后实测 `docker info` 正常），
+/// 可安装一步都没往下走 —— `~/.hunter/app/` 到 14:58 还是空的，
+/// 界面停在「没能自动装好」，用户只能导出诊断包。
+/// **修好了就该接着装**，这一条就是那个判据。
+///
+/// 这个函数没有副作用，界面与命令层都可以随便调。
+pub fn can_resume_install() -> bool {
+    if !crate::runtime::effective::current().usable() {
+        return false;
+    }
+    // compose 文件或 .env 还没写出来 —— 那是「配置这一步都没走完」
+    if !crate::paths::compose_file().exists() || !crate::paths::env_file().exists() {
+        return true;
+    }
+    // 写出来了，但容器没起齐
+    match crate::compose::ps() {
+        Ok(v) => v.len() < guard::OWN_SERVICES.len(),
+        // 读不到就当「还没装完」：多试一次的代价，远小于把人晾在失败页上
+        Err(_) => true,
+    }
 }
 
 /// **第二层**：问一轮 AI。规则层认不出来、或者用户点了「还是不行」时才调。
@@ -238,7 +387,10 @@ pub fn run_rule_action(action_id: &str, key: Option<String>) -> AppResult<Assist
             live.report.stage.clone(),
         )
     };
-    diagnose(code.as_deref(), msg.as_deref(), stage.as_deref(), key)
+    // 复验走**带自动修复**的那一条（I9 的 P0-3）：全自动档下，这一步之后
+    // 紧跟着的 Safe 动作不该再让用户点一次。0.1.8 在用户 Mac 上就是这么
+    // 连点四次的（14:52:52 / 14:52:58 / 14:53:24 / 14:57:40）。
+    diagnose_and_fix(code.as_deref(), msg.as_deref(), stage.as_deref(), key)
 }
 
 /// 规则层的 plan 反推回调用。规则层自己知道参数，所以这里用和 [`ai`] 同一套反推。
@@ -247,9 +399,13 @@ fn rule_call(p: &actions::Plan) -> actions::Call {
     let mut c = actions::Call::new(&p.id);
     match p.id.as_str() {
         "start_runtime" => {
+            // **按标题反推是有坑的**：「Colima」四个字同时出现在
+            // 「启动 Colima」和「启动 你自己的 Colima」里。挑**最长**的那一个匹配项，
+            // 短的那个不会把长的顶掉（I9 自审）
             let app = actions::RUNTIME_APPS
                 .iter()
-                .find(|a| p.title.contains(actions::runtime_label(a)))
+                .filter(|a| p.title.contains(actions::runtime_label(a)))
+                .max_by_key(|a| actions::runtime_label(a).len())
                 .copied()
                 .unwrap_or("systemd");
             c.args.insert("app".into(), app.to_string());
@@ -320,6 +476,8 @@ fn snapshot_with(live: &Live, key: Option<&str>) -> AppResult<AssistState> {
         degraded: live.degraded.clone(),
         done,
         report_text: live.report.to_prompt(),
+        can_resume_install: can_resume_install(),
+        auto_ran: live.auto_ran.clone(),
     })
 }
 
