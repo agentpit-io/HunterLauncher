@@ -1674,7 +1674,10 @@ pub fn start_services(services: &[&str]) -> AppResult<()> {
     args.extend_from_slice(services);
     let r = run(&args, Duration::from_secs(300))?;
     if r.ok() {
-        crate::linfo!("docker compose up -d --no-recreate {} 完成", services.join(" "));
+        crate::linfo!(
+            "docker compose up -d --no-recreate {} 完成",
+            services.join(" ")
+        );
         Ok(())
     } else {
         Err(classify_up_error(

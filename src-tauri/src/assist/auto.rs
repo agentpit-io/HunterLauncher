@@ -393,7 +393,7 @@ impl Orchestrator {
                 // 只修不正常的那部分没修好 —— 接着走「启动服务」那一步的修复回合
                 // （AI、规则层都在那条路上）。**照样不重新取 compose、不重拉镜像。**
                 Ok(None) => &[Step::Start],
-                Err(o) => return o,
+                Err(o) => return *o,
             },
             Preflight::FullInstall => &[Step::Docker, Step::Prepare, Step::Pull, Step::Start],
         };
@@ -469,11 +469,7 @@ impl Orchestrator {
     /// 复查的三种去向。
     fn preflight_plan(&mut self, _state: &AppState) -> Preflight {
         let r = crate::selfcheck::review(true);
-        crate::linfo!(
-            "开工前复查：{}（{} 毫秒）",
-            r.headline,
-            r.elapsed_ms
-        );
+        crate::linfo!("开工前复查：{}（{} 毫秒）", r.headline, r.elapsed_ms);
         match r.posture {
             crate::selfcheck::Posture::Healthy => Preflight::Reuse(r),
             crate::selfcheck::Posture::Partial => Preflight::FixOnly(r),
@@ -484,7 +480,9 @@ impl Orchestrator {
     /// 复查 + 把结论报给界面。**这一整段只读**。
     fn preflight(&mut self, state: &AppState) -> Preflight {
         let t = Instant::now();
-        let ev = self.bus.emit(EventDraft::new(Kind::Step, "先看看现在是什么情况"));
+        let ev = self
+            .bus
+            .emit(EventDraft::new(Kind::Step, "先看看现在是什么情况"));
         self.tick("复查现状");
         let plan = self.preflight_plan(state);
         let (status, detail) = match &plan {
@@ -595,20 +593,22 @@ impl Orchestrator {
     ///
     /// * `Ok(Some(o))` —— 修好了，直接收工（这一次同样没有下载任何东西）
     /// * `Ok(None)` —— 没修好，交给「启动服务」那一步的修复回合接着办
-    /// * `Err(o)` —— 被取消了
+    /// * `Err(o)` —— 被取消了（`Outcome` 有点大，装箱一下，免得这条 `Result`
+    ///   把每一次正常返回都变成一次大结构体拷贝）
     fn fix_only(
         &mut self,
         state: &AppState,
         r: crate::selfcheck::Review,
-    ) -> std::result::Result<Option<Outcome>, Outcome> {
+    ) -> std::result::Result<Option<Outcome>, Box<Outcome>> {
         if self.cancelled() {
-            return Err(self.fail(Code::Unknown, "安装被取消了。"));
+            return Err(Box::new(self.fail(Code::Unknown, "安装被取消了。")));
         }
         self.recover_bindings(&r);
 
         // Docker / 内置虚拟机那一层先过一遍（虚拟机没有 DNS 就是在这里修的）。
         // 它不碰 compose、不碰 .env、不拉任何镜像。
-        if let Err(e) = self.run_step_with_repair(state, &mut InstallOptions::default(), Step::Docker)
+        if let Err(e) =
+            self.run_step_with_repair(state, &mut InstallOptions::default(), Step::Docker)
         {
             crate::lwarn!("复查后修 Docker 这一层没过：{}", e.msg);
             return Ok(None);
@@ -646,9 +646,9 @@ impl Orchestrator {
 
         // 等它们就绪，再复查一次。**验证员的规矩：重跑一遍才算数**
         let bus = self.bus.clone();
-        let wait = self.bus.emit(
-            EventDraft::new(Kind::Verify, "等它们就绪").status(Status::Running),
-        );
+        let wait = self
+            .bus
+            .emit(EventDraft::new(Kind::Verify, "等它们就绪").status(Status::Running));
         let waited = compose::wait_healthy(state.config().hunter.start_timeout(), move |v| {
             let ready = v
                 .iter()

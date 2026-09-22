@@ -729,8 +729,9 @@ mod tests {
                 free: false,
                 ours: true,
                 kind: crate::ports::Kind::Mine,
-                occupied_by: "Docker 容器 hunter-web-1（compose 项目 hunter · 127.0.0.1:3100->3000/tcp）"
-                    .into(),
+                occupied_by:
+                    "Docker 容器 hunter-web-1（compose 项目 hunter · 127.0.0.1:3100->3000/tcp）"
+                        .into(),
             },
             PortState {
                 service: "api".into(),

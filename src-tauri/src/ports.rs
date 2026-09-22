@@ -642,7 +642,10 @@ mod tests {
         );
         assert!(v.human().contains("Hunter 自己"), "{}", v.human());
         // lsof 认出来的那个转发进程要留在证据里（用户 Mac 上就是它）
-        assert!(v.mine.iter().any(|o| matches!(o, Occupant::Process { name, .. } if name == "ssh")));
+        assert!(v
+            .mine
+            .iter()
+            .any(|o| matches!(o, Occupant::Process { name, .. } if name == "ssh")));
     }
 
     /// 别人占着的时候三档要落在「被其他程序占用」，而且 `usable()` 为假。

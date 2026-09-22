@@ -1491,8 +1491,12 @@ mod tests {
             postgres: 5442,
             redis: 6479,
         };
-        let m = parse_env(&render_env(&input(&ports, "gateway"), &StickySecrets::default()).unwrap());
-        assert_eq!(m.get("COMPOSE_PROJECT_NAME").map(String::as_str), Some(PROJECT));
+        let m =
+            parse_env(&render_env(&input(&ports, "gateway"), &StickySecrets::default()).unwrap());
+        assert_eq!(
+            m.get("COMPOSE_PROJECT_NAME").map(String::as_str),
+            Some(PROJECT)
+        );
         let sep = m
             .get("COMPOSE_PATH_SEPARATOR")
             .expect("分隔符要写死，不赌 compose 的平台默认值");
@@ -1520,7 +1524,11 @@ mod tests {
         let i = input(&ports, "gateway");
         let good = render_env(&i, &StickySecrets::default()).unwrap();
         verify_env_written(&good, &i).expect("正常渲染出来的要过");
-        for key in ["COMPOSE_PROJECT_NAME", "COMPOSE_FILE", "COMPOSE_PATH_SEPARATOR"] {
+        for key in [
+            "COMPOSE_PROJECT_NAME",
+            "COMPOSE_FILE",
+            "COMPOSE_PATH_SEPARATOR",
+        ] {
             let broken: String = good
                 .lines()
                 .filter(|l| !l.starts_with(&format!("{key}=")))

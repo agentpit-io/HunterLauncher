@@ -133,7 +133,16 @@ pub fn review(deep: bool) -> Review {
     // ① 这个项目名现在是谁的。不是我们的就别往下看了 —— 那是 E_PROJECT_CONFLICT 的事
     if let Err(e) = compose::guard_project_owner() {
         lines.push(format!("compose 项目名 {PROJECT} 归属检查：{}", e.msg));
-        return finish(Posture::Absent, Vec::new(), None, None, lines, t0, deep, None);
+        return finish(
+            Posture::Absent,
+            Vec::new(),
+            None,
+            None,
+            lines,
+            t0,
+            deep,
+            None,
+        );
     }
 
     if !installed_on_disk() {
@@ -142,7 +151,16 @@ pub fn review(deep: bool) -> Review {
             crate::redact::mask_home(&crate::paths::compose_file().to_string_lossy()),
             crate::redact::mask_home(&crate::paths::env_file().to_string_lossy()),
         ));
-        return finish(Posture::Absent, Vec::new(), None, None, lines, t0, deep, None);
+        return finish(
+            Posture::Absent,
+            Vec::new(),
+            None,
+            None,
+            lines,
+            t0,
+            deep,
+            None,
+        );
     }
 
     // ② 容器现状
@@ -150,7 +168,16 @@ pub fn review(deep: bool) -> Review {
         Ok(v) => v,
         Err(e) => {
             lines.push(format!("docker compose ps 问不出来：{}", e.msg));
-            return finish(Posture::Absent, Vec::new(), None, None, lines, t0, deep, None);
+            return finish(
+                Posture::Absent,
+                Vec::new(),
+                None,
+                None,
+                lines,
+                t0,
+                deep,
+                None,
+            );
         }
     };
     let ours: Vec<ServiceStatus> = services
@@ -304,7 +331,10 @@ fn finish_full(
     unready: Vec<String>,
     web_port: Option<u16>,
 ) -> Review {
-    let ready = services.iter().filter(|s| compose::service_ready(s)).count();
+    let ready = services
+        .iter()
+        .filter(|s| compose::service_ready(s))
+        .count();
 
     // 绑定漂移（I11 · U5）。只读，顺手查一次
     let drift = compose::bind_drift(&services);
@@ -486,7 +516,12 @@ mod tests {
     #[test]
     fn 只把不正常的那几个列进要动的名单() {
         let mut services = all_healthy();
-        services[2] = svc("opencode", "running", compose::Health::Unhealthy, Some(3921));
+        services[2] = svc(
+            "opencode",
+            "running",
+            compose::Health::Unhealthy,
+            Some(3921),
+        );
         services[4] = svc("postgres", "exited", compose::Health::Pending, None);
         let r = finish_full(
             Posture::Partial,
@@ -516,8 +551,7 @@ mod tests {
 
     #[test]
     fn 容器连不上网关时六个绿灯也不算好() {
-        let mut lines = Vec::new();
-        lines.push("先前的证据".to_string());
+        let lines = vec!["先前的证据".to_string()];
         let r = finish_full(
             Posture::Healthy,
             all_healthy(),
