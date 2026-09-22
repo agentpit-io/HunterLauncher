@@ -1457,6 +1457,12 @@ fn maybe_resume_install(app: &tauri::AppHandle, st: &crate::assist::AssistState)
     if !st.can_resume_install {
         return;
     }
+    // **没授权过就不开跑。** 按现在的向导路线走不到这里（授权页在 Docker 那一关
+    // 前面），但「不经用户同意不开始安装」这件事不该靠前端路由保证 ——
+    // 路由是会改的，这一句不会。
+    if !crate::config::LauncherConfig::load().assist.consented() {
+        return;
+    }
     if state(app).busy.load(Ordering::SeqCst) {
         return;
     }
