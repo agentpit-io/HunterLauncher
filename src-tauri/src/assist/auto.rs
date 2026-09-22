@@ -580,12 +580,19 @@ impl Orchestrator {
                         "docker 命令在，但连不上后台服务（daemon 没起）。".to_string(),
                     ));
                 }
-                Ok(format!(
-                    "{} 正在运行",
-                    d.runtime_label
-                        .clone()
-                        .unwrap_or_else(|| "Docker".to_string())
-                ))
+                let label = d
+                    .runtime_label
+                    .clone()
+                    .unwrap_or_else(|| "Docker".to_string());
+                // **就绪判定里多一步：它里面解析得动域名吗**（I10 的 P0-2）。
+                //
+                // 只对 Hunter 自己那台虚拟机做 —— 用户自己的 Docker 的 DNS 是他
+                // 这台电脑的事，启动器不碰（红线）。
+                let dns = self.ensure_vm_dns(parent)?;
+                Ok(match dns {
+                    Some(line) => format!("{label} 正在运行 · {line}"),
+                    None => format!("{label} 正在运行"),
+                })
             }
             Step::Prepare => {
                 // 侦察员顺手报一句「你这台机器上已经有一套 Hunter」
@@ -735,6 +742,13 @@ impl Orchestrator {
                     (n, _) => format!("下载 {} · 用时 {secs}", flow::human_bytes(n)),
                 };
                 self.prep = Some(prep);
+                // **镜像到手了，先问一句「容器连得上模型网关吗」**（I10 的 P0-2）。
+                //
+                // 放在这里而不是放在「启动服务」之后，是因为 0.1.9 那次的教训：
+                // 等到健康检查超时才发现，白白多等 13 分钟，而且拿到的错误码
+                // （「启动超时」）根本指不到根上。现在用的是刚拉下来的镜像，
+                // **一个字节都不用多下**。
+                self.gate_container_network(parent)?;
                 Ok(detail)
             }
             Step::Start => {
@@ -757,6 +771,158 @@ impl Orchestrator {
     }
 
     // ── 侦察员 ────────────────────────────────────────────────────────────
+
+    /// 内置运行时就绪判定里的那一步：**它里面解析得动域名吗**（I10 的 P0-2）。
+    ///
+    /// 三种结局，都如实说：
+    ///
+    /// | 现场 | 做什么 |
+    /// |---|---|
+    /// | 不是内置运行时 / 虚拟机没跑 | 什么都不做，返回 `None`（这一项对用户自己的 Docker 没有意义） |
+    /// | 解析得动 | 什么都不做，返回一句「DNS 正常」 |
+    /// | 解析不动 | **自动修**（[`crate::runtime::vmdns::ensure`]），修不好就 `E_RUNTIME_NO_DNS` |
+    fn ensure_vm_dns(&mut self, parent: u64) -> AppResult<Option<String>> {
+        if crate::runtime::vmdns::applicable().is_err() {
+            return Ok(None);
+        }
+        let before = match crate::runtime::vmdns::probe() {
+            Ok(d) => d,
+            Err(e) => {
+                // 查不成不等于坏了。**不拿「没查成」当「不通」**
+                self.say_cannot(parent, "查一下那台虚拟机的 DNS", &e.msg);
+                return Ok(None);
+            }
+        };
+        if before.healthy() {
+            return Ok(Some("虚拟机里域名解析正常".to_string()));
+        }
+        // 到这儿就是真的没有 DNS。**先把这件事当成一个问题报出来**，再修
+        let issue = self.bus.emit(
+            EventDraft::new(
+                Kind::Issue,
+                "Hunter 自己那台虚拟机没有 DNS，容器会连不上网",
+            )
+            .under(parent)
+            .status(Status::Warn)
+            .detail(
+                "这台虚拟机自带的系统镜像里没有 systemd-resolved，/etc/resolv.conf 出厂就是一条断链 —— \
+                 不修的话，健康检查过不去，而且就算过去了也连不上 Hunter 的模型网关。",
+            )
+            .tech(before.one_line()),
+        );
+        let t = Instant::now();
+        let bus = self.bus.clone();
+        let act = self
+            .bus
+            .emit(EventDraft::new(Kind::Action, "正在给这台虚拟机写 DNS…").under(issue));
+        let mut say = |line: &str| {
+            bus.finish(act, Status::Running, line, None);
+            crate::linfo!("{line}");
+        };
+        let mut nb = |_: u64, _: u64| {};
+        let cancel = self.cancel.clone();
+        let no_cancel = move || cancel.load(Ordering::SeqCst);
+        let mut pr = crate::runtime::builtin::Progress {
+            say: &mut say,
+            bytes: &mut nb,
+            cancel: &no_cancel,
+        };
+        let r = crate::runtime::vmdns::ensure(&mut pr);
+        let after = match r {
+            Ok(d) => d,
+            Err(e) => {
+                self.bus.finish(
+                    act,
+                    Status::Failed,
+                    &e.msg,
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                return Err(AppError::new(
+                    Code::RuntimeNoDns,
+                    format!("给那台虚拟机写 DNS 没成：{}", e.msg),
+                ));
+            }
+        };
+        self.bus.finish(
+            act,
+            if after.healthy() {
+                Status::Ok
+            } else {
+                Status::Failed
+            },
+            &after.one_line(),
+            Some(t.elapsed().as_millis() as u64),
+        );
+        if !after.healthy() {
+            return Err(AppError::new(
+                Code::RuntimeNoDns,
+                format!("修完之后那台虚拟机还是解析不了域名：{}", after.one_line()),
+            ));
+        }
+        self.solved += 1;
+        self.tick(&self.phase.clone());
+        self.bus.emit(
+            EventDraft::new(Kind::Resolved, "虚拟机的 DNS 已经修好")
+                .under(issue)
+                .status(Status::Ok)
+                .detail(format!(
+                    "写的是 {} —— 只动 Hunter 自己那台虚拟机，你电脑的网络设置一个字节都没改",
+                    crate::runtime::vmdns::NAMESERVERS
+                        .iter()
+                        .map(|(ns, _)| *ns)
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                ))
+                .tech(after.one_line()),
+        );
+        Ok(Some("虚拟机的 DNS 刚刚修好了".to_string()))
+    }
+
+    /// 「容器到底能不能连上模型网关」这道闸门（I10 的 P0-2）。
+    ///
+    /// **六个服务全绿也不等于能对话** —— 0.1.9 那次就是：健康检查是外网依赖，
+    /// 容器连网关也不通，用户拿到的会是一个起得来、问不出话的 Hunter。
+    ///
+    /// 探不成（本机还没有镜像、docker 跑不起来）**不算不通**，如实说一句就过。
+    fn gate_container_network(&mut self, parent: u64) -> AppResult<()> {
+        let t = Instant::now();
+        let ev = self.bus.emit(
+            EventDraft::new(Kind::Action, "检查容器能不能连上 Hunter 的模型网关").under(parent),
+        );
+        let mut o = crate::runtime::netcheck::probe();
+        crate::linfo!("{}", o.one_line());
+        // **不通就再试一次。** 网络抖一下就把整次安装判失败太糙了 ——
+        // 而这一项的代价只是再起一个一次性容器（几秒），比误判一次便宜得多。
+        // 「没探成」那一档不重试：重试一百次本机也不会凭空多出一个镜像。
+        if !o.ok && o.fail != crate::runtime::netcheck::Fail::NotRun {
+            self.bus
+                .finish(ev, Status::Running, "第一次没通，3 秒后再试一次…", None);
+            std::thread::sleep(Duration::from_secs(3));
+            let again = crate::runtime::netcheck::probe();
+            crate::linfo!("再试一次：{}", again.one_line());
+            o = again;
+        }
+        let ms = t.elapsed().as_millis() as u64;
+        if o.ok {
+            self.bus.finish(ev, Status::Ok, &o.one_line(), Some(ms));
+            return Ok(());
+        }
+        if o.fail == crate::runtime::netcheck::Fail::NotRun {
+            // 没探成。**说清楚是「没测」不是「不通」**（红线 1）
+            self.bus.finish(
+                ev,
+                Status::Warn,
+                &format!("这一项没能测（{}），继续往下装", o.detail),
+                Some(ms),
+            );
+            return Ok(());
+        }
+        self.bus.finish(ev, Status::Failed, &o.one_line(), Some(ms));
+        Err(AppError::new(
+            Code::ContainerOffline,
+            format!("{}。命令：{}", o.one_line(), o.command),
+        ))
+    }
 
     /// 「直连不通、改走你自己配的系统代理之后成功了」——**这也是一次自动修复**，
     /// 如实报一张卡片并计进「已自动解决 N 个问题」（I8 一.4）。
@@ -913,6 +1079,38 @@ impl Orchestrator {
             let v = survey.verdict(port, &[crate::config::PROJECT]);
             port_lines.push(format!("{name} {}", v.human()));
         }
+        // **容器能不能上网**这件事只在该问的时候问（I10）。
+        //
+        // 0.1.9 那次失败里诊断助手读了 4 次容器日志都没看出根因 —— 因为
+        // 「opencode 的健康检查返回 500」这句话里，看不出「它解析不了域名」。
+        // 那条事实只有**真的去解析一次**才会出现，所以这里由侦察员去做，
+        // 而不是指望模型从日志里猜。
+        let container_net = if matches!(
+            e.code,
+            Code::StartTimeout | Code::ContainerOffline | Code::RuntimeNoDns | Code::ProxyBlock
+        ) && matches!(step, Step::Pull | Step::Start)
+        {
+            let o = crate::runtime::netcheck::probe();
+            crate::linfo!("侦察员：{}", o.one_line());
+            Some(o)
+        } else {
+            None
+        };
+        // 「容器手里那份 DNS 过时了吗」只在虚拟机 DNS 现在是好的、
+        // 而服务又起不来的时候才值得查（那正是 P0-3 那个现场）
+        let stale_dns = if matches!(step, Step::Start)
+            && matches!(e.code, Code::StartTimeout | Code::ContainerOffline)
+            && report
+                .vm_dns
+                .as_ref()
+                .is_some_and(|d| d.resolves == Some(true))
+        {
+            crate::runtime::netcheck::stale_dns_containers(
+                &crate::runtime::netcheck::want_nameservers(),
+            )
+        } else {
+            Vec::new()
+        };
         Evidence {
             report,
             others: crate::takeover::candidates(),
@@ -920,6 +1118,8 @@ impl Orchestrator {
             port_lines,
             cred_helpers: crate::dockercfg::helper_status(),
             sub_env: crate::runtime::env::current().one_line(),
+            container_net,
+            stale_dns,
             notes: Vec::new(),
         }
     }
@@ -1177,7 +1377,19 @@ impl Orchestrator {
                         // 规则层不会再提换源（I6 · 防来回兜圈）
                         self.switched_registry.insert(fp.clone());
                     }
-                    did = true;
+                    // **有些动作跑成了也不该重跑那一步**（I10）：
+                    // 生成一个诊断包不会让容器多出一条 DNS。
+                    // 不挡这一下的话就是一个真的空转 —— 实测转了 4 回合、
+                    // 22,400 token，每一回合做的都是同一件不解决问题的事。
+                    if actions::REPAIRS_NOTHING.contains(&call.id.as_str()) {
+                        crate::linfo!(
+                            "动作 {} 改变不了失败的原因，不因为它重跑「{}」",
+                            call.id,
+                            step.title()
+                        );
+                    } else {
+                        did = true;
+                    }
                 }
                 Err(err) => {
                     self.bus.finish(
@@ -1436,6 +1648,50 @@ impl Orchestrator {
                     BuiltinState::Running | BuiltinState::Absent => None,
                 }
             }
+            // ②″ **虚拟机没有 DNS**（I10 的 P0-1）。零 token，判据是侦察员
+            //     在那台虚拟机里真的解析过一次域名。
+            Code::RuntimeNoDns => {
+                // 修过一次还是这个码 —— 别再原样试第二遍（`rule_plan` 那层也会滤，
+                // 这里写出来是为了让「为什么不再提」这句话说得清）
+                if self.failed_actions.contains("fix_vm_dns") {
+                    return None;
+                }
+                Some((
+                    vec![Call::new("fix_vm_dns")],
+                    format!(
+                        "Hunter 自己那台虚拟机解析不了任何域名 —— 它自带的这份 Ubuntu 镜像里\
+                         没有 systemd-resolved，/etc/resolv.conf 出厂就是一条断链。\
+                         在**这台虚拟机**里把它写成普通文件（{}），你电脑的网络设置一个字节都不动。",
+                        crate::runtime::vmdns::NAMESERVERS
+                            .iter()
+                            .map(|(ns, _)| *ns)
+                            .collect::<Vec<_>>()
+                            .join(" / ")
+                    ),
+                ))
+            }
+            // ②‴ **容器连不上模型网关**（I10 的 P0-2）。
+            //     内置运行时上有的修；用户自己的 Docker 上**没得修** ——
+            //     改他这台电脑的网络设置是禁止项，这时规则层让路，如实交给诊断员。
+            Code::ContainerOffline => {
+                // **只有「虚拟机自己就解析不动」这一种有确定的修法。**
+                // 虚拟机好好的、容器却连不上（代理只放行了宿主机、公司网络挡了 443）
+                // 那一类我们没得修 —— 规则层让路，绝不给一个看着像能修其实没用的动作。
+                let vm_broken = ev
+                    .report
+                    .vm_dns
+                    .as_ref()
+                    .is_some_and(|d| d.resolves == Some(false));
+                if !vm_broken || self.failed_actions.contains("fix_vm_dns") {
+                    return None;
+                }
+                Some((
+                    vec![Call::new("fix_vm_dns")],
+                    "容器连不上 Hunter 的模型网关，而 Hunter 自己那台虚拟机本身就解析不了域名 —— \
+                     先把虚拟机的 /etc/resolv.conf 写好，容器才拿得到 DNS。"
+                        .to_string(),
+                ))
+            }
             // ③ 装了没起：把它点起来再等
             Code::DaemonDown => {
                 let app = ev
@@ -1518,8 +1774,39 @@ impl Orchestrator {
                     ),
                 ))
             }
-            // ⑤ 起不来但不是端口的事：有残留就先清，没残留就重建一次
+            // ⑤ 起不来但不是端口的事。**先问一句「是不是根本没有 DNS」**（I10）——
+            //    0.1.9 在用户 Mac 上就是这一档：opencode 的健康检查要外网，
+            //    虚拟机没有 DNS，于是等满 180 秒报「启动超时」。
+            //    那一次规则层在这里 `None` 了，整件事掉到模型那边、最后 unknown。
             Code::StartTimeout if step == Step::Start => {
+                let vm_broken = ev
+                    .report
+                    .vm_dns
+                    .as_ref()
+                    .is_some_and(|d| d.resolves == Some(false));
+                let container_no_dns = ev
+                    .container_net
+                    .as_ref()
+                    .is_some_and(|c| c.fail == crate::runtime::netcheck::Fail::NoDns);
+                if (vm_broken || container_no_dns) && !self.failed_actions.contains("fix_vm_dns") {
+                    let mut calls = vec![Call::new("fix_vm_dns")];
+                    if compose::is_up() {
+                        calls.push(Call::new("restart_stack"));
+                    }
+                    return Some((
+                        calls,
+                        format!(
+                            "服务没就绪不是因为慢，是因为**解析不了域名**：{}。\
+                             健康检查要连外网、容器也要连 Hunter 的模型网关，没有 DNS 两件事都做不成。\
+                             先把 Hunter 自己那台虚拟机的 /etc/resolv.conf 写好，再让容器重新起一次。",
+                            ev.container_net
+                                .as_ref()
+                                .map(|c| c.one_line())
+                                .or_else(|| ev.report.vm_dns.as_ref().map(|d| d.one_line()))
+                                .unwrap_or_else(|| "虚拟机里解析不了 hunter.agentpit.io".into())
+                        ),
+                    ));
+                }
                 if !ev.stale.is_empty() {
                     return Some((
                         vec![
@@ -1529,6 +1816,23 @@ impl Orchestrator {
                         format!(
                             "上一次起到一半留下了 {} 个没启动的容器，先清掉再重新起。",
                             ev.stale.len()
+                        ),
+                    ));
+                }
+                // **虚拟机好好的，容器手里那份 DNS 却是旧的**（I10 的 P0-3）。
+                //
+                // 容器里那份 `/etc/resolv.conf` 是它**创建那一刻**由 dockerd 写死的，
+                // 之后不会自己变。所以「DNS 是上一次装到一半时修好的、容器是在那之前起的」
+                // 这个现场是真实存在的 —— 用户 Mac 上 0.1.9 结束时就是这个样子。
+                // 重建一次（`down` 不带 -v + `up -d`，数据卷一个都不动）就好。
+                if !ev.stale_dns.is_empty() && !self.failed_actions.contains("compose_down_own") {
+                    return Some((
+                        vec![Call::new("compose_down_own"), Call::new("restart_stack")],
+                        format!(
+                            "{} 这几个容器手里那份 /etc/resolv.conf 还是修好 DNS 之前的 —— \
+                             那份文件是容器创建时写死的，不会自己更新。\
+                             把它们重建一次（数据卷一个都不动）就能拿到新的 DNS。",
+                            ev.stale_dns.join("、")
                         ),
                     ));
                 }
@@ -2140,6 +2444,14 @@ pub struct Evidence {
     pub cred_helpers: Vec<(String, Option<String>)>,
     /// 子进程 PATH 补了哪些目录 —— 「找不到」这类错误里，这一行是最要紧的证据
     pub sub_env: String,
+    /// **容器到底能不能连上模型网关**（I10）。
+    ///
+    /// 只在「起容器」这一类失败上才采 —— 它要起一个一次性容器，最多要几十秒，
+    /// 不该每一回合都白花。`None` = 这一次没采（**不是「不通」**）。
+    pub container_net: Option<crate::runtime::netcheck::Outcome>,
+    /// **正跑着、但手里那份 DNS 已经过时**的服务（I10 的 P0-3）。
+    /// 空 = 没有这个问题，或者这一次没查。
+    pub stale_dns: Vec<String>,
     /// 总指挥想额外告诉诊断员的事（例如「换过源了，原话一个字没变」）
     pub notes: Vec<String>,
 }
@@ -2154,6 +2466,23 @@ impl Evidence {
         }
         if !self.stale.is_empty() {
             v.push(format!("本项目有 {} 个残留容器", self.stale.len()));
+        }
+        if let Some(d) = &self.report.vm_dns {
+            v.push(match d.resolves {
+                Some(true) => "虚拟机解析得动域名".to_string(),
+                Some(false) => "虚拟机解析不了域名".to_string(),
+                None => "虚拟机 DNS 没查成".to_string(),
+            });
+        }
+        if !self.stale_dns.is_empty() {
+            v.push(format!("{} 个容器的 DNS 已过时", self.stale_dns.len()));
+        }
+        if let Some(c) = &self.container_net {
+            v.push(if c.ok {
+                "容器连得上模型网关".to_string()
+            } else {
+                format!("容器连不上模型网关（{}）", c.fail.cn())
+            });
         }
         v.join(" · ")
     }
@@ -2263,6 +2592,28 @@ impl Evidence {
                     )),
                 }
             }
+        }
+        // ── 容器到底能不能上网（I10）──
+        match &self.container_net {
+            Some(c) if c.ok => s.push_str(&format!(
+                "起过一个一次性容器实测：{}。所以「连不上网关」这条可以排除。\n",
+                c.one_line()
+            )),
+            Some(c) => s.push_str(&format!(
+                "起过一个一次性容器实测：{}。命令：{}\n\
+                 注意这是**真的跑过一次**的结果，不是从日志里猜的。\n",
+                c.one_line(),
+                c.command
+            )),
+            None => s.push_str("这一次没有做「容器能不能连上网关」的实测。\n"),
+        }
+        if !self.stale_dns.is_empty() {
+            s.push_str(&format!(
+                "这几个正跑着的容器手里那份 /etc/resolv.conf 与现在虚拟机上的对不上：{}。\
+                 容器里那份文件是它创建那一刻写死的，不会自己更新 —— \
+                 把它们重建一次（`compose_down_own` + `restart_stack`，不带 -v）就能拿到新的。\n",
+                self.stale_dns.join("、")
+            ));
         }
         for n in &self.notes {
             s.push_str(&format!("总指挥补充：{n}\n"));
@@ -2406,6 +2757,8 @@ mod tests {
             port_lines: Vec::new(),
             cred_helpers: Vec::new(),
             sub_env: "子进程 PATH：原样继承（没有需要补的目录）".into(),
+            container_net: None,
+            stale_dns: Vec::new(),
             notes: Vec::new(),
         }
     }
@@ -2587,6 +2940,8 @@ mod tests {
             Code::DaemonDown,
             Code::PullFailed,
             Code::StartTimeout,
+            Code::RuntimeNoDns,
+            Code::ContainerOffline,
         ] {
             let e = AppError::new(code, "x");
             if let Some((calls, _)) = o.rule_plan(Step::Start, &e, &ev) {
@@ -2909,6 +3264,131 @@ mod tests {
         assert!(
             o.rule_plan(Step::Docker, &e, &ev).is_none(),
             "只剩 wait_daemon 的计划不该再出"
+        );
+    }
+
+    // ── I10：虚拟机没有 DNS ──────────────────────────────────────────
+
+    fn ev_with_container_fail(fail: crate::runtime::netcheck::Fail) -> Evidence {
+        let mut ev = ev_empty();
+        ev.container_net = Some(crate::runtime::netcheck::Outcome {
+            ok: false,
+            fail,
+            command: "docker run --rm --entrypoint curl …".into(),
+            detail: "curl: (6) Could not resolve host: hunter.agentpit.io".into(),
+            elapsed_ms: 1200,
+        });
+        ev
+    }
+
+    /// 0.1.9 在用户 Mac 上那一幕：`E_START_TIMEOUT` + 容器解析不了域名。
+    /// **这一轮要的就是「规则层自己认得出来」**，而不是落到模型那边 unknown。
+    #[test]
+    fn 启动超时但容器解析不了域名时走修_dns_而不是别的() {
+        let o = orch(Mode::Auto);
+        let ev = ev_with_container_fail(crate::runtime::netcheck::Fail::NoDns);
+        let e = AppError::new(
+            Code::StartTimeout,
+            "等了 180 秒，还有 1 个服务没就绪：opencode",
+        );
+        let (calls, why) = o
+            .rule_plan(Step::Start, &e, &ev)
+            .expect("这个现场规则层必须认得出来");
+        assert_eq!(calls[0].id, "fix_vm_dns", "第一步就该是修 DNS：{calls:?}");
+        assert!(why.contains("解析不了域名"), "{why}");
+    }
+
+    /// 反过来：容器连得上、只是慢 —— 那就**不该**去动 DNS。
+    #[test]
+    fn 容器连得上时启动超时不会被当成_dns_问题() {
+        let o = orch(Mode::Auto);
+        let mut ev = ev_empty();
+        ev.container_net = Some(crate::runtime::netcheck::Outcome {
+            ok: true,
+            fail: crate::runtime::netcheck::Fail::None,
+            command: "docker run …".into(),
+            detail: "401".into(),
+            elapsed_ms: 700,
+        });
+        let e = AppError::new(Code::StartTimeout, "等了 180 秒");
+        let plan = o.rule_plan(Step::Start, &e, &ev);
+        assert!(
+            plan.as_ref().is_none_or(|(c, _)| c[0].id != "fix_vm_dns"),
+            "不该去动 DNS：{plan:?}"
+        );
+    }
+
+    /// 「解析超时」和「一个 nameserver 都没有」是同一类事，都该被认出来。
+    #[test]
+    fn 解析超时也算没有_dns() {
+        let o = orch(Mode::Auto);
+        let ev = ev_with_container_fail(crate::runtime::netcheck::Fail::NoDns);
+        let e = AppError::new(Code::RuntimeNoDns, "虚拟机解析不了域名");
+        let (calls, _) = o.rule_plan(Step::Docker, &e, &ev).expect("该有计划");
+        assert_eq!(calls[0].id, "fix_vm_dns");
+    }
+
+    /// 修过一次还是同一个码 —— **不再原样提第二遍**（沿用 I9 那条规矩）。
+    #[test]
+    fn 修过一次_dns_还不行就不再提同一条() {
+        let mut o = orch(Mode::Auto);
+        o.failed_actions.insert("fix_vm_dns".to_string());
+        let ev = ev_with_container_fail(crate::runtime::netcheck::Fail::NoDns);
+        for (code, step) in [
+            (Code::RuntimeNoDns, Step::Docker),
+            (Code::ContainerOffline, Step::Start),
+            (Code::StartTimeout, Step::Start),
+        ] {
+            let e = AppError::new(code, "x");
+            let plan = o.rule_plan(step, &e, &ev);
+            assert!(
+                plan.as_ref().is_none_or(|(c, _)| c[0].id != "fix_vm_dns"),
+                "{code:?} 不该再提一次：{plan:?}"
+            );
+        }
+    }
+
+    /// **「生成一份诊断包」不是一次修复。**
+    ///
+    /// 这一条是实测补的（I10 第四节场景 G）：对着一台「容器没有 DNS」的 docker
+    /// 跑全自动安装，规则层正确地让路、模型合理地选了 `export_feedback_bundle`，
+    /// 然后总指挥把它当成「做了点什么」→ 重跑 → 又失败 → 再来一遍，
+    /// 转了 4 个回合、22,400 token。
+    #[test]
+    fn 只生成了诊断包不算做过事() {
+        assert!(actions::REPAIRS_NOTHING.contains(&"export_feedback_bundle"));
+        // 反面：真会改变现场的那几个一个都不能进这张表
+        for id in [
+            "remap_ports",
+            "switch_registry",
+            "fix_vm_dns",
+            "restart_stack",
+            "compose_down_own",
+            "install_runtime",
+            "start_builtin_runtime",
+        ] {
+            assert!(
+                !actions::REPAIRS_NOTHING.contains(&id),
+                "{id} 是真的会改变现场的，不该被当成空转"
+            );
+        }
+        // 表里每一条都得真的在动作表里（写错字就会静默失效）
+        for id in actions::REPAIRS_NOTHING {
+            assert!(actions::spec(id).is_some(), "{id} 不在动作表里");
+        }
+    }
+
+    /// 容器连不上、但**不是 DNS 的事**（代理挡了 443 之类）——
+    /// 那不是我们能修的，规则层让路，不去瞎改虚拟机。
+    #[test]
+    fn 容器连不上但不是_dns_的事就不乱动() {
+        let o = orch(Mode::Auto);
+        let ev = ev_with_container_fail(crate::runtime::netcheck::Fail::Unreachable);
+        let e = AppError::new(Code::StartTimeout, "等了 180 秒");
+        let plan = o.rule_plan(Step::Start, &e, &ev);
+        assert!(
+            plan.as_ref().is_none_or(|(c, _)| c[0].id != "fix_vm_dns"),
+            "{plan:?}"
         );
     }
 

@@ -1,0 +1,66 @@
+# 启动器自带的那份虚拟机镜像，为什么没有 DNS —— 逐条实查（测试机 Linux，2026-09-22）
+
+## 0 · 这确实是启动器会下发的那个文件
+4cd967d2c58aa6971621343d372255b14ffbfe28a185cda0e3c34ac8a1eb15e6  img.raw.gz
+（清单 src-tauri/src/runtime/manifest.rs 里写的是 4cd967d2c58aa6971621343d372255b14ffbfe28a185cda0e3c34ac8a1eb15e6）
+
+## 1 · /etc/resolv.conf 出厂就是断链
+lrwxrwxrwx 1 root root 39 May 21 11:23 /mnt/i10img/etc/resolv.conf -> ../run/systemd/resolve/stub-resolv.conf
+
+## 2 · 镜像里没有 systemd-resolved（Ubuntu 24.04 把它拆成了单独的包）
+ii  systemd                         255.4-1ubuntu8.15                 amd64        system and service manager
+ii  systemd-dev                     255.4-1ubuntu8.15                 all          systemd development files
+ii  systemd-sysv                    255.4-1ubuntu8.15                 amd64        system and service manager - SysV compatibility symlinks
+ii  systemd-timesyncd               255.4-1ubuntu8.15                 amd64        minimalistic service to synchronize local time with NTP servers
+-- 找 systemd-resolved 这个包：
+0
+0 条
+-- 找 resolved 的可执行文件与 unit：
+ls: cannot access '/mnt/i10img/usr/lib/systemd/systemd-resolved': No such file or directory
+（一个都没有）
+
+## 3 · 也没有 resolvconf / openresolv
+（一个都没有）
+
+## 4 · cloud-init 那条路：resolv_conf 模块根本不在 Ubuntu 的模块表里
+-- 模板文件是有的：
+resolv.conf.tmpl
+systemd.resolved.conf.tmpl
+-- 但 cloud_config_modules 里没有 resolv_conf：
+cloud_config_modules:
+  - wireguard
+  - snap
+  - ubuntu_autoinstall
+  - ssh_import_id
+  - keyboard
+  - locale
+  - grub_dpkg
+  - apt_pipelining
+  - apt_configure
+  - ubuntu_pro
+  - ntp
+  - timezone
+  - disable_ec2_metadata
+  - runcmd
+  - byobu
+
+# The modules that run in the 'final' stage
+cloud_final_modules:
+-- cloud.cfg.d 里也没有加回来：
+（没有）
+
+## 5 · netplan 那条路：/etc/netplan 是空的（cloud-init 首启才写），而 netplan 的 nameservers 只交给 systemd-networkd
+total 8
+drwxr-xr-x  2 root root 4096 Mar  3  2026 .
+drwxr-xr-x 71 root root 4096 Jun  3 12:01 ..
+
+## 6 · 镜像里带的 docker 与 cloud-init 版本
+ii  cloud-init                      26.1-0ubuntu1~24.04.1             all          initialization and customization tool for cloud instances
+hi  containerd.io                   2.2.4-1~ubuntu.24.04~noble        amd64        An open and reliable container runtime
+hi  docker-ce                       5:29.5.2-1~ubuntu.24.04~noble     amd64        Docker: the open-source application container engine
+ii  netplan.io                      1.1.2-8ubuntu1~24.04.2            amd64        Declarative network configuration for various backends at runtime
+
+## 7 · 这台测试机能不能起 lima 虚拟机（嵌套虚拟化）
+ls: cannot access '/dev/kvm': No such file or directory
+0
+CPU 没有 vmx/svm 标志

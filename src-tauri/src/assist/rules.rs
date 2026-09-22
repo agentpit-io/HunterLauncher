@@ -14,6 +14,8 @@
 //! | 磁盘不足 | 剩余 < 5 GB | 提示清理，不给动作（我们不替用户删东西） |
 //! | 项目名冲突 | 错误码是 `E_PROJECT_CONFLICT` | 三条出路，**不给动作**（有一条会删数据） |
 //! | 拉取失败 | 错误码是 `E_PULL_FAILED` | 「换镜像源」 |
+//! | **虚拟机没有 DNS**（I10） | 在 Hunter 自己那台虚拟机里**真的解析过一次**域名，没成 | 「给这台虚拟机写好 DNS」，`confident = true` → **不走 AI** |
+//! | **容器连不上网关**（I10） | 错误码是 `E_CONTAINER_OFFLINE` | 内置运行时 → 「写好 DNS」；用户自己的 Docker → **不给动作**（改他的网络设置是禁止项） |
 //!
 //! 认不出来时返回一条 `confident = false` 的兜底，界面据此把
 //! 「让 AI 帮我看看」那个按钮显出来。
@@ -50,6 +52,15 @@ pub fn diagnose(r: &Report) -> Suggestion {
     // 顺序反了就会走成 0.1.8 在用户 Mac 上那样 —— 用裸 `colima start`
     // 去「启动用户的 Colima」，而用户根本没装过 Colima。
     if let Some(s) = builtin_runtime_down(r) {
+        return s;
+    }
+    // **这一条紧跟在它后面**（I10 的 P0-2）：虚拟机起来了、docker 也连得上，
+    // 可它一个域名都解析不了 —— 0.1.9 在用户 Mac 上就卡在这儿 13 分钟，
+    // 最后报的是「启动超时」，规则层 unknown。这不是超时，是没有 DNS。
+    if let Some(s) = vm_no_dns(r) {
+        return s;
+    }
+    if let Some(s) = container_offline(r) {
         return s;
     }
     if let Some(s) = daemon_down(r) {
@@ -142,6 +153,99 @@ fn builtin_runtime_down(r: &Report) -> Option<Suggestion> {
         detail,
         actions: planned.into_iter().collect(),
         // 判据全是文件与 socket，查得清清楚楚 —— 这一条不必花 token
+        confident: true,
+    })
+}
+
+/// **Hunter 自己那台虚拟机没有 DNS**（I10 的 P0-1 / P0-2）。
+///
+/// 判据只有一条，而且是确定性的：侦察员在那台虚拟机里**真的解析过一次**
+/// `hunter.agentpit.io`，没解析出来。不是「日志里像是网络问题」，
+/// 是「试过了，不行」—— 所以这一条 `confident = true`，一个 token 都不花。
+///
+/// 这条规则**必须排在 `pull-failed` 与「起不来」前面**：没有 DNS 的机器上，
+/// 拉镜像（走代理）可能是成的、容器也起得来，表现出来只是「某个服务一直不健康」。
+/// 顺序反了就会去换镜像源 —— 和 I6 那次「换了三次源、一个问题都没解决」一模一样。
+fn vm_no_dns(r: &Report) -> Option<Suggestion> {
+    let d = r.vm_dns.as_ref()?;
+    // 解析得动 / 根本没查成 → 都不是这一条
+    if d.resolves != Some(false) {
+        return None;
+    }
+    let plan = actions::plan(&Call::new("fix_vm_dns")).ok()?;
+    Some(Suggestion {
+        rule: "vm-no-dns".into(),
+        code: Some("E_RUNTIME_NO_DNS".into()),
+        title: "Hunter 自己那台虚拟机没有可用的 DNS".into(),
+        detail: format!(
+            "启动器自己那台虚拟机（{}）里解析不了任何域名，所以它里面的容器\n\
+             既过不了健康检查，也连不上 Hunter 的模型网关 —— 就算六个服务全绿也没法对话。\n\
+             根子在镜像本身：这份 Ubuntu 24.04 minimal 镜像里没有 systemd-resolved，\n\
+             而 /etc/resolv.conf 出厂就是一条指向它的断链，没有任何东西会去把它填上。\n\
+             启动器可以直接在这台虚拟机里把它写成普通文件（{}），并装一个开机重写它的服务。\n\
+             你这台电脑的 DNS、hosts、代理、防火墙一个字节都不会动。\n\
+             （判据：{}）",
+            d.instance,
+            crate::runtime::vmdns::NAMESERVERS
+                .iter()
+                .map(|(ns, _)| *ns)
+                .collect::<Vec<_>>()
+                .join(" / "),
+            d.one_line()
+        ),
+        actions: vec![plan],
+        // 试过了、不行 —— 这一条不必花 token
+        confident: true,
+    })
+}
+
+/// **容器连不上模型网关**（I10 的 P0-2）。
+///
+/// 这条规则**一个动作都不给**，而且这是有意的：
+///
+/// | 现场 | 谁来管 |
+/// |---|---|
+/// | 虚拟机自己就解析不了域名 | 上面那条 `vm-no-dns`（它排在前面，有动作） |
+/// | 虚拟机解析得动、容器却连不上 | **不是 DNS 断链那一类**，多半是代理或防火墙只放行了宿主机 —— 启动器不会去改你电脑的网络设置 |
+/// | 跑在用户自己的 Docker 上 | 同上，而且更不能碰 |
+///
+/// 「我们修不了」这件事要说清楚，不要给一个看着像能修、其实没用的按钮 ——
+/// I6 那次「换了三次源、268 秒、一个问题都没解决」就是这么来的。
+fn container_offline(r: &Report) -> Option<Suggestion> {
+    if r.error_code.as_deref() != Some("E_CONTAINER_OFFLINE") {
+        return None;
+    }
+    let vm = r.vm_dns.as_ref();
+    let builtin =
+        vm.is_some_and(|d| !matches!(d.resolv, crate::runtime::vmdns::ResolvState::Unknown(_)));
+    let head = if builtin {
+        format!(
+            "起了一个一次性容器去连 hunter.agentpit.io，没连上。\n\
+             而 Hunter 自己那台虚拟机是解析得动域名的（{}）—— \n\
+             所以这不是「虚拟机没有 DNS」那一类，启动器没有对症的修法。\n",
+            vm.map(|d| d.one_line()).unwrap_or_default()
+        )
+    } else {
+        "起了一个一次性容器去连 hunter.agentpit.io，没连上。\n\
+         这一套跑在你自己装的那个 Docker 上，容器的 DNS 与出网由它和你的网络环境决定。\n"
+            .to_string()
+    };
+    Some(Suggestion {
+        rule: if builtin {
+            "container-offline-builtin".into()
+        } else {
+            "container-offline-user-docker".into()
+        },
+        code: Some("E_CONTAINER_OFFLINE".into()),
+        title: "容器连不上 Hunter 的模型网关".into(),
+        detail: format!(
+            "{head}\
+             启动器不会去改你电脑的 DNS、hosts、代理或防火墙设置 —— \n\
+             这是写进程序里的红线，不是一句承诺。\n\
+             常见的两种原因：代理只放行了本机、没放行容器网段；或者网络挡了 443。\n\
+             容器起得来但问不出话时，先从这两条查。"
+        ),
+        actions: Vec::new(),
         confident: true,
     })
 }
@@ -270,9 +374,9 @@ fn cred_helper(r: &Report) -> Option<Suggestion> {
             format!(
                 "你的 docker 配置里写着要用 {} 去取登录信息，但这台机器上补全 PATH 之后仍然找不到它。\n\
                  （{sub}）\n\
-                 Hunter 的六个镜像都是**公开**的，本来就不需要登录。\n\
+                 Hunter 的六个镜像都是公开的，本来就不需要登录。\n\
                  启动器可以给自己另起一份不带凭据助手的 docker 配置（放在 ~/.hunter/docker-config/），\n\
-                 **你的 ~/.docker/config.json 一个字节都不会动**。",
+                 你的 ~/.docker/config.json 一个字节都不会动。",
                 missing.join("、")
             ),
         )
@@ -452,6 +556,7 @@ mod tests {
             registry_prefix: "ghcr.io/agentpit-io".into(),
             hunter_tag: "1.2.0".into(),
             commands: Vec::new(),
+            vm_dns: None,
             log_tail: Vec::new(),
         }
     }
@@ -464,6 +569,155 @@ mod tests {
             running,
             evidence: "测试".into(),
         }
+    }
+
+    /// **界面上不该出现 Markdown 的星号，也不该出现「请在终端执行」。**
+    ///
+    /// 前一条是 I10 在 Xvfb 截图里当场看见的：错误页上原样印着
+    /// 「这一套跑在\*\*你自己装的 Docker\*\* 上」——
+    /// 这些 `detail` 是直接渲染成纯文本的，写 Markdown 只会把星号显给用户看。
+    /// i18n 那一侧早就有同样一条测试（`src/i18n/i18n.test.ts`），规则层这一侧原来没有。
+    ///
+    /// 后一条是 2026-09-21 22:10 那条产品原则：界面永远不出现
+    /// 「请在终端里执行」「复制命令」这一类话。（wording-ok：这里是禁用名单本身）
+    #[test]
+    fn 规则层给用户看的每一句都不带星号也不支使他去敲命令() {
+        let mut cases: Vec<Report> = Vec::new();
+        // 逐条把每一个规则的现场造出来
+        for code in [
+            "E_PULL_FAILED",
+            "E_CRED_HELPER",
+            "E_PROJECT_CONFLICT",
+            "E_CONTAINER_OFFLINE",
+            "E_RUNTIME_NO_DNS",
+        ] {
+            let mut r = base();
+            r.error_code = Some(code.into());
+            cases.push(r);
+        }
+        // 虚拟机没有 DNS
+        let mut r = base();
+        r.vm_dns = Some(vm_dns(Some(false)));
+        cases.push(r);
+        // 容器连不上，但虚拟机是好的
+        let mut r = base();
+        r.error_code = Some("E_CONTAINER_OFFLINE".into());
+        r.vm_dns = Some(vm_dns(Some(true)));
+        cases.push(r);
+        // 端口被占
+        let mut r = base();
+        r.ports[0].free = false;
+        cases.push(r);
+        // 磁盘快满
+        let mut r = base();
+        r.disk_free = Some(1024 * 1024 * 1024);
+        cases.push(r);
+        // 认不出来
+        cases.push(base());
+
+        for r in cases {
+            let s = diagnose(&r);
+            for (what, text) in [("标题", &s.title), ("正文", &s.detail)] {
+                assert!(
+                    !text.contains("**"),
+                    "规则 {} 的{}里有 Markdown 星号，会原样印到界面上：{text}",
+                    s.rule,
+                    what
+                );
+                // wording-ok：这一行是禁用名单本身，不是给用户看的文案
+                for bad in ["请在终端", "复制命令", "打开终端", "我执行完了"] {
+                    assert!(
+                        !text.contains(bad),
+                        "规则 {} 的{}里在支使用户去敲命令（「{bad}」）：{text}",
+                        s.rule,
+                        what
+                    );
+                }
+            }
+        }
+    }
+
+    // ── I10：虚拟机没有 DNS ──────────────────────────────────────────
+
+    fn vm_dns(resolves: Option<bool>) -> crate::runtime::vmdns::VmDns {
+        crate::runtime::vmdns::VmDns {
+            instance: "colima-hunter".into(),
+            resolv: match resolves {
+                Some(true) => {
+                    crate::runtime::vmdns::ResolvState::File("nameserver 192.168.5.2\n".into())
+                }
+                _ => crate::runtime::vmdns::ResolvState::Broken(
+                    "cat: /etc/resolv.conf: No such file or directory".into(),
+                ),
+            },
+            resolves,
+            resolve_detail: "".into(),
+            unit_installed: Some(false),
+        }
+    }
+
+    /// 0.1.9 用户 Mac 上那个现场：虚拟机跑着、docker 连得上，但一个域名都解析不了。
+    /// 规则层必须**确定性**地认出来，而不是 unknown。
+    #[test]
+    fn 虚拟机解析不动域名时规则层认得出来且不必问_ai() {
+        let mut r = base();
+        r.vm_dns = Some(vm_dns(Some(false)));
+        r.error_code = Some("E_START_TIMEOUT".into());
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "vm-no-dns", "{s:?}");
+        assert_eq!(s.code.as_deref(), Some("E_RUNTIME_NO_DNS"));
+        assert!(s.confident, "试过一次就知道的事，不该再花 token");
+        assert_eq!(s.actions.len(), 1);
+        assert_eq!(s.actions[0].id, "fix_vm_dns");
+        // 这一句是给用户看的，必须把「不动你电脑」说出来
+        assert!(s.detail.contains("一个字节都不会动"), "{}", s.detail);
+    }
+
+    /// 解析得动就**不该**触发 —— 否则每次安装都会去改一遍虚拟机的文件。
+    #[test]
+    fn 虚拟机解析得动时这条规则不触发() {
+        let mut r = base();
+        r.vm_dns = Some(vm_dns(Some(true)));
+        assert_ne!(diagnose(&r).rule, "vm-no-dns");
+        // 「没查成」也不算「不通」（红线 1）
+        r.vm_dns = Some(vm_dns(None));
+        assert_ne!(diagnose(&r).rule, "vm-no-dns");
+    }
+
+    /// 跑在**用户自己的 Docker** 上时容器连不上 —— 我们没得修，
+    /// 只能说清楚；**绝不给一个会去改他网络设置的动作**。
+    #[test]
+    fn 用户自己的_docker_上容器连不上时不给动作() {
+        let mut r = base();
+        r.error_code = Some("E_CONTAINER_OFFLINE".into());
+        r.vm_dns = None;
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "container-offline-user-docker");
+        assert!(s.actions.is_empty(), "不该给任何动作：{:?}", s.actions);
+        assert!(s.detail.contains("不会去改你电脑"), "{}", s.detail);
+    }
+
+    /// 虚拟机解析得动、容器却连不上 —— **这一类我们修不了，就别给按钮**。
+    #[test]
+    fn 虚拟机没问题而容器连不上时如实说修不了() {
+        let mut r = base();
+        r.error_code = Some("E_CONTAINER_OFFLINE".into());
+        r.vm_dns = Some(vm_dns(Some(true)));
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "container-offline-builtin");
+        assert!(s.actions.is_empty(), "不该给动作：{:?}", s.actions);
+        assert!(s.detail.contains("没有对症的修法"), "{}", s.detail);
+    }
+
+    /// 虚拟机本身就解析不动时，**先认「没有 DNS」那一条**（它有修法）。
+    #[test]
+    fn 虚拟机没有_dns_时优先走那条有修法的规则() {
+        let mut r = base();
+        r.error_code = Some("E_CONTAINER_OFFLINE".into());
+        r.vm_dns = Some(vm_dns(Some(false)));
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "vm-no-dns");
+        assert_eq!(s.actions[0].id, "fix_vm_dns");
     }
 
     /// I4 测试场景 2 的期望：规则层直接识别并给「启动」动作，**不该走到 AI**。

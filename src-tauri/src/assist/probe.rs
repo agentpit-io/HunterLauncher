@@ -107,6 +107,16 @@ pub struct Report {
     pub registry_prefix: String,
     pub hunter_tag: String,
 
+    /// **Hunter 自己那台虚拟机的 DNS 现状**（I10）。
+    ///
+    /// 只有内置运行时的虚拟机在跑的时候才有值 —— 别的情况这一项没有意义
+    /// （用户自己的 Docker 的 DNS 是他这台电脑的事，启动器不碰）。
+    ///
+    /// 为什么要进这份报文：0.1.9 那次失败里，送给模型的证据**恰好缺了它**。
+    /// 报文里写着「opencode 不健康」，却没有一个字说明那台虚拟机连域名都解析不了，
+    /// 于是模型只能一遍遍去读容器日志（实测读了 4 次），一直没走到根上。
+    pub vm_dns: Option<crate::runtime::vmdns::VmDns>,
+
     pub commands: Vec<CmdOut>,
     pub log_tail: Vec<String>,
 }
@@ -198,6 +208,12 @@ pub fn collect(
         registry_id: cfg.hunter.registry_id.clone(),
         registry_prefix: cfg.hunter.registry_prefix.clone(),
         hunter_tag: cfg.hunter.tag.clone(),
+
+        // 只在内置运行时的虚拟机跑着的时候查 —— 别的情况这一项没有意义，
+        // 而且查一次要起一个 `limactl shell` 子进程，不该每次诊断都白花
+        vm_dns: crate::runtime::vmdns::applicable()
+            .ok()
+            .and_then(|()| crate::runtime::vmdns::probe().ok()),
 
         commands,
         log_tail: crate::log::tail_file(LOG_LINES)
@@ -301,6 +317,22 @@ impl Report {
             self.registry_prefix,
             self.hunter_tag
         ));
+        // ── Hunter 自己那台虚拟机的 DNS（I10）──
+        if let Some(d) = &self.vm_dns {
+            s.push_str(&format!(
+                "\n## Hunter 自己那台虚拟机的 DNS\n{}\n",
+                d.one_line()
+            ));
+            if !d.healthy() {
+                s.push_str(
+                    "这台虚拟机是启动器自己下载、自己创建的（colima profile hunter），\
+                     它没有 DNS 就意味着**里面所有容器都解析不了域名**，\
+                     健康检查过不去、也连不上模型网关。\
+                     可以用动作 `fix_vm_dns` 修它 —— 那个动作只写这台虚拟机里的 /etc/resolv.conf，\
+                     **不许、也做不到**去改用户这台电脑的 DNS / hosts / 代理 / 防火墙。\n",
+                );
+            }
+        }
         for c in &self.commands {
             s.push_str(&format!(
                 "\n## 命令原始输出：{}（退出码 {}）\n{}\n",
@@ -683,6 +715,7 @@ mod tests {
                 status: None,
                 output: clean(&format!("Authorization: Bearer {FAKE}")),
             }],
+            vm_dns: None,
             log_tail: vec![clean(&format!("校验 key {FAKE} 通过"))],
         };
         let p = r.to_prompt();
@@ -773,6 +806,7 @@ mod tests {
             registry_prefix: String::new(),
             hunter_tag: String::new(),
             commands: Vec::new(),
+            vm_dns: None,
             log_tail: Vec::new(),
         }
     }

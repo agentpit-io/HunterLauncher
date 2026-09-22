@@ -637,6 +637,164 @@ pub fn argv_install_script(argv: &[String]) -> AppResult<()> {
     Ok(())
 }
 
+/// 「在 Hunter 自己那台虚拟机里修 DNS」那道窄门（I10 的 P0-1）。
+///
+/// ## 为什么要另开一道
+///
+/// 上面那道总门 [`argv`] 里有两条硬禁令，这件事正好各踩一条：
+/// 参数里不许出现 `/etc/resolv.conf`（[`FORBIDDEN_PATH_HINTS`]），
+/// 而这条命令里必然要写它。
+///
+/// **那两条禁令一个字都没松**：它们防的是「改用户这台电脑的网络设置」，
+/// 而这里改的是**我们自己下载、自己创建、只服务 Hunter 的那台虚拟机**里的文件。
+/// 模型永远走 [`argv`] 那一道 —— 它提 `/etc/resolv.conf` 照样被拒。
+/// 这一道只有 [`crate::runtime::vmdns`] 会调，而且：
+///
+/// 1. 程序必须是 `~/.hunter/runtime` 里那份 `limactl`（不是 PATH 上找到的某个）；
+/// 2. 目标实例必须是 `colima-hunter`（跟着 [`crate::runtime::builtin::PROFILE`] 走）；
+/// 3. **整条参数数组必须与下面那张表逐字相等** —— 不是「以…开头」，
+///    不是「包含…」，是全等。模型一个字节都插不进来。
+///
+/// `LIMA_HOME` 必须落在 `~/.hunter/runtime` 里这一条，由
+/// [`crate::proc`] 的 `isolation_guard` → [`colima_call`] 另外保证。
+pub fn argv_vm_dns(argv: &[String]) -> AppResult<()> {
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if base.trim_end_matches(".exe") != "limactl" {
+        return Err(reject_audited(
+            "argv_vm_dns",
+            format!(
+                "改虚拟机 DNS 只能用 limactl，收到「{}」，拒绝。",
+                safe(prog)
+            ),
+        ));
+    }
+    if !under_runtime(prog) {
+        return Err(reject_audited(
+            "argv_vm_dns",
+            format!(
+                "这条命令用的 limactl 不在 {} 里 —— 那不是 Hunter 自己那一份，拒绝。",
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
+            ),
+        ));
+    }
+    let inst = crate::runtime::vmdns::instance();
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+
+    // ── 形状 A：把一个我们自己生成的文件送进虚拟机 ──
+    if let ["copy", "--backend=scp", src, dst] = rest.as_slice() {
+        let real = writable_path(Path::new(src))?;
+        let stage = canon_for_write(&crate::paths::runtime_dir().join("vm"))?;
+        if !real.starts_with(&stage) {
+            return Err(reject_audited(
+                "argv_vm_dns",
+                format!(
+                    "只能把 {} 里的文件送进虚拟机（这个是 {}），拒绝。",
+                    crate::redact::mask_home(&stage.to_string_lossy()),
+                    crate::redact::mask_home(src)
+                ),
+            ));
+        }
+        let allowed = [
+            format!("{inst}:{VM_TMP_RESOLV}"),
+            format!("{inst}:{VM_TMP_UNIT}"),
+        ];
+        if !allowed.iter().any(|a| a == dst) {
+            return Err(reject_audited(
+                "argv_vm_dns",
+                format!(
+                    "送进虚拟机的落点只能是 {}（这条写的是 {}），拒绝。",
+                    allowed.join(" / "),
+                    safe(dst)
+                ),
+            ));
+        }
+        return Ok(());
+    }
+
+    // ── 形状 B：在虚拟机里跑一条表里有的命令 ──
+    let ["shell", "--workdir", "/", target, cmd @ ..] = rest.as_slice() else {
+        return Err(reject_audited(
+            "argv_vm_dns",
+            format!(
+                "改虚拟机 DNS 只认「limactl copy …」与「limactl shell --workdir / {inst} …」两种形状，\
+                 收到「{}」，拒绝。",
+                safe(&argv.join(" "))
+            ),
+        ));
+    };
+    if *target != inst {
+        return Err(reject_audited(
+            "argv_vm_dns",
+            format!(
+                "这条命令指向虚拟机「{}」，而 Hunter 自己那台叫「{inst}」，拒绝。",
+                safe(target)
+            ),
+        ));
+    }
+    if VM_DNS_COMMANDS.contains(&cmd) {
+        return Ok(());
+    }
+    Err(reject_audited(
+        "argv_vm_dns",
+        format!(
+            "「{}」不在「虚拟机里能跑的那张表」里（那张表有 {} 条，每一条都逐字写死），拒绝。",
+            safe(&cmd.join(" ")),
+            VM_DNS_COMMANDS.len()
+        ),
+    ))
+}
+
+const VM_TMP_RESOLV: &str = "/tmp/hunter-resolv.conf";
+const VM_TMP_UNIT: &str = "/tmp/hunter-dns.service";
+
+/// 在 Hunter 自己那台虚拟机里**允许跑的全部命令**（I10）。
+///
+/// 表外一律拒绝。写死到逐字相等，是因为这张表里有 `sudo` ——
+/// 虚拟机里的 root 也是 root，参数留一丝活口就等于留一个任意命令执行。
+///
+/// 注意这里的 `sudo` 是**虚拟机里**的 sudo（lima 给那台虚拟机的用户配了 NOPASSWD），
+/// 和用户 Mac 上的管理员密码毫无关系 —— 这条路不会弹任何密码框。
+pub const VM_DNS_COMMANDS: &[&[&str]] = &[
+    // 只读
+    &["cat", "/etc/resolv.conf"],
+    &["getent", "hosts", crate::gateway::GATEWAY_HOST],
+    &["test", "-f", "/etc/systemd/system/hunter-dns.service"],
+    // 落位
+    &["sudo", "mkdir", "-p", "/etc/hunter"],
+    &[
+        "sudo",
+        "cp",
+        "--remove-destination",
+        VM_TMP_RESOLV,
+        "/etc/hunter/resolv.conf",
+    ],
+    &[
+        "sudo",
+        "cp",
+        "--remove-destination",
+        VM_TMP_RESOLV,
+        "/etc/resolv.conf",
+    ],
+    &[
+        "sudo",
+        "cp",
+        "--remove-destination",
+        VM_TMP_UNIT,
+        "/etc/systemd/system/hunter-dns.service",
+    ],
+    // 让那层「开机再写一遍」的保险生效
+    &["sudo", "systemctl", "daemon-reload"],
+    &["sudo", "systemctl", "enable", "hunter-dns.service"],
+    // 让已经起着的容器重新拿到 DNS（动的是虚拟机里的 dockerd）
+    &["sudo", "systemctl", "restart", "docker"],
+];
+
 /// 「要管理员权限的那一步」能做哪几件事（I8）。
 ///
 /// 这张表就是提权的全部范围。**表外一律拒绝**，而且表里每一条的参数形状都写死。
@@ -1088,6 +1246,188 @@ mod tests {
         assert_eq!(Mode::parse("confirm"), Mode::Confirm);
         assert_eq!(Mode::parse(""), Mode::Confirm);
         assert_eq!(Mode::parse("yolo"), Mode::Confirm, "认不得就按逐步确认来");
+    }
+
+    // ── I10：虚拟机 DNS 那道窄门 ──────────────────────────────────────
+
+    /// 在一个干净的临时 `HUNTER_HOME` 里把 limactl 与要送进去的文件摆好，
+    /// 返回 `(limactl 路径, 要送进去的那个文件路径)`。
+    fn vm_dns_fixture() -> (crate::paths::TestHome, String, String) {
+        let h = crate::paths::test_home("vmdns");
+        let bin = crate::paths::runtime_dist().join("lima").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let limactl = bin.join("limactl");
+        std::fs::write(&limactl, b"#!/bin/sh\n").unwrap();
+        let stage = crate::paths::runtime_dir().join("vm");
+        std::fs::create_dir_all(&stage).unwrap();
+        let f = stage.join("resolv.conf");
+        std::fs::write(&f, b"nameserver 192.168.5.2\n").unwrap();
+        (
+            h,
+            limactl.to_string_lossy().into_owned(),
+            f.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// **模型走的永远是 [`argv`] 那一道，那一道一个字都没松。**
+    ///
+    /// I10 给「在我们自己那台虚拟机里写 resolv.conf」另开了一道窄门，
+    /// 最容易出的事就是顺手把总门上那条禁令拆了。这里钉死它没被拆。
+    #[test]
+    fn 总门依旧拒绝一切碰_resolv_conf_的命令() {
+        for v in [
+            a(&["tee", "/etc/resolv.conf"]),
+            a(&["docker", "run", "-v", "/etc/resolv.conf:/x"]),
+            a(&["cp", "x", "/etc/resolv.conf"]),
+            a(&[
+                "limactl",
+                "shell",
+                "vm",
+                "sudo",
+                "cp",
+                "x",
+                "/etc/resolv.conf",
+            ]),
+        ] {
+            assert!(argv(&v).is_err(), "总门该拒：{v:?}");
+        }
+    }
+
+    #[test]
+    fn 虚拟机_dns_那道门只认表里的命令() {
+        let (_h, limactl, _f) = vm_dns_fixture();
+        let inst = crate::runtime::vmdns::instance();
+        // 表里的每一条都要过
+        for cmd in VM_DNS_COMMANDS {
+            let mut v = vec![
+                limactl.clone(),
+                "shell".into(),
+                "--workdir".into(),
+                "/".into(),
+                inst.clone(),
+            ];
+            v.extend(cmd.iter().map(|s| s.to_string()));
+            assert!(argv_vm_dns(&v).is_ok(), "表里这条该放行：{cmd:?}");
+        }
+        // 表外一律拒绝 —— 尤其是那些「看起来只差一点点」的
+        for bad in [
+            vec!["sudo", "rm", "-rf", "/"],
+            vec!["sudo", "cat", "/etc/shadow"],
+            vec!["sudo", "sh", "-c", "echo x > /etc/resolv.conf"],
+            vec![
+                "sudo",
+                "cp",
+                "--remove-destination",
+                "/tmp/evil",
+                "/etc/resolv.conf",
+            ],
+            vec!["sudo", "systemctl", "stop", "docker"],
+            vec!["sudo", "systemctl", "restart", "sshd"],
+            vec!["cat", "/etc/resolv.conf", "/etc/shadow"],
+            vec!["getent", "hosts", "evil.example.com"],
+        ] {
+            let mut v = vec![
+                limactl.clone(),
+                "shell".into(),
+                "--workdir".into(),
+                "/".into(),
+                inst.clone(),
+            ];
+            v.extend(bad.iter().map(|s| s.to_string()));
+            assert!(argv_vm_dns(&v).is_err(), "表外这条该拒：{bad:?}");
+        }
+    }
+
+    #[test]
+    fn 虚拟机_dns_那道门只认_hunter_自己那台虚拟机() {
+        let (_h, limactl, _f) = vm_dns_fixture();
+        for other in [
+            "colima-default",
+            "default",
+            "colima-hunter2",
+            "docker-desktop",
+        ] {
+            let v = a(&[
+                &limactl,
+                "shell",
+                "--workdir",
+                "/",
+                other,
+                "cat",
+                "/etc/resolv.conf",
+            ]);
+            assert!(argv_vm_dns(&v).is_err(), "别人的虚拟机该拒：{other}");
+        }
+    }
+
+    #[test]
+    fn 虚拟机_dns_那道门只认我们自己那份_limactl() {
+        let (_h, _limactl, _f) = vm_dns_fixture();
+        let inst = crate::runtime::vmdns::instance();
+        for prog in [
+            "/usr/local/bin/limactl",
+            "limactl",
+            "/opt/homebrew/bin/limactl",
+        ] {
+            let v = a(&[
+                prog,
+                "shell",
+                "--workdir",
+                "/",
+                &inst,
+                "cat",
+                "/etc/resolv.conf",
+            ]);
+            assert!(argv_vm_dns(&v).is_err(), "不是我们那份该拒：{prog}");
+        }
+    }
+
+    #[test]
+    fn 送进虚拟机的文件必须是我们自己生成的那一个() {
+        let (_h, limactl, f) = vm_dns_fixture();
+        let inst = crate::runtime::vmdns::instance();
+        let dst = format!("{inst}:/tmp/hunter-resolv.conf");
+        // 我们自己在 runtime/vm 里生成的 —— 放行
+        assert!(argv_vm_dns(&a(&[&limactl, "copy", "--backend=scp", &f, &dst])).is_ok());
+        // 别处的文件 —— 拒绝
+        for src in ["/etc/passwd", "/tmp/evil.conf"] {
+            assert!(
+                argv_vm_dns(&a(&[&limactl, "copy", "--backend=scp", src, &dst])).is_err(),
+                "{src} 该拒"
+            );
+        }
+        // 落点只能是那两个 —— 别的一律拒绝
+        for bad in [
+            "/etc/passwd",
+            "/etc/resolv.conf",
+            "/root/.ssh/authorized_keys",
+        ] {
+            let d = format!("{inst}:{bad}");
+            assert!(
+                argv_vm_dns(&a(&[&limactl, "copy", "--backend=scp", &f, &d])).is_err(),
+                "落点 {bad} 该拒"
+            );
+        }
+    }
+
+    /// 表里凡是带 `sudo` 的，参数必须**逐字写死**，不能留任何可变位。
+    #[test]
+    fn 虚拟机里能跑的那张表没有可变位() {
+        for cmd in VM_DNS_COMMANDS {
+            assert!(!cmd.is_empty());
+            for arg in *cmd {
+                assert!(
+                    !arg.contains('*') && !arg.contains('{') && !arg.contains('$'),
+                    "表里不该有可变位：{cmd:?}"
+                );
+            }
+        }
+        // 而且「在虚拟机里能跑的」总数是有限且很小的 —— 它变大时这条会提醒人看一眼
+        assert_eq!(
+            VM_DNS_COMMANDS.len(),
+            10,
+            "改这张表要同时改 I10 报告里的那一节"
+        );
     }
 
     #[test]

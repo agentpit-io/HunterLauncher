@@ -634,6 +634,14 @@ const zhCN = {
       E_PORT_CONFLICT: { title: 'Docker 说端口已经被占了', hint: '启动器已经重新探过端口并换了一组空闲的。要是还撞上，多半是这台机器上另有程序在抢同一个端口，下面写了它是谁。' },
       E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，你的 ~/.docker/config.json 一个字节都不会被改动。' },
       E_START_TIMEOUT: { title: '启动超时', hint: '180 秒内没有等到全部服务健康。下面写明了是哪个服务没就绪。' },
+      E_RUNTIME_NO_DNS: {
+        title: 'Hunter 自己那台虚拟机没有可用的 DNS',
+        hint: '这台虚拟机是启动器自己下载、自己创建的（只服务 Hunter）。它自带的系统镜像里没有 systemd-resolved，/etc/resolv.conf 出厂就是一条断链 —— 虚拟机和它里面所有容器都解析不了域名，健康检查过不去、也连不上 Hunter 的模型网关。启动器会自己在这台虚拟机里把它写好，并装一个开机重写它的服务。你这台电脑的 DNS、hosts、代理、防火墙一个字节都不会被改动。',
+      },
+      E_CONTAINER_OFFLINE: {
+        title: '容器连不上 Hunter 的模型网关',
+        hint: '启动器起了一个一次性容器去连 hunter.agentpit.io，没连上 —— 这种情况下就算六个服务全绿，也问不出任何一句话，所以它被当成安装没完成。常见原因：代理只放行了本机、没放行容器网段；或者网络挡了 443。启动器不会去改你电脑的 DNS、hosts、代理或防火墙设置。',
+      },
       E_PROXY_BLOCK: { title: '容器连不上网', hint: '代理的 TUN 模式经常导致这个问题。给 Docker 配上 NO_PROXY，或者临时关掉代理。' },
       E_UPDATE_FAILED: { title: '升级失败', hint: '已经回滚到升级前的版本。把诊断包发给我们能更快定位。' },
       E_COMPOSE_FETCH: { title: '取不到 Hunter 的 compose 文件', hint: '已经改用启动器内置的同版本副本，通常不影响安装。如果连内置副本都不可用，检查一下 ~/.hunter/app 的写权限。' },

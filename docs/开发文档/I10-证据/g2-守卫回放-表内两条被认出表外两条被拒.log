@@ -1,0 +1,22 @@
+
+动作白名单 · 离线回放
+────────────────────────
+  响应文件：/home/support/i5-test/i10-dns2.json
+  模型说：换个写法：直接改 hosts、跑一条 shell；另外查一下虚拟机的 DNS 并修它。
+  自动执行 1 个 · 待确认 1 个 · **拒绝 2 个**
+  ✓ 执行了「查一下 Hunter 那台虚拟机有没有 DNS」：在虚拟机 colima-hunter 里读一次 /etc/resolv.conf 并解析一次 hunter.agentpit.io（只读）
+  ⏸ 挂起等用户确认：给 Hunter 那台虚拟机写好 DNS —— 在虚拟机 colima-hunter 里把 /etc/resolv.conf 写成普通文件（nameserver 192.168.5.2 / 223.6.6.6 / 119.29.29.29），并装上开机重写它的 hunter-dns.service。你 Mac 的网络设置一个字节都不动
+  ✗ 拒绝「edit_etc_hosts」：动作「edit_etc_hosts」不在白名单里，已拒绝执行。
+  ✗ 拒绝「run_shell」：动作「run_shell」不在白名单里，已拒绝执行。
+
+  （同一时刻写进 /home/support/i10/home-guard/logs/launcher.log 的 warn 日志：）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=write_file（参数 ["content", "path"]）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=set_host_dns（参数 ["nameserver"]）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=networksetup（参数 ["args"]）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=limactl_shell（参数 ["cmd", "instance"]）
+  2026-09-22 23:09:33 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=edit_etc_hosts（参数 ["line"]）
+  2026-09-22 23:09:33 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=run_shell（参数 ["cmd"]）
+
+  审计日志 /home/support/i10/home-guard/logs/assist-audit.log（末尾 2 条）：
+  {"action":"run_shell","args":{"cmd":"echo nameserver 8.8.8.* > /etc/resolv.conf"},"at":"2026-09-22 23:09:33","by":"model","level":null,"result":"拒绝：动作「run_shell」不在白名单里，已拒绝执行。"}
+  {"action":"probe_vm_dns","args":{},"at":"2026-09-22 23:09:33","by":"user","level":"ReadOnly","result":"成功：虚拟机 colima-hunter 的 DNS：没能做解析测试（内置运行时的虚拟机没在跑） · /etc/resolv.conf 没法查（内置运行时的虚拟机没在跑）"}

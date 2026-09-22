@@ -13,6 +13,7 @@
 //! hunter-launcher --logs [服务名]
 //! hunter-launcher --diagnose                  打印脱敏诊断 + 确定性规则的结论
 //! hunter-launcher --diagnose --ai             再问一轮 AI（会花额度，所以要显式开关）
+//! hunter-launcher --check-net                 虚拟机 DNS + 容器到模型网关的连通（I10）
 //! ```
 
 use std::io::{IsTerminal, Write};
@@ -233,7 +234,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
-            | "--backups" => {
+            | "--backups" | "--check-net" => {
                 a.action = Some(v[i].trim_start_matches("--").to_string());
                 a.headless = true;
             }
@@ -276,6 +277,7 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --takeover stop|start|restart   动它（每一次都要 -y 再确认一遍）
   hunter-launcher --takeover release      不再管理它（它原地不动）
   hunter-launcher --feedback              生成脱敏诊断包 + 预填 issue 链接（**不发送**）
+  hunter-launcher --check-net           查「虚拟机有没有 DNS」与「容器连不连得上模型网关」（I10）
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
   hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 走系统授权框装）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
@@ -339,6 +341,7 @@ pub fn run(args: &Args) -> i32 {
         },
         Some("diagnose") if args.ai => cmd_assist(&st, args),
         Some("diagnose") => cmd_diagnose(&st, args.code.as_deref(), args.fix),
+        Some("check-net") => cmd_check_net(),
         Some("check-update") => cmd_check_update(&st),
         Some("self-update") => cmd_self_update(),
         Some("upgrade") => cmd_upgrade(&st, args),
@@ -1212,6 +1215,10 @@ fn cmd_review(st: &AppState, args: &Args) -> AppResult<()> {
         port_lines,
         cred_helpers: crate::dockercfg::helper_status(),
         sub_env: crate::runtime::env::current().one_line(),
+        // `--review-why` 是拿真实现场去问复核员，不是一次真的失败 ——
+        // 不为它起一个一次性容器（那要几十秒），如实留空
+        container_net: None,
+        stale_dns: Vec::new(),
         notes: Vec::new(),
     };
 
@@ -1491,6 +1498,59 @@ fn cmd_assist_replay(path: &str) -> AppResult<()> {
 ///
 /// 启动器那一半在 headless 下**只查不装**：装要么要替换 AppImage、要么要 root 装 `.deb`，
 /// 都不是一个没有界面的进程该背着用户做的事。查到了就把下载地址打出来。
+/// `--check-net`：把 I10 那两项必检当成一条命令（技术方案 §6 的命令行面）。
+///
+/// 两件事，都**真的去做一次**，不猜：
+///
+/// 1. Hunter 自己那台虚拟机里解析得动域名吗（只在内置运行时跑着时才有意义）；
+/// 2. 起一个 `--rm` 的一次性容器，从容器里连一次模型网关。
+///
+/// 退出码：两项都通（或不适用）才是 0。**「没探成」不算不通**，
+/// 会如实打印原因并返回 0 —— 把「没测」说成「不通」和把「不通」说成「通」一样糟。
+fn cmd_check_net() -> AppResult<()> {
+    title("Hunter 启动器 · 网络必检");
+
+    // ① 虚拟机的 DNS
+    match crate::runtime::vmdns::applicable() {
+        Err(why) => println!("  虚拟机 DNS：不适用（{why}）"),
+        Ok(()) => {
+            let d = crate::runtime::vmdns::probe()?;
+            println!("  虚拟机 DNS：{}", d.one_line());
+            if let crate::runtime::vmdns::ResolvState::File(text) = &d.resolv {
+                for l in text.lines().filter(|l| !l.trim().is_empty()) {
+                    println!("    {l}");
+                }
+            }
+            if !d.healthy() {
+                return Err(AppError::new(
+                    Code::RuntimeNoDns,
+                    format!(
+                        "{}。用 --diagnose --fix 可以让启动器自己把它写好。",
+                        d.one_line()
+                    ),
+                ));
+            }
+        }
+    }
+
+    // ② 容器到模型网关
+    let o = crate::runtime::netcheck::probe();
+    println!("  容器出网：{}", o.one_line());
+    if !o.command.is_empty() {
+        println!("    命令：{}", o.command);
+    }
+    if o.ok {
+        println!("\n✓ 两项都通");
+        return Ok(());
+    }
+    if o.fail == crate::runtime::netcheck::Fail::NotRun {
+        // 没探成 ≠ 不通
+        println!("\n（容器那一项这次没能测 —— 不当成失败，也不当成通过）");
+        return Ok(());
+    }
+    Err(AppError::new(Code::ContainerOffline, o.one_line()))
+}
+
 fn cmd_check_update(st: &AppState) -> AppResult<()> {
     title("检查更新");
     let cur = st.config().hunter.tag;

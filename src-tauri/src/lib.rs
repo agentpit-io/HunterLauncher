@@ -231,6 +231,38 @@ pub fn run() {
             // 装不装由用户在界面上决定，**绝不自动装**。
             crate::selfupdate::spawn_periodic(handle.clone());
 
+            // **已经装好的机器也要能自愈**（I10 的 P0-3）。
+            //
+            // 0.1.9 在用户 Mac 上留下的状态是：虚拟机起着、容器起着、
+            // 而虚拟机的 /etc/resolv.conf 是本地 Claude 手工改好的。
+            // 0.1.10 一起来就该分得清「已经修好 / 还是断链」这两种情况：
+            // 前者什么都不做（**不把人家手工改好的推倒重来**），
+            // 后者自己修好，并让已经起着的容器重新拿一份。
+            //
+            // 三道闸门：用户授权过、内置运行时的虚拟机在跑、一个进程里只做一次。
+            // 放在后台线程里 —— 这一步要起 `limactl shell` 子进程，不能卡住窗口。
+            std::thread::spawn(|| {
+                if !crate::config::LauncherConfig::load().assist.consented() {
+                    return;
+                }
+                if crate::runtime::vmdns::applicable().is_err() {
+                    return;
+                }
+                let mut say = |line: &str| linfo!("开机自查虚拟机 DNS：{line}");
+                let mut nb = |_: u64, _: u64| {};
+                let no_cancel = || false;
+                let mut pr = crate::runtime::builtin::Progress {
+                    say: &mut say,
+                    bytes: &mut nb,
+                    cancel: &no_cancel,
+                };
+                match crate::runtime::vmdns::ensure(&mut pr) {
+                    Ok(d) if d.healthy() => linfo!("开机自查：{}", d.one_line()),
+                    Ok(d) => lwarn!("开机自查：虚拟机的 DNS 还是不行 —— {}", d.one_line()),
+                    Err(e) => lwarn!("开机自查虚拟机 DNS 没做成：{}", e.msg),
+                }
+            });
+
             // 第一条遥测事件。开关默认关着，这一句在绝大多数机器上什么都不会写。
             {
                 let st = handle.state::<flow::AppState>();
