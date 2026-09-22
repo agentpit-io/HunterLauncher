@@ -1440,9 +1440,19 @@ pub async fn assist_rule_action(
 /// 没写 `.env`、没写 compose、没拉镜像、容器 0 个，界面停在「没能自动装好」。
 /// 修好了却不往下走，对用户来说和没修一样。
 ///
-/// 两道闸门防止它乱来：
+/// **三道闸门**防止它乱来：
 /// * 已经有一次安装在跑（`busy`）就什么都不做；
-/// * `can_resume_install()` 说装完了就什么都不做。
+/// * `can_resume_install()` 说装完了就什么都不做；
+/// * 一个启动器进程里最多自动续装 [`MAX_AUTO_RESUME`] 次。
+///
+/// 第三道是必须的，而且不是理论上的谨慎。没有它就是一个真的死循环：
+/// 安装失败 → 错误页挂载 → 界面调 `assist_diagnose` → 这里判「docker 可用、
+/// 这一套没装完」→ 重新开跑 → 又在同一个地方失败 → 错误页又挂载 → …
+/// 卡在「起容器」那一类问题上时（例如待办池 P1-29 的旧卷口令对不上），
+/// 它会一直转下去，而用户看到的是界面自己在反复闪。
+///
+/// 到头之后**如实停下**：如实写进日志，界面停在失败页 —— 那时候
+/// 「反复自动重试」已经证明没用了，继续转只是把问题藏起来。
 fn maybe_resume_install(app: &tauri::AppHandle, st: &crate::assist::AssistState) {
     if !st.can_resume_install {
         return;
@@ -1450,11 +1460,33 @@ fn maybe_resume_install(app: &tauri::AppHandle, st: &crate::assist::AssistState)
     if state(app).busy.load(Ordering::SeqCst) {
         return;
     }
-    crate::linfo!("Docker 现在可用了，而这一套还没装完 —— 自动接着往下装");
+    let used = auto_resumes().fetch_add(1, Ordering::SeqCst);
+    if used >= MAX_AUTO_RESUME {
+        crate::lwarn!(
+            "Docker 可用、这一套还没装完，但这个进程里已经自动续装过 {MAX_AUTO_RESUME} 次了 ——              不再自动重来（再转下去只是把问题藏起来）。"
+        );
+        return;
+    }
+    crate::linfo!(
+        "Docker 现在可用了，而这一套还没装完 —— 自动接着往下装（第 {} 次）",
+        used + 1
+    );
     let _ = app.emit(EV_ASSIST_RESUME, ());
     if let Err(e) = assist_auto_start(app.clone(), None) {
         crate::lwarn!("自动接着装没能起来：{e}");
     }
+}
+
+/// 一个启动器进程里最多自动续装几次（I9）。
+///
+/// 为什么是 2 而不是更多：第一次是「刚把 Docker 修好，接着装」——
+/// 这正是 P0-3 要的那一次；第二次留给「修好之后又撞上另一个能自动解决的问题」。
+/// 再多就不是「接着装」了，是在同一个地方打转。
+pub const MAX_AUTO_RESUME: usize = 2;
+
+fn auto_resumes() -> &'static std::sync::atomic::AtomicUsize {
+    static C: std::sync::OnceLock<std::sync::atomic::AtomicUsize> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::atomic::AtomicUsize::new(0))
 }
 
 #[tauri::command]
