@@ -1168,7 +1168,15 @@ fn run_argv(p: &Plan) -> AppResult<String> {
     } else {
         Duration::from_secs(60)
     };
-    let r = crate::proc::run_timeout(prog, &refs, timeout)?;
+    // `start_runtime` 起的是**用户自己装的**那个运行时 —— 把我们自己那几个
+    // 运行时变量摘掉再跑（I9）。留着的话，机器上有内置运行时残骸时，
+    // 「起他原有的 colima profile」这条完全正当的命令会带着我们的 COLIMA_HOME
+    // 出门，被守卫当场拒掉。
+    let r = if p.id == "start_runtime" {
+        crate::proc::run_timeout_user_runtime(prog, &refs, timeout)?
+    } else {
+        crate::proc::run_timeout(prog, &refs, timeout)?
+    };
     let mut s = format!("退出码 {:?}\n", r.status);
     if !r.stdout.trim().is_empty() {
         s.push_str(r.stdout.trim());

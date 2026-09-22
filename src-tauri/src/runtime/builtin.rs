@@ -1283,13 +1283,18 @@ mod tests {
 
     #[test]
     fn profile_名是我们自己的不是_default() {
+        let _g = crate::paths::test_home("builtin-profile");
         assert_eq!(PROFILE, "hunter");
-        let e = env_pairs();
-        let home: Vec<&String> = e.iter().map(|(_, v)| v).collect();
-        for h in home {
+        // 断言的是「都落在**工作目录**里」。原来写的是 `contains(".hunter")` ——
+        // 那只是「默认工作目录恰好叫 .hunter」的副产品，`HUNTER_HOME` 一改就散架
+        let root = crate::paths::root().to_string_lossy().into_owned();
+        for (k, v) in env_pairs() {
+            if v.starts_with("unix://") || k.to_ascii_uppercase().contains("PROXY") {
+                continue;
+            }
             assert!(
-                h.contains(".hunter") || h.starts_with("unix://"),
-                "内置运行时的环境变量必须都指向 ~/.hunter：{h}"
+                v.starts_with(&root),
+                "内置运行时的 {k} 必须落在工作目录 {root} 里：{v}"
             );
         }
     }
@@ -1297,6 +1302,7 @@ mod tests {
     /// 三个 HOME 变量一个都不能少 —— 少一个就会写到用户的 `~/.lima` 去。
     #[test]
     fn 三个隔离变量齐全() {
+        let _g = crate::paths::test_home("builtin-three-homes");
         let e = env_pairs();
         for k in ["LIMA_HOME", "COLIMA_HOME", "DOCKER_CONFIG"] {
             assert!(e.iter().any(|(a, _)| a == k), "少了 {k}");
@@ -1305,6 +1311,7 @@ mod tests {
 
     #[test]
     fn socket_不存在时不给_docker_host() {
+        let _g = crate::paths::test_home("builtin-no-socket");
         // 测试进程的 HUNTER_HOME 是临时目录，里面不会有 socket
         if !socket_path().exists() {
             assert_eq!(docker_host(), None, "指向一个不存在的 socket 只会更难查");
@@ -1314,6 +1321,7 @@ mod tests {
     /// 资源取的是保守值，而且**一定落在设计文档写的区间里**。
     #[test]
     fn 虚拟机资源是保守值() {
+        let _g = crate::paths::test_home("builtin-vm-params");
         let (cpu, mem, disk) = vm_params();
         assert!((2..=4).contains(&cpu), "cpu={cpu}");
         assert!((4..=8).contains(&mem), "mem={mem}");

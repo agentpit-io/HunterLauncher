@@ -2440,6 +2440,7 @@ mod tests {
     /// 而且绝不会提议去动用户那一套。
     #[test]
     fn 端口冲突走规则层且只换自己的端口() {
+        let _g = crate::paths::test_home("auto-ports");
         let o = orch(Mode::Auto);
         let mut ev = ev_empty();
         ev.others = vec![crate::takeover::Candidate {
@@ -2469,6 +2470,7 @@ mod tests {
 
     #[test]
     fn 有残留容器时先清再换端口() {
+        let _g = crate::paths::test_home("auto-stale");
         let o = orch(Mode::Auto);
         let mut ev = ev_empty();
         ev.stale = vec![compose::StaleContainer {
@@ -2635,6 +2637,7 @@ mod tests {
 
     #[test]
     fn 证据里带着占用者与其他安装() {
+        let _g = crate::paths::test_home("auto-evidence");
         let mut ev = ev_empty();
         ev.port_lines = vec!["api 8100 被占用 · Docker 容器 hunter-fresh-api-1（compose 项目 hunter-fresh · 0.0.0.0:8100->8000/tcp）".into()];
         ev.others = vec![crate::takeover::Candidate {
@@ -2674,6 +2677,7 @@ mod tests {
     /// `reuse_existing_hunter` 动的是用户自己装的那一套，没有「一次授权、以后不问」的道理。
     #[test]
     fn 提前批过的只有装运行时那一个() {
+        let _g = crate::paths::test_home("auto-preauth");
         let o = orch(Mode::Auto);
         let mut cfg = LauncherConfig::load();
         let old = cfg.assist.allow_install_runtime;

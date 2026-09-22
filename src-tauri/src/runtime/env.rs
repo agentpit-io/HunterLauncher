@@ -300,6 +300,12 @@ pub fn invalidate() {
     }
 }
 
+/// **只对「我们自己那一套」有意义**的环境变量（I9）。
+///
+/// 起用户自己装的运行时时要把它们摘掉（[`crate::proc::run_timeout_user_runtime`]）：
+/// 拿我们的 `COLIMA_HOME` 去起他的 profile，是把两套东西搅在一起。
+pub const OURS_ONLY: &[&str] = &["COLIMA_HOME", "LIMA_HOME", "DOCKER_HOST", "DOCKER_CONFIG"];
+
 /// 把环境套到一个 `Command` 上。**所有子进程都从这里过**。
 pub fn apply(cmd: &mut std::process::Command) {
     // 测试里要能关掉它：单测造的是「受限 PATH」的现场，补全会把现场毁掉

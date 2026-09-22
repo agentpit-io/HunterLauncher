@@ -14,7 +14,27 @@ pub fn root() -> PathBuf {
             return PathBuf::from(p);
         }
     }
+    default_root()
+}
+
+#[cfg(not(test))]
+fn default_root() -> PathBuf {
     home().join(".hunter")
+}
+
+/// **跑单测时，没设 `HUNTER_HOME` 也绝不落到真的 `~/.hunter` 上**（I9）。
+///
+/// 为什么要这一条：测试机上的 `~/.hunter` 是一套**真的、装好的** Hunter ——
+/// 里面有 `.env`（真 key）、compose 文件、还有跑着的容器对应的配置。
+/// 一条忘了拿锁的测试往那儿写一次，毁的是真实安装。
+///
+/// I7、I9 各抓过一轮「忘了拿 `HUNTER_HOME` 那把锁」的测试，症状都长得
+/// 和根因毫无关系（在别的文件里红、只在某个平台上红）。逐条去补是治标；
+/// 把默认值挪出真实目录才是治本 —— 忘了拿锁最多是两条测试互相打架，
+/// 不会再变成「把开发者/测试机的安装搞坏」。
+#[cfg(test)]
+fn default_root() -> PathBuf {
+    std::env::temp_dir().join(format!("hunter-unittest-{}", std::process::id()))
 }
 
 /// 用户主目录。Windows 用 `USERPROFILE`，其余用 `HOME`。
@@ -239,8 +259,11 @@ pub(crate) fn test_home(tag: &str) -> TestHome {
     let old = std::env::var("HUNTER_HOME").ok();
     let dir = std::env::temp_dir().join(format!("hunter-t-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("建临时工作目录");
     std::env::set_var("HUNTER_HOME", &dir);
+    // **整棵目录树都建出来**：不少测试会顺手 `LauncherConfig::save()`，
+    // 而那条路会去 chmod `app/` 之类的子目录 —— 只建根目录的话它们会报
+    // 「No such file or directory」。CI 的 macOS runner 上就是这么红的一条。
+    ensure_dirs().expect("建临时工作目录");
     TestHome {
         _guard: guard,
         old,

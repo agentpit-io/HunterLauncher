@@ -762,6 +762,15 @@ pub fn colima_call(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRes
     }
     let rest: Vec<String> = args.iter().map(|s| s.to_ascii_lowercase()).collect();
 
+    // **这条命令用的是谁的 colima？看程序路径，不看环境变量。**
+    //
+    // 程序在 `~/.hunter/runtime` 里就是我们自己那份，别处就是用户的。
+    // 这一条必须先于环境变量判 —— 否则机器上有内置运行时残骸时，
+    // `runtime::env` 会给所有子进程钉上我们的 `COLIMA_HOME`，
+    // 于是「起用户原有的 profile」这条**完全正当**的命令会被判成「我们自己那一路」
+    // 然后因为 profile 不是 `hunter` 被拒掉。
+    let is_ours_binary = under_runtime(program);
+
     // 这一次调用最终会看到的 COLIMA_HOME：本次显式给的优先，其次是
     // `runtime::env` 给所有子进程的那一份，最后才是启动器自己的进程环境
     let home = env
@@ -771,7 +780,7 @@ pub fn colima_call(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRes
         .or_else(|| crate::runtime::env::current().colima_home)
         .or_else(|| std::env::var("COLIMA_HOME").ok())
         .unwrap_or_default();
-    let ours = colima_home_is_ours(&home);
+    let home_is_ours = colima_home_is_ours(&home);
     let profile = colima_profile(&rest);
 
     // limactl 只走我们自己那条路（colima 会去 $PATH 上找它）。
@@ -799,7 +808,20 @@ pub fn colima_call(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRes
     }
 
     // ── 路 A：用我们自己那一套 ──
-    if ours {
+    if is_ours_binary {
+        // 我们自己的 colima **必须**用我们自己的家。不带就会去动 `~/.colima`，
+        // 那正是 0.1.8 闯的祸
+        if !home_is_ours {
+            return Err(reject_audited(
+                "colima_call",
+                format!(
+                    "这条命令用的是 Hunter 自己那份 colima，`COLIMA_HOME` 却是「{}」\
+                     （不是 {}）—— 它会去动你家目录里的 colima，拒绝。",
+                    safe(&home),
+                    crate::redact::mask_home(&crate::paths::colima_home().to_string_lossy())
+                ),
+            ));
+        }
         if colima_targets_profile(&rest) {
             match profile.as_deref() {
                 Some(p) if p == crate::runtime::builtin::PROFILE => return Ok(()),
@@ -834,6 +856,16 @@ pub fn colima_call(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRes
     //
     // 只允许 `start`，而且 profile 必须是他 `~/.colima` 里**本来就有**的。
     // 「不得新建」这一条就写在这里：名字对不上目录，就是新建。
+    //
+    // 先挡一种反过来的搅和：用**他的** colima 去写**我们的**家。没有任何正当理由
+    if home_is_ours {
+        return Err(reject_audited(
+            "colima_call",
+            "这条命令用的是你自己的 colima，`COLIMA_HOME` 却指向 Hunter 自己的目录 —— \
+             两套东西不该搅在一起，拒绝。"
+                .to_string(),
+        ));
+    }
     let Some(p) = profile else {
         return Err(reject_audited(
             "colima_call",
@@ -1534,7 +1566,7 @@ mod tests {
         let e = colima_call(&bin.to_string_lossy(), &["start"], &[("COLIMA_HOME", "")])
             .expect_err("裸 colima start 必须被拒");
         assert!(
-            e.msg.contains("新建") || e.msg.contains("--profile"),
+            e.msg.contains("你家目录") || e.msg.contains("新建") || e.msg.contains("--profile"),
             "拒绝的理由要说清是为什么：{}",
             e.msg
         );
@@ -1609,6 +1641,50 @@ mod tests {
         assert!(e.msg.contains("LIMA_HOME"), "{}", e.msg);
     }
 
+    /// **机器上有内置运行时残骸时，起用户原有的 profile 照样要放行。**
+    ///
+    /// 这一条是发布前最后一刻抓到的：`runtime::env` 会给所有子进程钉上
+    /// 我们的 `COLIMA_HOME`，于是「起他自己那台」这条完全正当的命令
+    /// 会被判成「我们自己那一路」，再因为 profile 不是 `hunter` 被拒。
+    /// 判「谁的 colima」要看**程序路径**，不是看环境变量。
+    #[test]
+    fn 有残骸时起用户原有的_profile_照样放行() {
+        let _g = crate::paths::test_home("guard-colima-user-residue");
+        crate::runtime::effective::make_fake_tools(); // 残骸在
+        let profiles = crate::runtime::effective::user_colima_profiles();
+        let Some(p) = profiles.first().cloned() else {
+            // 跑测试这台机器上没有 ~/.colima —— 那就验「拒绝的理由是对的那一个」
+            let e = colima_call(
+                "/usr/local/bin/colima",
+                &["start", "--profile", "他的"],
+                &[("COLIMA_HOME", "/home/someone/.colima")],
+            )
+            .expect_err("他那边没有这个 profile");
+            assert!(e.msg.contains("不会替你新建"), "{}", e.msg);
+            return;
+        };
+        colima_call(
+            "/usr/local/bin/colima",
+            &["start", "--profile", &p],
+            &[("COLIMA_HOME", "/home/someone/.colima")],
+        )
+        .expect("用户自己的 colima + 他原有的 profile，必须放行");
+    }
+
+    /// 反过来也不许：拿**他的** colima 去写**我们的**家。
+    #[test]
+    fn 不许拿用户的_colima_去写我们自己的家() {
+        let _g = crate::paths::test_home("guard-colima-cross");
+        let ours = crate::paths::colima_home().to_string_lossy().into_owned();
+        let e = colima_call(
+            "/usr/local/bin/colima",
+            &["start", "--profile", "hunter"],
+            &[("COLIMA_HOME", ours.as_str())],
+        )
+        .expect_err("两套东西不该搅在一起");
+        assert!(e.msg.contains("搅在一起"), "{}", e.msg);
+    }
+
     /// 别的程序一律不受这道守卫影响（零开销、零误伤）。
     #[test]
     fn 这道守卫只管_colima_与_limactl() {
@@ -1633,7 +1709,7 @@ mod tests {
             crate::proc::run_with_env(&bin.to_string_lossy(), &["start"], &[("COLIMA_HOME", "")])
                 .expect_err("守卫必须在 spawn 之前拦住它");
         assert!(
-            e.msg.contains("--profile") || e.msg.contains("新建"),
+            e.msg.contains("你家目录") || e.msg.contains("--profile") || e.msg.contains("新建"),
             "{}",
             e.msg
         );

@@ -71,6 +71,27 @@ pub fn run_timeout_env(
     run_cmd_timeout(base_command(program), program, args, timeout, env)
 }
 
+/// 带超时，但**把我们自己那几个运行时变量摘掉**（I9）。
+///
+/// 用在「启动用户自己装的那个运行时」这条路上：OrbStack / Docker Desktop /
+/// 他自己的 colima / systemd 的 docker 服务，都是**他的**东西，
+/// 我们的 `COLIMA_HOME` / `LIMA_HOME` / `DOCKER_HOST` / `DOCKER_CONFIG`
+/// 在那里一点道理都没有。
+///
+/// 不摘会出真问题：机器上留着内置运行时的残骸时，[`crate::runtime::env`] 会把
+/// `COLIMA_HOME` 钉在 `~/.hunter/runtime` 上，于是「起用户原有的那个 profile」
+/// 这条命令会带着**我们的家**去找**他的 profile** —— 守卫当场拒掉，
+/// 而那条命令本来是完全正当的。
+///
+/// PATH 补全与代理照常保留：那两样是「让程序跑得起来」，不是「指向谁的东西」。
+pub fn run_timeout_user_runtime(program: &str, args: &[&str], timeout: Duration) -> AppResult<Ran> {
+    let mut cmd = base_command(program);
+    for k in crate::runtime::env::OURS_ONLY {
+        cmd.env_remove(k);
+    }
+    run_cmd_timeout(cmd, program, args, timeout, &[])
+}
+
 /// `run_timeout_env` 与 `run_timeout_bare` 共用的那一段。
 /// 差别只有一个：`cmd` 是 [`base_command`] 建的还是 [`base_command_bare`] 建的。
 fn run_cmd_timeout(
