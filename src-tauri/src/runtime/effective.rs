@@ -188,7 +188,13 @@ pub fn builtin_state() -> BuiltinState {
         .filter(|(_, p)| !p.is_file())
         .map(|(n, _)| (*n).to_string())
         .collect();
-    if missing.len() == tools.len() && !crate::paths::runtime_dir().is_dir() {
+    // **一件工具都没有就是「没装」** —— 哪怕 `runtime/` 目录在。
+    //
+    // 原来这里还要求 `!runtime_dir.is_dir()`，结果测试机上真实的 `~/.hunter/runtime`
+    // 里只剩一个空的 `cache/`（上一次装到一半留下的），却被报成「装了一半」：
+    // 停掉 docker 之后，本该走 `daemon-down-app-installed` 的机器会去走内置主线，
+    // 而 Linux 上那条路根本走不通。**「有一个空目录」不是「装了一半」。**
+    if missing.len() == tools.len() {
         return BuiltinState::Absent;
     }
     if !missing.is_empty() {
@@ -491,6 +497,19 @@ mod tests {
     fn 空目录上内置运行时是没装() {
         let _g = crate::paths::test_home("eff-absent");
         assert_eq!(builtin_state(), BuiltinState::Absent);
+    }
+
+    /// **`runtime/` 目录在、但一件工具都没有 —— 还是「没装」。**
+    ///
+    /// 测试机上真实的 `~/.hunter/runtime` 就是这样（只剩一个空的 `cache/`）。
+    /// 判成「装了一半」的后果：停掉 docker 之后，本该走「你的 Docker 没开」的机器
+    /// 会去走内置主线，而 Linux 上那条路根本走不通。
+    #[test]
+    fn 只有空的_runtime_目录不算装了一半() {
+        let _g = crate::paths::test_home("eff-empty-runtime");
+        std::fs::create_dir_all(crate::paths::runtime_cache()).unwrap();
+        assert_eq!(builtin_state(), BuiltinState::Absent);
+        assert!(!builtin_state().present());
     }
 
     /// **0.1.7 那种「装了一半」的机器**：工具缺几个 → Partial，不能报成 Absent，
