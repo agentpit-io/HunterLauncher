@@ -36,7 +36,7 @@
 
 事件流：/home/support/.hunter-i9b/logs/assist-events.jsonl
 审计日志：/home/support/.hunter-i9b/logs/assist-audit.log
-统计：自动解决 0 个问题 · 2 个修复回合 · 0 token · 用时 2 秒
+统计：自动解决 0 个问题 · 2 个修复回合 · 0 token · 用时 1 秒
 
 ✗ E_BUILTIN_DOWN: Hunter 自己那套运行时装好了，虚拟机没起来。这不是你装的 Docker —— 它是上一次安装下到 <用户目录>/.hunter-i9b/runtime 里的，该走内置那条路把它起起来。
   日志：/home/support/.hunter-i9b/logs/launcher.log
@@ -54,8 +54,8 @@ COLIMA_HOME=/home/support/.hunter-i9b/runtime/colima
 LIMA_HOME=/home/support/.hunter-i9b/runtime/lima
 ---
 ---- 审计 ----
-{"action":"autopilot_start","args":{},"at":"2026-09-22 16:57:47","by":"user","level":null,"result":"授权档位 auto"}
-{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 16:57:48","by":"orchestrator","level":"Safe","result":"开始执行（已过动作表与授权判定）"}
-{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 16:57:48","by":"orchestrator","level":"Safe","result":"失败：colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。"}
-{"action":"repair_builtin_runtime","args":{},"at":"2026-09-22 16:57:49","by":"orchestrator","level":"Safe","result":"开始执行（已过动作表与授权判定）"}
-{"action":"repair_builtin_runtime","args":{},"at":"2026-09-22 16:57:49","by":"orchestrator","level":"Safe","result":"失败：colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。"}
+{"action":"autopilot_start","args":{},"at":"2026-09-22 18:41:12","by":"user","level":null,"result":"授权档位 auto"}
+{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 18:41:13","by":"orchestrator","level":"Safe","result":"开始执行（已过动作表与授权判定）"}
+{"action":"start_builtin_runtime","args":{},"at":"2026-09-22 18:41:13","by":"orchestrator","level":"Safe","result":"失败：colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。"}
+{"action":"repair_builtin_runtime","args":{},"at":"2026-09-22 18:41:13","by":"orchestrator","level":"Safe","result":"开始执行（已过动作表与授权判定）"}
+{"action":"repair_builtin_runtime","args":{},"at":"2026-09-22 18:41:14","by":"orchestrator","level":"Safe","result":"失败：colima 说起好了，但 <用户目录>/.hunter-i9b/runtime/colima/hunter/docker.sock 这个 socket 没出现 —— 不当成成功。"}

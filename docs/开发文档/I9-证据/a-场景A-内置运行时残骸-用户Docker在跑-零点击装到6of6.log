@@ -1,51 +1,16 @@
 
-Hunter 启动器 · AI 自动驾驶安装
-────────────────────────────────────────────
-工作目录 /home/support/.hunter-i9a
-  从 /home/support/.hunter-launcher-test/key 读到一把 key（hunt_tools_****）
-  ✓ key 有效
-  授权档位：auto（全自动）
-  预算：单问题 4 回合 · 整次 10 回合 · 200000 token · 单次模型 45 秒
-
-[总览] 开始安装 · 已自动解决 0 个问题 · 回合 0/10 · token 0
-… 检查 Docker
-[总览] 检查 Docker · 已自动解决 0 个问题 · 回合 0/10 · token 0
-✓ 检查 Docker　Docker Engine 29.8.1 正在运行
-… 挑下载源、算端口、写配置
-[总览] 挑下载源、算端口、写配置 · 已自动解决 0 个问题 · 回合 0/10 · token 0
-   ✔ 你电脑上已经在运行另一套 Hunter　hca（6 个容器，占着端口 3200、8200）；hunter-community（6 个容器，占着端口 3100、3921、5442、6479、8100）。已自动选择「和它并存」：新装的这一套换一组空闲端口，你原来那套一点都不动 —— 这是风险最小的做法。想改成直接使用已有那套，到「设置 → 已有的 Hunter」里切换。
-   ✓ 正在测速候选镜像源…
-   ✓   可用 GHCR · GitHub · 327 ms
-   ✓   可用 腾讯云 · 香港 · 1675 ms
-   ✓ 选定：GHCR · GitHub
-   ✓ compose：已按 tag v1.2.0 下载并校验（23990 字节）
-   ✓ 端口 3100 被占用，自动改用 3101（服务 web）
-   ✓ 端口 8100 被占用，自动改用 8101（服务 api）
-   ✓ 端口 3921 被占用，自动改用 3922（服务 opencode）
-   ✓ 端口 5442 被占用，自动改用 5443（服务 postgres）
-   ✓ 端口 6479 被占用，自动改用 6480（服务 redis）
-   ✓ 已写 <用户目录>/.hunter-i9a/app/.env（权限 600）与覆盖文件；端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480（全部只绑 127.0.0.1）
-   ✓ docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）
-   ✓ 六个镜像合计约 849 MB（linux/amd64 压缩后，来自 manifest）
-[总览] 挑下载源、算端口、写配置 · 已自动解决 1 个问题 · 回合 0/10 · token 0
-   ✔ 为这次安装换了一组空闲端口　web 3100 → 3101 · api 8100 → 8101 · opencode 3921 → 3922 · postgres 5442 → 5443 · redis 6479 → 6480
-   ✓ 3100 原来被占着　Docker 容器 hunter-community-web-1（compose 项目 hunter-community · 0.0.0.0:3100->3000/tcp）
-   ✓ 8100 原来被占着　Docker 容器 hunter-community-api-1（compose 项目 hunter-community · 0.0.0.0:8100->8000/tcp）
-   ✓ 3921 原来被占着　Docker 容器 hunter-community-opencode-1（compose 项目 hunter-community · 0.0.0.0:3921->3901/tcp）
-   ✓ 5442 原来被占着　Docker 容器 hunter-community-postgres-1（compose 项目 hunter-community · 0.0.0.0:5442->5432/tcp）
-   ✓ 6479 原来被占着　Docker 容器 hunter-community-redis-1（compose 项目 hunter-community · 0.0.0.0:6479->6379/tcp）
-✓ 挑下载源、算端口、写配置　下载源 GHCR · GitHub · 端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480
+=================== 场景 A · 内置运行时残骸 + 用户自己的 Docker 在跑 → 该用用户那一套，零点击装到 6/6 ===================
 … 下载组件
 [总览] 下载组件 · 已自动解决 1 个问题 · 回合 0/10 · token 0
 … 下载组件　六个镜像，正在拉取…
-… 下载组件　27% · 已完成 233 MB / 849 MB
+… 下载组件　43% · 已完成 366 MB / 849 MB
 … 下载组件　100% · 已完成 849 MB / 849 MB
 … 下载组件　100% · 已完成 849 MB / 849 MB
 ✓ 下载组件　六个镜像本机已有（合计 849 MB），这次一个字节都没下载 · 用时 1 秒
 … 启动服务
 [总览] 启动服务 · 已自动解决 1 个问题 · 回合 0/10 · token 0
 … 启动服务　正在起容器…
-… 启动服务　4 / 6 健康
+… 启动服务　5 / 6 健康
 … 启动服务　5 / 6 健康
 … 启动服务　5 / 6 健康
 … 启动服务　5 / 6 健康
@@ -72,6 +37,8 @@ Hunter 启动器 · AI 自动驾驶安装
 
 事件流：/home/support/.hunter-i9a/logs/assist-events.jsonl
 审计日志：/home/support/.hunter-i9a/logs/assist-audit.log
-统计：自动解决 1 个问题 · 0 个修复回合 · 0 token · 用时 112 秒
+统计：自动解决 1 个问题 · 0 个修复回合 · 0 token · 用时 106 秒
 
 ✓ 装好了。打开 http://localhost:3101
+---- 假 colima 被调用过吗 ----
+（一次都没调 —— 这正是期望）
