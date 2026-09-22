@@ -316,6 +316,36 @@ pub fn run() {
                 }
             });
 
+            // **覆盖文件里的重启策略补写**（I12 · R3+ 第 ① 条）。
+            //
+            // 覆盖文件只在「安装」与「升级」时重写（`flow::rewrite_env_and_override`）。
+            // 从 0.1.11 升上来、又没有重装过的机器上，磁盘上那一份是**老格式**，
+            // 里面没有 `restart:` 那几行 —— 而这一条恰恰是给「电脑重启之后」用的。
+            //
+            // 所以这里补一道：文件在、但少了重启策略 → **只重写文件，不碰任何容器**。
+            // 下一次 `up`（用户点启动、或者 R3+ 第 ② 条自动拉起）自然就带上了。
+            // 现在就去 `up` 一遍是不行的：那会把六个健康的容器全部重建，
+            // 为了一行配置把用户正在用的东西推倒重来，代价和收益完全不成比例。
+            std::thread::spawn(|| {
+                let cfg = crate::config::LauncherConfig::load();
+                if !cfg.install.done || !crate::paths::override_file().is_file() {
+                    return;
+                }
+                let Ok(cur) = std::fs::read_to_string(crate::paths::override_file()) else {
+                    return;
+                };
+                if cur.contains("restart:") {
+                    return;
+                }
+                match crate::config::write_override(&cfg.hunter.ports, &cfg.hunter.base_prefix) {
+                    Ok(()) => linfo!(
+                        "开机自查覆盖文件：这一份是 0.1.12 之前生成的，没有重启策略 —— \
+                         已经补写好（只改了文件，一个容器都没动；下次启动时生效）"
+                    ),
+                    Err(e) => lwarn!("开机自查覆盖文件：没能补写重启策略 —— {}", e.msg),
+                }
+            });
+
             // **电脑或运行环境重启之后，容器要自己回来**（I12 · R3+）。
             //
             // 2026-09-23 在用户 Mac 上实测：内置运行时的虚拟机
