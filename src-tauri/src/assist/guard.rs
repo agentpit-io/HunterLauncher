@@ -1228,6 +1228,7 @@ mod tests {
     /// 这一条不是靠「代码里我们没写那一行」保证的，是守卫真的拦得住。
     #[test]
     fn 用户的_docker_配置写不进去() {
+        let _g = crate::paths::test_home("guard-user-docker-cfg");
         let user_cfg = crate::paths::home().join(".docker").join("config.json");
         assert!(
             writable_path(&user_cfg).is_err(),
@@ -1244,6 +1245,10 @@ mod tests {
 
     #[test]
     fn 删除只限启动器自己生成的文件() {
+        // **要拿 `HUNTER_HOME` 那把锁**（I9 在 CI 上撞出来的）：这一条读的是
+        // `paths::root()`，而别的文件里有测试会把那个变量指到临时目录。
+        // 本地跑一直绿只是时序没撞上 —— Windows runner 上第一次就红了。
+        let _g = crate::paths::test_home("guard-deletable-files");
         let root = crate::paths::root();
         std::fs::create_dir_all(root.join("app")).unwrap();
         // 白名单里的
@@ -1301,6 +1306,7 @@ mod tests {
     /// 整棵删的白名单里**只有内置运行时**那一个目录。
     #[test]
     fn 只有内置运行时目录可以整棵删() {
+        let _g = crate::paths::test_home("guard-deletable-tree");
         let root = crate::paths::root();
         std::fs::create_dir_all(root.join("runtime")).unwrap();
         assert!(deletable_tree(&crate::paths::runtime_dir()).is_ok());
@@ -1448,6 +1454,7 @@ mod tests {
     /// 装 Homebrew 那道门：只能跑**我们自己下到 `~/.hunter/runtime` 里**的那个脚本。
     #[test]
     fn 安装脚本只能跑自己下的那一个() {
+        let _g = crate::paths::test_home("guard-install-script");
         let dir = crate::paths::runtime_dir().join("cache");
         std::fs::create_dir_all(&dir).unwrap();
         let ok = dir.join("brew-install.sh");
@@ -1474,6 +1481,7 @@ mod tests {
     /// 提权那张表：**表外一律拒绝**，表里的参数形状也写死。
     #[test]
     fn 提权只允许表里那两件事() {
+        let _g = crate::paths::test_home("guard-privileged");
         assert!(argv_privileged(&a(&["/usr/bin/systemctl", "start", "docker"])).is_ok());
         assert!(argv_privileged(&a(&["systemctl", "start", "docker"])).is_ok());
         for bad in [
@@ -1615,14 +1623,12 @@ mod tests {
     fn 裸的_colima_start_到不了_spawn() {
         let _g = crate::paths::test_home("guard-colima-proc");
         // 造一个真的能跑的假 colima：守卫要是没拦住，它会成功返回 0
-        let bin = crate::paths::runtime_bin().join("colima");
-        std::fs::create_dir_all(crate::paths::runtime_bin()).unwrap();
-        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        crate::runtime::effective::make_fake_tools();
+        let bin = crate::paths::runtime_bin().join(if cfg!(windows) {
+            "colima.exe"
+        } else {
+            "colima"
+        });
         let e =
             crate::proc::run_with_env(&bin.to_string_lossy(), &["start"], &[("COLIMA_HOME", "")])
                 .expect_err("守卫必须在 spawn 之前拦住它");

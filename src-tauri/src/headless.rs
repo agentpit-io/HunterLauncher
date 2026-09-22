@@ -513,7 +513,7 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
 /// 这里原先手抄了一份，加 `E_BUILTIN_DOWN` 时漏改，命令行上就打出了
 /// 「E_UNKNOWN: Hunter 自己那台虚拟机没起来」这种自相矛盾的话。
 fn code_from_str(s: &str) -> Option<Code> {
-    Code::from_str(s)
+    Code::parse_code(s)
 }
 
 // ── 安装 ──────────────────────────────────────────────────────────────────

@@ -528,6 +528,7 @@ mod tests {
     /// 事件流**按次保留最近 5 份**，不再一开新的就把上一次覆盖掉（I7 · 待办池 P2-21）。
     #[test]
     fn 事件流归档只留最近五份() {
+        let _g = crate::paths::test_home("events-archive");
         let dir = crate::paths::logs_dir();
         std::fs::create_dir_all(&dir).unwrap();
         // 先把上一条测试留下的归档清掉，免得两条测试互相看见
@@ -572,6 +573,7 @@ mod tests {
     /// 空的上一份不值得归档（上一次开了头就退出了）。
     #[test]
     fn 空文件不归档() {
+        let _g = crate::paths::test_home("events-empty");
         let dir = crate::paths::logs_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let cur = dir.join("assist-events-empty-probe.jsonl");

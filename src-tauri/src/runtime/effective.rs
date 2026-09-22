@@ -320,6 +320,49 @@ fn user_installed() -> Option<String> {
     None
 }
 
+/// 测试专用：在当前 `HUNTER_HOME` 里造出内置运行时的四件工具。
+///
+/// **文件名走 [`exe`]**（Windows 上是 `docker.exe` / `colima.exe` …）。
+/// I9 第一版没这么写，CI 的 windows runner 上一口气红了 9 条 ——
+/// 造出来的假工具叫 `docker`，而代码找的是 `docker.exe`，
+/// 于是每一条本该是 `Stopped` 的断言都得到了 `Partial`。
+/// 这个助手 `pub(crate)`，三个测试模块共用一份，不许各抄各的。
+#[cfg(test)]
+pub(crate) fn make_fake_tools() {
+    let bin = crate::paths::runtime_bin();
+    std::fs::create_dir_all(&bin).unwrap();
+    let lima = crate::paths::runtime_dist().join("lima").join("bin");
+    std::fs::create_dir_all(&lima).unwrap();
+    let cli = crate::paths::runtime_docker_config().join("cli-plugins");
+    std::fs::create_dir_all(&cli).unwrap();
+    for p in [
+        bin.join(exe("docker")),
+        bin.join(exe("colima")),
+        lima.join(exe("limactl")),
+        cli.join(exe("docker-compose")),
+    ] {
+        write_fake_exe(&p);
+    }
+}
+
+/// 同上，但**只造 docker 一个** —— 用来造「装了一半」那个中间态。
+#[cfg(test)]
+pub(crate) fn make_fake_tools_partial() {
+    let bin = crate::paths::runtime_bin();
+    std::fs::create_dir_all(&bin).unwrap();
+    write_fake_exe(&bin.join(exe("docker")));
+}
+
+#[cfg(test)]
+pub(crate) fn write_fake_exe(p: &std::path::Path) {
+    std::fs::write(p, b"#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 // ── 判定 ──────────────────────────────────────────────────────────────────
 
 /// **这台机器上现在生效的运行时是谁。**
@@ -434,6 +477,11 @@ pub fn builtin_is_effective() -> bool {
 mod tests {
     use super::*;
 
+    /// Windows 上路径分隔符是反斜杠。断言只关心「指到哪儿」，不关心用哪个斜杠。
+    fn slashes(s: &str) -> String {
+        s.replace('\\', "/")
+    }
+
     fn user(label: &str) -> Option<(String, PathBuf)> {
         Some((label.to_string(), PathBuf::from("/var/run/docker.sock")))
     }
@@ -450,8 +498,7 @@ mod tests {
     #[test]
     fn 工具缺几个时是装了一半() {
         let _g = crate::paths::test_home("eff-partial");
-        std::fs::create_dir_all(crate::paths::runtime_bin()).unwrap();
-        write_exe(&crate::paths::runtime_bin().join("docker"));
+        make_fake_tools_partial();
         let st = builtin_state();
         match &st {
             BuiltinState::Partial(miss) => {
@@ -469,7 +516,7 @@ mod tests {
     #[test]
     fn 工具齐了虚拟机没起来时是_stopped() {
         let _g = crate::paths::test_home("eff-stopped");
-        make_tools();
+        make_fake_tools();
         assert_eq!(builtin_state(), BuiltinState::Stopped);
     }
 
@@ -487,7 +534,7 @@ mod tests {
         assert_eq!(e.kind, Kind::Builtin);
         assert!(e.running && e.usable());
         assert!(!e.builtin_down());
-        let host = e.docker_host.expect("内置运行时必须给 DOCKER_HOST");
+        let host = slashes(&e.docker_host.expect("内置运行时必须给 DOCKER_HOST"));
         assert!(host.contains("runtime/colima/hunter/docker.sock"), "{host}");
 
         // ② 内置没起、用户的在跑 —— 用户的优先，而且**不替他设 DOCKER_HOST**
@@ -502,7 +549,7 @@ mod tests {
         assert_eq!(e.kind, Kind::Builtin);
         assert!(e.builtin_down(), "{}", e.one_line());
         assert!(!e.usable());
-        let host = e.docker_host.expect("P0-4：这时也必须给 DOCKER_HOST");
+        let host = slashes(&e.docker_host.expect("P0-4：这时也必须给 DOCKER_HOST"));
         assert!(
             host.contains("runtime/colima/hunter/docker.sock"),
             "绝不能让 docker 悄悄打到 /var/run/docker.sock：{host}"
@@ -542,7 +589,7 @@ mod tests {
         ] {
             let e = decide(st.clone(), None, None);
             assert_eq!(e.kind, Kind::Builtin, "{st:?}");
-            let h = e.docker_host.unwrap_or_default();
+            let h = slashes(&e.docker_host.unwrap_or_default());
             assert!(h.starts_with("unix://"), "{st:?} → {h}");
             assert!(!h.contains("/var/run/docker.sock"), "{st:?} → {h}");
             assert!(h.contains("runtime/colima/hunter"), "{st:?} → {h}");
@@ -575,28 +622,6 @@ mod tests {
                 "「{label}」指向了我们自己的目录：{}",
                 p.display()
             );
-        }
-    }
-
-    fn make_tools() {
-        let bin = crate::paths::runtime_bin();
-        std::fs::create_dir_all(&bin).unwrap();
-        write_exe(&bin.join("docker"));
-        write_exe(&bin.join("colima"));
-        let lima = crate::paths::runtime_dist().join("lima").join("bin");
-        std::fs::create_dir_all(&lima).unwrap();
-        write_exe(&lima.join("limactl"));
-        let cli = crate::paths::runtime_docker_config().join("cli-plugins");
-        std::fs::create_dir_all(&cli).unwrap();
-        write_exe(&cli.join("docker-compose"));
-    }
-
-    fn write_exe(p: &std::path::Path) {
-        std::fs::write(p, b"#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
 }

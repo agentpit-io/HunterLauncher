@@ -1627,15 +1627,7 @@ pub(crate) mod tests {
     #[test]
     fn 内置运行时的_colima_不走_start_runtime() {
         let _g = crate::paths::test_home("act-colima");
-        let bin = crate::paths::runtime_bin();
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("colima"), b"#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(bin.join("colima"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
+        crate::runtime::effective::make_fake_tools();
         let e = plan(&Call::with("start_runtime", "app", "colima"))
             .expect_err("内置那份 colima 不该被 start_runtime 规划出来");
         // 既要拒绝，也要**说清该走哪条路** —— 只说「不行」等于把问题丢回给下一个人
@@ -1650,15 +1642,7 @@ pub(crate) mod tests {
     #[test]
     fn 内置运行时那条命令一定带_profile_hunter() {
         let _g = crate::paths::test_home("act-builtin-argv");
-        let bin = crate::paths::runtime_bin();
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("colima"), b"#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(bin.join("colima"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
+        crate::runtime::effective::make_fake_tools();
         let p = plan(&Call::new("start_builtin_runtime")).expect("该规划得出来");
         let line = p.command_line();
         assert!(line.contains("--profile"), "{line}");
@@ -1668,7 +1652,7 @@ pub(crate) mod tests {
         );
         // 这条命令用的必须是**我们自己**那份 colima
         assert!(
-            p.argv[0].starts_with(&crate::paths::runtime_dir().to_string_lossy().to_string()),
+            p.argv[0].starts_with(crate::paths::runtime_dir().to_string_lossy().as_ref()),
             "{:?}",
             p.argv
         );

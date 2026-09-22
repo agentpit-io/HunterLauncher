@@ -711,6 +711,7 @@ mod tests {
 
     #[test]
     fn 每条规则都有标题与正文() {
+        let _g = crate::paths::test_home("rules-all");
         let mut cases = vec![base()];
         let mut r = base();
         r.daemon_running = false;
@@ -737,20 +738,7 @@ mod tests {
 
     // ── I9 的 P0-1 ──────────────────────────────────────────────────────
 
-    /// 把内置运行时那四件工具真的摆到临时 `HUNTER_HOME` 里 ——
-    /// `start_builtin_runtime` 要规划得出命令，就得有一个真的 colima 文件。
-    fn make_builtin_tools() {
-        let bin = crate::paths::runtime_bin();
-        std::fs::create_dir_all(&bin).unwrap();
-        for p in [bin.join("docker"), bin.join("colima")] {
-            std::fs::write(&p, b"#!/bin/sh\nexit 0\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
-    }
+    use crate::runtime::effective::make_fake_tools;
 
     /// **用户 Mac 上 0.1.8 那次的现场，一比一复现。**
     ///
@@ -763,7 +751,7 @@ mod tests {
     #[test]
     fn 内置运行时残骸走内置主线而不是启动用户的_colima() {
         let _g = crate::paths::test_home("rules-residue");
-        make_builtin_tools();
+        make_fake_tools();
 
         let mut r = base();
         r.daemon_running = false;
@@ -796,9 +784,10 @@ mod tests {
         let line = s.actions[0].command_line();
         assert!(line.contains("--profile"), "{line}");
         assert!(line.contains(crate::runtime::builtin::PROFILE), "{line}");
-        // 用的必须是我们自己那份 colima
+        // 用的必须是我们自己那份 colima（Windows 上分隔符是反斜杠，先归一）
+        let norm = |x: &str| x.replace('\\', "/");
         assert!(
-            line.contains(&crate::paths::runtime_dir().to_string_lossy().to_string()),
+            norm(&line).contains(&norm(&crate::paths::runtime_dir().to_string_lossy())),
             "{line}"
         );
         // 话要说清楚：这不是用户装的 Docker

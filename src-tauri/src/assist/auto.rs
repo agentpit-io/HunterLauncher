@@ -2782,6 +2782,7 @@ mod tests {
     /// 走的是另一条通路，不经过那个会挂住的 condvar。
     #[test]
     fn 接管请求不走阻塞通道() {
+        let _g = crate::paths::test_home("auto-takeover-req");
         let o = orch(Mode::Auto);
         let h = o.handle();
         // 没有任何正在等的提问，普通回答返回 false
@@ -2800,34 +2801,14 @@ mod tests {
 
     // ── I9 ──────────────────────────────────────────────────────────────
 
-    fn make_builtin_tools() {
-        let bin = crate::paths::runtime_bin();
-        std::fs::create_dir_all(&bin).unwrap();
-        let lima = crate::paths::runtime_dist().join("lima").join("bin");
-        std::fs::create_dir_all(&lima).unwrap();
-        let cli = crate::paths::runtime_docker_config().join("cli-plugins");
-        std::fs::create_dir_all(&cli).unwrap();
-        for p in [
-            bin.join("docker"),
-            bin.join("colima"),
-            lima.join("limactl"),
-            cli.join("docker-compose"),
-        ] {
-            std::fs::write(&p, b"#!/bin/sh\nexit 0\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
-    }
+    use crate::runtime::effective::{make_fake_tools, make_fake_tools_partial};
 
     /// **总指挥这一侧的同一个 P0**：`E_BUILTIN_DOWN` 必须走内置主线，
     /// 零 token、不碰用户的 colima。
     #[test]
     fn 内置运行时没起来时总指挥走内置主线() {
         let _g = crate::paths::test_home("auto-builtin-down");
-        make_builtin_tools();
+        make_fake_tools();
         let o = orch(Mode::Auto);
         let ev = ev_empty();
         let e = AppError::new(Code::BuiltinRuntimeDown, "内置运行时装好了，虚拟机没起来");
@@ -2847,7 +2828,7 @@ mod tests {
     #[test]
     fn 起过一次没成就清残骸重建而不是再试一遍() {
         let _g = crate::paths::test_home("auto-builtin-repair");
-        make_builtin_tools();
+        make_fake_tools();
         let mut o = orch(Mode::Auto);
         o.failed_actions.insert("start_builtin_runtime".to_string());
         let ev = ev_empty();
@@ -2865,9 +2846,7 @@ mod tests {
     #[test]
     fn 内置运行时装了一半时总指挥先补齐() {
         let _g = crate::paths::test_home("auto-builtin-partial");
-        let bin = crate::paths::runtime_bin();
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("docker"), b"x").unwrap();
+        make_fake_tools_partial();
         let o = orch(Mode::Auto);
         let ev = ev_empty();
         let e = AppError::new(Code::BuiltinRuntimeDown, "还缺几个文件");
@@ -2906,7 +2885,7 @@ mod tests {
     #[test]
     fn 头一条动作失败过就不要单独跑后面那条等待() {
         let _g = crate::paths::test_home("auto-lead-failed");
-        make_builtin_tools();
+        make_fake_tools();
         let mut o = orch(Mode::Auto);
         let ev = ev_empty();
         let e = AppError::new(Code::BuiltinRuntimeDown, "虚拟机没起来");

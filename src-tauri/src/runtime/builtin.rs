@@ -1322,6 +1322,7 @@ mod tests {
 
     #[test]
     fn sha256_算得对() {
+        let _g = crate::paths::test_home("builtin-sha");
         let d = crate::paths::root().join("sha-test.bin");
         std::fs::create_dir_all(crate::paths::root()).unwrap();
         std::fs::write(&d, b"abc").unwrap();

@@ -156,7 +156,11 @@ impl Code {
     ];
 
     /// 从 `E_XXX` 反查。认不得就是 `None`（**不猜成 Unknown**，让调用方自己决定）。
-    pub fn from_str(s: &str) -> Option<Code> {
+    ///
+    /// 名字不叫 `from_str`：那会和 `std::str::FromStr::from_str` 撞脸
+    /// （clippy 的 `should_implement_trait`）。而实现 `FromStr` 在这里是过度设计 ——
+    /// 我们不需要 `"E_X".parse::<Code>()` 那套。
+    pub fn parse_code(s: &str) -> Option<Code> {
         Code::ALL.iter().copied().find(|c| c.as_str() == s)
     }
 }
@@ -233,8 +237,8 @@ mod tests {
     #[test]
     fn 每个错误码都能从字符串反查回来() {
         for c in Code::ALL.iter().copied() {
-            assert_eq!(Code::from_str(c.as_str()), Some(c), "{}", c.as_str());
+            assert_eq!(Code::parse_code(c.as_str()), Some(c), "{}", c.as_str());
         }
-        assert_eq!(Code::from_str("E_NOT_A_REAL_CODE"), None);
+        assert_eq!(Code::parse_code("E_NOT_A_REAL_CODE"), None);
     }
 }
