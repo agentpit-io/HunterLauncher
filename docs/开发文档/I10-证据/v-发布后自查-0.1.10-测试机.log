@@ -1,0 +1,60 @@
+
+── 1. Release 元信息 ──
+  ✅ prerelease = true
+  ✅ tag_name = launcher-v0.1.10
+
+── 2. 产物清单 ──
+     hunter-launcher_0.1.10_amd64.AppImage
+     hunter-launcher_0.1.10_amd64.AppImage.sig
+     hunter-launcher_0.1.10_amd64.deb
+     hunter-launcher_0.1.10_amd64.deb.sig
+     hunter-launcher_0.1.10_universal.app.tar.gz
+     hunter-launcher_0.1.10_universal.app.tar.gz.sig
+     hunter-launcher_0.1.10_universal.dmg
+     hunter-launcher_0.1.10_x64-setup.exe
+     hunter-launcher_0.1.10_x64-setup.exe.sig
+     hunter-launcher_0.1.10_x64_en-US.msi
+     hunter-launcher_0.1.10_x64_en-US.msi.sig
+     latest.json
+     共 12 个
+  ✅ hunter-launcher_0.1.10_amd64.deb
+  ✅ hunter-launcher_0.1.10_amd64.deb.sig
+  ✅ hunter-launcher_0.1.10_amd64.AppImage
+  ✅ hunter-launcher_0.1.10_amd64.AppImage.sig
+  ✅ hunter-launcher_0.1.10_universal.dmg
+  ✅ hunter-launcher_0.1.10_universal.app.tar.gz
+  ✅ hunter-launcher_0.1.10_universal.app.tar.gz.sig
+  ✅ hunter-launcher_0.1.10_x64-setup.exe
+  ✅ hunter-launcher_0.1.10_x64-setup.exe.sig
+  ✅ hunter-launcher_0.1.10_x64_en-US.msi
+  ✅ hunter-launcher_0.1.10_x64_en-US.msi.sig
+  ✅ latest.json
+
+── 3. dmg 里的 Info.plist（mac 用户看到的版本号） ──
+     CFBundleShortVersionString=0.1.10
+     CFBundleVersion=0.1.10
+     NSHumanReadableCopyright=Copyright 2026 agentpit.io
+     CFBundleIdentifier=io.agentpit.hunter.launcher
+     LSMinimumSystemVersion=10.13
+  ✅ CFBundleShortVersionString = 0.1.10
+  ✅ CFBundleVersion = 0.1.10
+  ✅ NSHumanReadableCopyright = Copyright 2026 agentpit.io
+
+── 4. .deb 的版本与二进制 --version ──
+  ✅ .deb Version = 0.1.10
+  ✅ 二进制 --version = hunter-launcher 0.1.10
+
+── 5. 腾讯云香港的副本（国内用户走这条） ──
+  ✅ hunter-launcher_0.1.10_universal.dmg · 200 · 7759626 字节（与 GitHub 一致）
+  ✅ hunter-launcher_0.1.10_amd64.deb · 200 · 4481096 字节（与 GitHub 一致）
+  ✅ hunter-launcher_0.1.10_x64-setup.exe · 200 · 3113759 字节（与 GitHub 一致）
+
+── 6. COS 那份 latest.json ──
+  ✅ latest.json version = 0.1.10
+  ✅ linux-x86_64 → COS
+  ✅ windows-x86_64 → COS
+  ✅ darwin-x86_64 → COS
+  ✅ darwin-aarch64 → COS
+
+── 小结 ──
+  全部通过（版本 0.1.10 · tag launcher-v0.1.10）
