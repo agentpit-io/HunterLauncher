@@ -1,0 +1,8 @@
+## 端口（空闲 / 被 Hunter 自己占用 / 被其他程序占用）
+web 3101 被 Hunter 自己占用（正常，不是冲突） · Docker 容器 hunter-web-1（compose 项目 hunter · 127.0.0.1:3101->3000/tcp）；绑 0.0.0.0 时被系统拒绝（Address already in use (os error 98)）；绑 127.0.0.1 时被系统拒绝（Address already in use (os error 98)）
+api 8101 被 Hunter 自己占用（正常，不是冲突） · Docker 容器 hunter-api-1（compose 项目 hunter · 127.0.0.1:8101->8000/tcp）；绑 0.0.0.0 时被系统拒绝（Address already in use (os error 98)）；绑 127.0.0.1 时被系统拒绝（Address already in use (os error 98)）
+opencode 3922 被 Hunter 自己占用（正常，不是冲突） · Docker 容器 hunter-opencode-1（compose 项目 hunter · 127.0.0.1:3922->3901/tcp）；绑 0.0.0.0 时被系统拒绝（Address already in use (os error 98)）；绑 127.0.0.1 时被系统拒绝（Address already in use (os error 98)）
+postgres 5443 被 Hunter 自己占用（正常，不是冲突） · Docker 容器 hunter-postgres-1（compose 项目 hunter · 127.0.0.1:5443->5432/tcp）；绑 0.0.0.0 时被系统拒绝（Address already in use (os error 98)）；绑 127.0.0.1 时被系统拒绝（Address already in use (os error 98)）
+redis 6480 被 Hunter 自己占用（正常，不是冲突） · Docker 容器 hunter-redis-1（compose 项目 hunter · 127.0.0.1:6480->6379/tcp）；绑 0.0.0.0 时被系统拒绝（Address already in use (os error 98)）；绑 127.0.0.1 时被系统拒绝（Address already in use (os error 98)）
+
+## 启动器日志

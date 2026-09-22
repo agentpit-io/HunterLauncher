@@ -34,6 +34,8 @@ import type {
   PullProgress,
   RegistryProbe,
   RuntimeStatus,
+  SelfCheckReview,
+  ServiceStatus,
   TakeoverCandidate,
   TakeoverState,
   TelemetryView,
@@ -48,7 +50,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.10'
+export const DEMO_LAUNCHER_VERSION = '0.1.11'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -1055,4 +1057,60 @@ export const demoAutoNeedUser: AssistAutoSnapshot = {
       at: '2026-09-21 10:30:04',
     },
   ],
+}
+
+// ── 现状复查（I11 · U1）──────────────────────────────────────────────────
+
+const DEMO_SERVICES: ServiceStatus[] = [
+  { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null },
+  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
+  { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null },
+  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
+  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
+  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
+]
+
+/**
+ * 截图用的复查结果。
+ *
+ * **默认给的是「还没好」那一档**：错误页那张图要能截得出来 ——
+ * 给「已经好了」的话，页面会立刻自己跳去运行面板，截图脚本什么都截不到。
+ * 想看「已经好了」的样子用 `__HUNTER_DEMO_PAGE__ = 'error-recovered'`。
+ */
+export function demoSelfCheck(page: string | null): SelfCheckReview {
+  if (page === 'error-recovered') {
+    return {
+      posture: 'healthy',
+      services: DEMO_SERVICES,
+      ready: 6,
+      total: 6,
+      unready: [],
+      missing: [],
+      webUrl: 'http://localhost:3100',
+      webStatus: 200,
+      webReason: null,
+      drift: [],
+      headline: 'Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）',
+      lines: ['web · running · 健康', 'GET http://127.0.0.1:3100/ → HTTP 200'],
+      elapsedMs: 412,
+    }
+  }
+  const services = DEMO_SERVICES.map((s) =>
+    s.service === 'opencode' ? { ...s, health: 'unhealthy' as const } : s,
+  )
+  return {
+    posture: 'partial',
+    services,
+    ready: 5,
+    total: 6,
+    unready: ['opencode'],
+    missing: [],
+    webUrl: 'http://localhost:3100',
+    webStatus: 200,
+    webReason: null,
+    drift: [],
+    headline: 'Hunter 在跑，但 opencode 还没就绪',
+    lines: ['opencode · running · 不健康', 'GET http://127.0.0.1:3100/ → HTTP 200'],
+    elapsedMs: 388,
+  }
 }

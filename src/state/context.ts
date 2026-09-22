@@ -14,6 +14,14 @@ export interface Store {
   overlay: Overlay
   setOverlay: (o: Overlay) => void
   demo: boolean
+  /**
+   * 一句要带到下一页去的话（I11 · U1）。
+   *
+   * 目前唯一的来源：错误页复查发现「其实已经好了」，界面自己切到运行面板 ——
+   * 切过去之后得有人告诉用户刚才发生了什么，否则那一下会像是界面自己乱跳。
+   */
+  notice: string | null
+  setNotice: (n: string | null) => void
 }
 
 export const StoreCtx = createContext<Store | null>(null)

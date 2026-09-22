@@ -499,7 +499,16 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         return Ok(());
     }
     if out.ok {
-        println!("\n✓ 装好了。打开 {}", out.url.unwrap_or_default());
+        // I11 · U2：**这一次什么都没装**的时候别说「装好了」——
+        // 那句话会让人以为刚刚下载并重建了一遍（红线 1 的同一条道理）
+        if out.reused {
+            println!(
+                "\n✓ 没有重新安装：这一次没有重新下载任何镜像，健康的容器也一个都没重建。打开 {}",
+                out.url.unwrap_or_default()
+            );
+        } else {
+            println!("\n✓ 装好了。打开 {}", out.url.unwrap_or_default());
+        }
         Ok(())
     } else {
         Err(AppError::new(
@@ -948,6 +957,10 @@ fn cmd_diagnose(st: &AppState, code: Option<&str>, fix: bool) -> AppResult<()> {
             p.port
         ));
     }
+    // 端口一节（I11 · U4）。0.1.9 那次用户导出的诊断里，五个正被 Hunter 自己
+    // 占着的端口全写着「空闲」—— 现在三类分开，而且命令行与界面用的是同一个函数
+    s.push_str(&crate::assist::probe::collect(code, None, None).ports_section());
+
     s.push_str("\n## 启动器日志\n");
     for l in crate::log::tail_file(80) {
         s.push_str(&l);

@@ -1336,9 +1336,9 @@ pub fn preflight_ports() -> AppResult<Vec<PreflightConflict>> {
     let sv = crate::ports::Survey::collect();
     let mut out = Vec::new();
     for (svc, port) in want {
-        // 我们自己那一套正占着的不算冲突
+        // 我们自己那一套正占着的不算冲突（`usable()` 把那一档单独分出来了）
         let vd = sv.verdict(port, &[PROJECT]);
-        if vd.free {
+        if vd.usable() {
             continue;
         }
         out.push(PreflightConflict {
@@ -1373,6 +1373,68 @@ pub fn preflight_gate() -> AppResult<()> {
             lines.join("；")
         ),
     ))
+}
+
+// ── 绑定漂移：容器实际绑在哪 vs 覆盖文件说该绑在哪（I11 · U5）─────────────
+
+/// 一条「容器实际绑的地址和覆盖文件说的不一样」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindDrift {
+    pub service: String,
+    pub port: u16,
+    /// docker 报的真实绑定地址（`0.0.0.0` / `::`）
+    pub actual: String,
+}
+
+impl BindDrift {
+    pub fn human(&self) -> String {
+        format!(
+            "{}（端口 {}）现在绑在 {} 上，局域网里的其他机器能连到它",
+            self.service, self.port, self.actual
+        )
+    }
+}
+
+/// 本项目**正在跑的容器**里，有哪些把端口绑到了本机之外。
+///
+/// 只在覆盖文件说「该绑本机」时才算漂移：
+/// 老机器的 web 本来就对外（[`crate::config::WebBind::LegacyLan`]），
+/// 那是用户的现状，启动器有意不悄悄改它（I7 · 用户 2026-09-21 19:05 的决定）。
+///
+/// 这件事只能问 docker，不能问我们自己写的配置 —— 配置是意图，这里要的是现状。
+/// 现场依据：2026-09-22 22:01 本地 Claude 在用户 Mac 上手工
+/// `docker compose -p hunter up -d` 漏了覆盖文件，容器被重建成 0.0.0.0，
+/// 五个端口在局域网可达了约 50 分钟。
+pub fn bind_drift(services: &[ServiceStatus]) -> Vec<BindDrift> {
+    let web_should_be_lan = crate::config::WebBind::detect().lan_exposed();
+    services
+        .iter()
+        .filter(|s| s.state == "running")
+        .filter(|s| !(s.service == "web" && web_should_be_lan))
+        .filter(|s| s.lan_exposed())
+        .filter_map(|s| {
+            Some(BindDrift {
+                service: s.service.clone(),
+                port: s.port?,
+                actual: s.bind.clone().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// 查一遍绑定漂移；有就按覆盖文件把那些容器重建回来。
+///
+/// 返回「这次处理了哪几条」。没有漂移时返回空表并且**一个子进程都不起**。
+///
+/// 为什么是 `up -d --force-recreate <那几个服务>` 而不是整套 `up`：
+/// 端口映射是容器创建时定死的，不重建改不掉；而没漂移的服务一个都不该碰。
+pub fn fix_bind_drift(drift: &[BindDrift]) -> AppResult<()> {
+    if drift.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = drift.iter().map(|d| d.service.as_str()).collect();
+    up_services(&names)
 }
 
 // ── 本项目的残留容器（I5 §六.5） ──────────────────────────────────────────
@@ -1594,6 +1656,51 @@ pub fn up_services(services: &[&str]) -> AppResult<()> {
             Code::StartTimeout,
             format!(
                 "docker compose up -d {} 失败：{}",
+                services.join(" "),
+                r.err_line()
+            ),
+        ))
+    }
+}
+
+/// 只把**指定的几个服务**起起来，**不重建任何已经在跑的容器**（I11 · U2）。
+///
+/// 和 [`up_services`] 的区别就是 `--no-recreate`：那一个是「配置变了，要换容器」，
+/// 这一个是「别的都好好的，只有这一两个没起来」。
+/// 「点重试不能把正在跑的东西推倒重来」这条要求，就落在这个标志上。
+pub fn start_services(services: &[&str]) -> AppResult<()> {
+    guard_project_owner()?;
+    let mut args: Vec<&str> = vec!["up", "-d", "--no-recreate"];
+    args.extend_from_slice(services);
+    let r = run(&args, Duration::from_secs(300))?;
+    if r.ok() {
+        crate::linfo!("docker compose up -d --no-recreate {} 完成", services.join(" "));
+        Ok(())
+    } else {
+        Err(classify_up_error(
+            &format!("{}\n{}", r.stderr, r.stdout),
+            r.status,
+        ))
+    }
+}
+
+/// 只重启**指定的几个服务**的进程（容器不换，端口映射与数据卷都不动）。
+///
+/// 给「容器在跑但健康检查不过」用：那种情况容器本身是好的，
+/// 重建它既慢又可能把一个本来只是没准备好的服务弄成新问题。
+pub fn restart_services(services: &[&str]) -> AppResult<()> {
+    guard_project_owner()?;
+    let mut args: Vec<&str> = vec!["restart"];
+    args.extend_from_slice(services);
+    let r = run(&args, Duration::from_secs(240))?;
+    if r.ok() {
+        crate::linfo!("docker compose restart {} 完成", services.join(" "));
+        Ok(())
+    } else {
+        Err(AppError::new(
+            Code::StartTimeout,
+            format!(
+                "docker compose restart {} 失败：{}",
                 services.join(" "),
                 r.err_line()
             ),
@@ -2402,5 +2509,54 @@ mod tests {
         assert!(OWNER_FORMAT.contains("com.docker.compose.project.working_dir"));
         // 分隔符不能换成制表符或空格：路径里有空格是常事
         assert!(OWNER_FORMAT.contains('|'));
+    }
+
+    // ── 绑定漂移（I11 · U5）────────────────────────────────────────────
+
+    fn svc(name: &str, bind: Option<&str>, port: Option<u16>, state: &str) -> ServiceStatus {
+        ServiceStatus {
+            service: name.into(),
+            state: state.into(),
+            health: Health::Healthy,
+            port,
+            bind: bind.map(str::to_string),
+            exit_code: None,
+        }
+    }
+
+    /// 用户 Mac 上 22:01–22:50 那 50 分钟的现场：有人在 `~/.hunter/app` 里
+    /// 直接 `docker compose -p hunter up -d`，漏了覆盖文件，
+    /// 容器被重建成 0.0.0.0，局域网里的机器连得上 5442。
+    #[test]
+    fn 容器被重建成对外时要认出来() {
+        let v = vec![
+            svc("web", Some("127.0.0.1"), Some(3100), "running"),
+            svc("api", Some("0.0.0.0"), Some(8100), "running"),
+            svc("postgres", Some("0.0.0.0"), Some(5442), "running"),
+        ];
+        let d = bind_drift(&v);
+        let names: Vec<&str> = d.iter().map(|x| x.service.as_str()).collect();
+        assert_eq!(names, vec!["api", "postgres"], "{d:?}");
+        assert!(d[0].human().contains("局域网"), "{}", d[0].human());
+    }
+
+    /// 没跑的容器不算 —— 它的端口没在监听，谈不上「对外开着」。
+    #[test]
+    fn 停着的容器不算漂移() {
+        let v = vec![svc("api", Some("0.0.0.0"), Some(8100), "exited")];
+        assert!(bind_drift(&v).is_empty());
+    }
+
+    /// 读不到绑定地址的时候**不喊狼来了**（红线 1：不知道就说不知道）。
+    #[test]
+    fn 读不到绑定地址就不算漂移() {
+        let v = vec![svc("api", None, Some(8100), "running")];
+        assert!(bind_drift(&v).is_empty());
+    }
+
+    /// 没有漂移的时候 [`fix_bind_drift`] 一个子进程都不起。
+    #[test]
+    fn 没有漂移就什么都不做() {
+        fix_bind_drift(&[]).expect("空表必须是立刻成功、什么都不做");
     }
 }

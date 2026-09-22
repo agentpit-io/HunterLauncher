@@ -124,6 +124,23 @@ pub struct Outcome {
     /// 有值时 `ok` 也是 true —— 事情办成了，只是办法不是「再装一套」
     #[serde(skip_serializing_if = "Option::is_none")]
     pub takeover: Option<String>,
+    /// **这一次没有装任何东西**：开工前的复查发现启动器自己上一次装的那一套
+    /// 已经在正常跑了（或者只需要把某个服务重新起一下）。
+    ///
+    /// 0.1.9 在用户 Mac 上的那一下「重试」之所以要重新拉 849 MB，
+    /// 就是因为当时根本没有这一问（I11 · U2）。
+    #[serde(default)]
+    pub reused: bool,
+}
+
+/// 开工前复查的三种去向（I11 · U2）。
+enum Preflight {
+    /// 已经在正常跑了 —— 什么都不做
+    Reuse(crate::selfcheck::Review),
+    /// 六个容器都在，只有一部分不正常 —— 只修那一部分
+    FixOnly(crate::selfcheck::Review),
+    /// 这台机器上没有一套能用的 —— 走完整安装
+    FullInstall,
 }
 
 // ── 需要用户点一下 ────────────────────────────────────────────────────────
@@ -257,6 +274,10 @@ pub struct Orchestrator {
     /// 为什么不直接在这里读 stdin：总指挥跑在界面进程里时，stdin 可能根本不存在；
     /// 「从哪儿读」是调用方的事，这里只负责「问」。
     answer_reader: Option<AnswerReader>,
+    /// 这一次**为了把端口收回本机而重建过**的服务（I11 · U5）。
+    ///
+    /// 收尾那句话要跟着它改：重建过容器还说「没有动正在跑的容器」就是在骗人。
+    rebound: Vec<String>,
     /// 有没有人能回答「需要你」卡片。
     ///
     /// 界面里是 true（用户看得见那两个按钮）；`--auto` 命令行里是 false ——
@@ -287,6 +308,7 @@ impl Orchestrator {
             failed_actions: std::collections::HashSet::new(),
             switched_registry: std::collections::HashSet::new(),
             answer_reader: None,
+            rebound: Vec::new(),
             interactive: true,
         }
     }
@@ -359,7 +381,24 @@ impl Orchestrator {
             &format!("授权档位 {}", self.mode.as_str()),
         );
 
-        for step in [Step::Docker, Step::Prepare, Step::Pull, Step::Start] {
+        // **开工第一件事：先看看现在到底是什么样**（I11 · U2）。
+        //
+        // 0.1.9 在用户 Mac 上，用户点「重试」的那一刻六个服务已经全绿了 41 分钟，
+        // 而启动器二话不说重新取 compose、重写 .env、开始重拉 849 MB。
+        // 这一段就是那句该先问的话 —— 它只读，不改任何东西。
+        let steps: &[Step] = match self.preflight(state) {
+            Preflight::Reuse(r) => return self.reuse_outcome(state, &r, None),
+            Preflight::FixOnly(r) => match self.fix_only(state, r) {
+                Ok(Some(o)) => return o,
+                // 只修不正常的那部分没修好 —— 接着走「启动服务」那一步的修复回合
+                // （AI、规则层都在那条路上）。**照样不重新取 compose、不重拉镜像。**
+                Ok(None) => &[Step::Start],
+                Err(o) => return o,
+            },
+            Preflight::FullInstall => &[Step::Docker, Step::Prepare, Step::Pull, Step::Start],
+        };
+
+        for step in steps.iter().copied() {
             if self.cancelled() {
                 return self.fail(Code::Unknown, "安装被取消了。");
             }
@@ -421,6 +460,273 @@ impl Orchestrator {
             elapsed_ms: self.t0.elapsed().as_millis() as u64,
             url: Some(url),
             takeover: None,
+            reused: false,
+        }
+    }
+
+    // ── 开工前的现状复查（I11 · U2）──────────────────────────────────────
+
+    /// 复查的三种去向。
+    fn preflight_plan(&mut self, _state: &AppState) -> Preflight {
+        let r = crate::selfcheck::review(true);
+        crate::linfo!(
+            "开工前复查：{}（{} 毫秒）",
+            r.headline,
+            r.elapsed_ms
+        );
+        match r.posture {
+            crate::selfcheck::Posture::Healthy => Preflight::Reuse(r),
+            crate::selfcheck::Posture::Partial => Preflight::FixOnly(r),
+            _ => Preflight::FullInstall,
+        }
+    }
+
+    /// 复查 + 把结论报给界面。**这一整段只读**。
+    fn preflight(&mut self, state: &AppState) -> Preflight {
+        let t = Instant::now();
+        let ev = self.bus.emit(EventDraft::new(Kind::Step, "先看看现在是什么情况"));
+        self.tick("复查现状");
+        let plan = self.preflight_plan(state);
+        let (status, detail) = match &plan {
+            Preflight::Reuse(r) => (Status::Ok, r.headline.clone()),
+            Preflight::FixOnly(r) => (Status::Warn, r.headline.clone()),
+            Preflight::FullInstall => (
+                Status::Ok,
+                "这台机器上还没有一套能用的 Hunter，按完整流程装".to_string(),
+            ),
+        };
+        let mut d = EventDraft::new(Kind::Analyze, "查到的现状")
+            .under(ev)
+            .status(Status::Ok)
+            .detail(detail.clone());
+        if let Preflight::Reuse(r) | Preflight::FixOnly(r) = &plan {
+            for l in &r.lines {
+                d = d.tech(l.clone());
+            }
+            // 容器被谁重建成 0.0.0.0 了（I11 · U5）——现在就说，并在下面收回来
+            for x in &r.drift {
+                d = d.tech(x.human());
+            }
+        }
+        self.bus.emit(d);
+        self.bus
+            .finish(ev, status, &detail, Some(t.elapsed().as_millis() as u64));
+        plan
+    }
+
+    /// 「这一套已经在跑了」的收尾：**一个安装动作都不做**。
+    ///
+    /// `fixed` 有值时表示刚才只把某几个服务弄起来过 —— 那句结论要跟着改，
+    /// 不能对着一台刚被动过的机器说「本来就好好的」（红线 1 的同一条道理）。
+    fn reuse_outcome(
+        &mut self,
+        state: &AppState,
+        r: &crate::selfcheck::Review,
+        fixed: Option<&crate::selfcheck::FixLog>,
+    ) -> Outcome {
+        self.recover_bindings(r);
+        // 它确实装好了 —— 让下一次打开启动器直接进运行面板，不再重走向导
+        let mut cfg = LauncherConfig::load();
+        if !cfg.install.done {
+            cfg.install.done = true;
+            cfg.install.at = crate::timefmt::now_shanghai();
+            let _ = cfg.save();
+        }
+        state.set_config(cfg.clone());
+        let url = r
+            .web_url
+            .clone()
+            .unwrap_or_else(|| format!("http://localhost:{}", cfg.hunter.ports.web));
+        // 这句话**逐条按刚才真做过的事拼**（红线 1）：
+        // 收回过端口就得承认重建过那几个容器，不能一律说「什么都没动」。
+        let title = match fixed {
+            None if self.rebound.is_empty() => "不用重装：Hunter 已经在运行",
+            None => "不用重装：只把端口收回了本机",
+            Some(_) => "不用重装：只把不正常的那部分弄好了",
+        };
+        let mut did: Vec<String> = Vec::new();
+        if let Some(log) = fixed {
+            did.push(log.human());
+        }
+        if !self.rebound.is_empty() {
+            did.push(format!(
+                "把 {} 的端口收回本机（这几个容器重建过）",
+                self.rebound.join("、")
+            ));
+        }
+        let detail = format!(
+            "{} / {} 个服务健康，网页打得开。这一次没有重新取配置、没有重新下载镜像。{}",
+            r.ready,
+            r.total,
+            if did.is_empty() {
+                "正在跑的容器一个都没动过。".to_string()
+            } else {
+                format!("做过的只有：{}。别的容器一个都没动。", did.join("；"))
+            }
+        );
+        self.bus.emit(
+            EventDraft::new(Kind::Resolved, title)
+                .status(Status::Ok)
+                .detail(detail)
+                .tech(format!("复查用时 {} 毫秒", r.elapsed_ms)),
+        );
+        self.bus.emit(
+            EventDraft::new(Kind::Step, "完成")
+                .status(Status::Ok)
+                .detail(format!("打开 {url} 就能用了")),
+        );
+        self.tick("完成");
+        crate::linfo!("开工前复查发现这一套已经在正常运行，本次不做任何安装动作");
+        Outcome {
+            ok: true,
+            code: None,
+            message: None,
+            solved: self.solved,
+            rounds: self.rounds,
+            tokens: self.tokens,
+            elapsed_ms: self.t0.elapsed().as_millis() as u64,
+            url: Some(url),
+            takeover: None,
+            reused: true,
+        }
+    }
+
+    /// 只修不正常的那几个服务。
+    ///
+    /// * `Ok(Some(o))` —— 修好了，直接收工（这一次同样没有下载任何东西）
+    /// * `Ok(None)` —— 没修好，交给「启动服务」那一步的修复回合接着办
+    /// * `Err(o)` —— 被取消了
+    fn fix_only(
+        &mut self,
+        state: &AppState,
+        r: crate::selfcheck::Review,
+    ) -> std::result::Result<Option<Outcome>, Outcome> {
+        if self.cancelled() {
+            return Err(self.fail(Code::Unknown, "安装被取消了。"));
+        }
+        self.recover_bindings(&r);
+
+        // Docker / 内置虚拟机那一层先过一遍（虚拟机没有 DNS 就是在这里修的）。
+        // 它不碰 compose、不碰 .env、不拉任何镜像。
+        if let Err(e) = self.run_step_with_repair(state, &mut InstallOptions::default(), Step::Docker)
+        {
+            crate::lwarn!("复查后修 Docker 这一层没过：{}", e.msg);
+            return Ok(None);
+        }
+
+        let t = Instant::now();
+        let ev = self.bus.emit(
+            EventDraft::new(Kind::Action, "只把不正常的那几个服务弄起来").detail(format!(
+                "{}（其余 {} 个健康的一个都不动，也不重新下载任何东西）",
+                r.unready.join("、"),
+                r.total.saturating_sub(r.unready.len())
+            )),
+        );
+        self.tick("修不正常的服务");
+        let fixed = match crate::selfcheck::fix_unready(&r) {
+            Ok(log) => {
+                self.bus.finish(
+                    ev,
+                    Status::Ok,
+                    &log.human(),
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                log
+            }
+            Err(e) => {
+                self.bus.finish(
+                    ev,
+                    Status::Failed,
+                    &e.msg,
+                    Some(t.elapsed().as_millis() as u64),
+                );
+                return Ok(None);
+            }
+        };
+
+        // 等它们就绪，再复查一次。**验证员的规矩：重跑一遍才算数**
+        let bus = self.bus.clone();
+        let wait = self.bus.emit(
+            EventDraft::new(Kind::Verify, "等它们就绪").status(Status::Running),
+        );
+        let waited = compose::wait_healthy(state.config().hunter.start_timeout(), move |v| {
+            let ready = v
+                .iter()
+                .filter(|s| matches!(s.health, compose::Health::Healthy))
+                .count();
+            bus.finish(wait, Status::Running, &format!("{ready} / 6 健康"), None);
+        });
+        match waited {
+            Ok(v) => self
+                .bus
+                .finish(wait, Status::Ok, &format!("{} / 6 健康", v.len()), None),
+            Err(e) => {
+                self.bus.finish(wait, Status::Failed, &e.msg, None);
+                return Ok(None);
+            }
+        }
+
+        let again = crate::selfcheck::review(true);
+        if !again.all_good() {
+            crate::lwarn!("只修不正常的那部分之后还是不行：{}", again.headline);
+            return Ok(None);
+        }
+        self.solved += 1;
+        Ok(Some(self.reuse_outcome(state, &again, Some(&fixed))))
+    }
+
+    /// 容器被谁重建成 0.0.0.0 了就按覆盖文件收回来（I11 · U5）。
+    ///
+    /// 这不是「改用户的配置」——磁盘上那份覆盖文件说的就是 127.0.0.1，
+    /// 是**跑着的容器和配置不一致**。让现实回到配置，不是做一个新决定。
+    fn recover_bindings(&mut self, r: &crate::selfcheck::Review) {
+        if r.drift.is_empty() {
+            return;
+        }
+        let t = Instant::now();
+        let names: Vec<String> = r.drift.iter().map(|d| d.service.clone()).collect();
+        let ev = self.bus.emit(
+            EventDraft::new(Kind::Issue, "有容器的端口开到了本机之外")
+                .status(Status::Warn)
+                .detail(format!(
+                    "{} 现在绑在本机以外的地址上，同一个局域网里的其他机器能连到它",
+                    names.join("、")
+                )),
+        );
+        for d in &r.drift {
+            self.bus.emit(
+                EventDraft::new(Kind::Analyze, format!("{} 的现状", d.service))
+                    .under(ev)
+                    .status(Status::Ok)
+                    .detail(d.human())
+                    .tech("多半是有人在 ~/.hunter/app 里直接跑了 docker compose 而没带上启动器的覆盖文件"),
+            );
+        }
+        match compose::fix_bind_drift(&r.drift) {
+            Ok(()) => {
+                self.solved += 1;
+                self.bus.emit(
+                    EventDraft::new(Kind::Resolved, "已经按启动器的配置收回本机")
+                        .under(ev)
+                        .status(Status::Ok)
+                        .detail(format!(
+                            "重建了 {}，现在只有这台电脑能打开它们",
+                            names.join("、")
+                        ))
+                        .tech(format!("用时 {} 毫秒", t.elapsed().as_millis())),
+                );
+                self.rebound = names.clone();
+                crate::linfo!("端口绑定漂移已按覆盖文件收回：{}", names.join("、"));
+            }
+            Err(e) => {
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "没能把它们收回本机")
+                        .under(ev)
+                        .status(Status::Failed)
+                        .detail(e.msg.clone()),
+                );
+                crate::lwarn!("端口绑定漂移没收回来：{}", e.msg);
+            }
         }
     }
 
@@ -443,6 +749,7 @@ impl Orchestrator {
             elapsed_ms: self.t0.elapsed().as_millis() as u64,
             url: None,
             takeover: None,
+            reused: false,
         }
     }
 
@@ -1052,6 +1359,7 @@ impl Orchestrator {
                     elapsed_ms: self.t0.elapsed().as_millis() as u64,
                     url,
                     takeover: Some(want),
+                    reused: true,
                 })
             }
             Err(e) => {

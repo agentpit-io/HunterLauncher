@@ -675,4 +675,41 @@ export interface AssistOutcome {
   tokens: number
   elapsedMs: number
   url: string | null
+  /**
+   * 这一次**什么都没装**：开工前的复查发现那一套已经在跑了（I11 · U2）。
+   * 界面据此把完成页那句话从「装好了」换成「本来就好着，没重装」。
+   */
+  reused?: boolean
+}
+
+// ── 现状复查（I11 · U1 / U2）──────────────────────────────────────────────
+
+/** 复查的四种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。 */
+export type Posture = 'absent' | 'incomplete' | 'partial' | 'healthy'
+
+/**
+ * 「Hunter 现在到底在不在跑」的一次只读复查。
+ *
+ * 错误页靠它自己看见「其实已经好了」—— 0.1.9 在用户 Mac 上，
+ * 服务在 41 分钟前就全绿了，界面却一直挂着那张失败卡片。
+ */
+export interface SelfCheckReview {
+  posture: Posture
+  services: ServiceStatus[]
+  ready: number
+  /** 应该有几个（后端给，前端不写死 6） */
+  total: number
+  unready: string[]
+  missing: string[]
+  webUrl: string | null
+  /** 本机 GET 真实拿到的状态码；拿不到是 null（红线 1：不猜） */
+  webStatus: number | null
+  webReason: string | null
+  /** 容器绑到本机之外的端口（U5） */
+  drift: { service: string; port: number; actual: string }[]
+  /** 一句人话的结论，界面直接显示 */
+  headline: string
+  /** 逐条证据（实测原话），折叠在「详情」里 */
+  lines: string[]
+  elapsedMs: number
 }

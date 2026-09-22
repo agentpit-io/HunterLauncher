@@ -1,0 +1,48 @@
+# 「点重试不重建任何容器」的原始证据（测试机 34.133.8.3，2026-09-23 上海时间）
+#
+# 判据用的是容器的 CreatedAt：compose 一旦重建容器，这个时间就会变。
+# 三个场景各取一次前后，全部一字不差。
+
+== 场景 B · 六个服务全健康时点「重试」（2026-09-23 02:40）==
+-- 测前 --
+hunter-api-1        2026-09-22 16:37:51 +0000 UTC   Up 2 hours (healthy)
+hunter-llm-shim-1   2026-09-22 16:37:50 +0000 UTC   Up 2 hours (healthy)
+hunter-opencode-1   2026-09-22 16:37:51 +0000 UTC   Up 2 hours (healthy)
+hunter-postgres-1   2026-09-22 16:37:51 +0000 UTC   Up 2 hours (healthy)
+hunter-redis-1      2026-09-22 16:37:51 +0000 UTC   Up 2 hours (healthy)
+hunter-web-1        2026-09-22 16:37:51 +0000 UTC   Up 2 hours (healthy)
+-- 测后（diff 为空）--
+完全一致：零重建
+-- 这一次跑过的 compose 命令（launcher.log）--
+（一条都没有 —— 复查之后直接收工）
+2026-09-23 02:40:10 [info] 开工前复查：Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）（4016 毫秒）
+2026-09-23 02:40:10 [info] 开工前复查发现这一套已经在正常运行，本次不做任何安装动作
+
+== 场景 C · 只停掉 opencode 一个服务再点「重试」（2026-09-23 02:49）==
+-- 测前 --
+hunter-api-1        2026-09-22 16:37:51 +0000 UTC   running
+hunter-llm-shim-1   2026-09-22 16:37:50 +0000 UTC   running
+hunter-opencode-1   2026-09-22 16:37:51 +0000 UTC   exited      ← 人为停掉的那一个
+hunter-postgres-1   2026-09-22 16:37:51 +0000 UTC   running
+hunter-redis-1      2026-09-22 16:37:51 +0000 UTC   running
+hunter-web-1        2026-09-22 16:37:51 +0000 UTC   running
+-- 测后（diff 为空，六个 CreatedAt 全都没变，含 opencode）--
+完全一致：零重建，opencode 是被原地起起来的
+-- 这一次跑过的 compose 命令（launcher.log）--
+2026-09-23 02:49:18 [info] 开工前复查：Hunter 在跑，但 opencode 还没就绪（2598 毫秒）
+2026-09-23 02:49:21 [info] docker compose up -d --no-recreate opencode 完成
+2026-09-23 02:49:34 [info] 开工前复查发现这一套已经在正常运行，本次不做任何安装动作
+（只有这一条 `up -d --no-recreate opencode`：没有取 compose、没有写 .env、没有 pull）
+
+== 场景 G · 本项目配置缺了一半（docker-compose.yml 被挪走）→ 走完整安装（2026-09-23 03:0x）==
+-- 完整安装跑完之后，六个容器的 CreatedAt 与测前 diff 仍然为空 --
+一致：配置没变，`compose up` 也没重建
+-- sticky 三把口令一个都没换（与 .env 备份逐项比 md5 前 8 位）--
+JWT_SECRET        前 9ee4ea85  后 9ee4ea85  一致
+POSTGRES_PASSWORD 前 d5a30daf  后 d5a30daf  一致
+OPENCODE_PASS     前 092a952e  后 092a952e  一致
+
+== 收尾复验（2026-09-23 04:2x，全新装好的一套 ~/.hunter）==
+第一次 --auto：装好，用时 72 秒
+第二次 --auto：用时 2 秒 · 0 token · 容器 CreatedAt diff 为空 → 零重建 ✓
+输出原话：「✓ 没有重新安装：这一次没有重新下载任何镜像，健康的容器也一个都没重建。打开 http://localhost:3101」

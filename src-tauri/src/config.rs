@@ -34,6 +34,30 @@ const ENV_TEMPLATE: &str = include_str!("../../templates/env.template");
 /// compose 项目名。总控规则要求固定为 `hunter`，与用户手工部署的 `hunter-community` 互不干扰。
 pub const PROJECT: &str = "hunter";
 
+/// compose 在 `COMPOSE_FILE` 里用哪个分隔符（I11 · U5）。
+///
+/// compose 自己的默认值是平台相关的（POSIX `:`、Windows `;`），
+/// 我们**连 `COMPOSE_PATH_SEPARATOR` 一起写死**，不去赌它的默认值。
+pub const fn compose_path_separator() -> &'static str {
+    if cfg!(windows) {
+        ";"
+    } else {
+        ":"
+    }
+}
+
+/// `.env` 里 `COMPOSE_FILE` 的值：两份文件的**文件名**，顺序就是
+/// [`crate::compose`] 里 `-f` 的顺序（覆盖文件必须排在后面）。
+///
+/// 写文件名而不是绝对路径：compose 按当前目录解析相对路径，
+/// 而这一行存在的意义正是「用户 `cd ~/.hunter/app` 之后直接跑 compose」。
+pub fn compose_file_value() -> String {
+    format!(
+        "docker-compose.yml{}docker-compose.launcher.yml",
+        compose_path_separator()
+    )
+}
+
 // ── launcher.toml ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -526,7 +550,9 @@ pub struct PortChange {
 /// 比 `127.0.0.1` 更保守，所以两种取值的结果相同 ——
 /// I7 起 web 也只绑本机了，但探测仍然按通配来（宁可多报一次冲突，不要装到一半才炸）。
 pub fn port_free(port: u16, _all_interfaces: bool) -> bool {
-    crate::ports::verdict_now(port, &[PROJECT]).free
+    // `usable()` 而不是 `free`：被**我们自己这一套**占着的端口对这次安装来说照样可用
+    // （I11 起这两件事在 [`crate::ports::Verdict`] 里是分开的）
+    crate::ports::verdict_now(port, &[PROJECT]).usable()
 }
 
 /// 从 `want` 开始往上找一个没被占的端口，最多找 200 个。
@@ -545,7 +571,7 @@ fn next_free(
                 return Ok((p, Vec::new()));
             }
             let v = sv.verdict(p, &[PROJECT]);
-            if v.free {
+            if v.usable() {
                 return Ok((p, first_occ));
             }
             // 只记**原本想要的那个端口**被谁占着 —— 用户关心的是这一条
@@ -831,6 +857,12 @@ pub fn render_env(input: &EnvInput, sticky: &StickySecrets) -> AppResult<String>
 
     let sanitize = if input.schema_sanitize { "1" } else { "0" };
     let out = ENV_TEMPLATE
+        // I11 · U5：让在 ~/.hunter/app 里直接敲 `docker compose up -d` 的人
+        // 也一定带上覆盖文件。启动器自己走的是命令行 `-f`，那个优先级更高，
+        // 所以这三行不会改变启动器的行为，只兜住手工操作。
+        .replace("{{COMPOSE_PROJECT_NAME}}", PROJECT)
+        .replace("{{COMPOSE_PATH_SEPARATOR}}", compose_path_separator())
+        .replace("{{COMPOSE_FILE}}", &compose_file_value())
         .replace("{{HUNTER_VERSION}}", input.tag)
         .replace("{{HUNTER_REGISTRY}}", input.registry_prefix)
         .replace("{{WEB_HOST_PORT}}", &input.ports.web.to_string())
@@ -945,7 +977,13 @@ fn verify_env_written(text: &str, input: &EnvInput) -> AppResult<()> {
     let opencode = input.ports.opencode.to_string();
     let postgres = input.ports.postgres.to_string();
     let redis = input.ports.redis.to_string();
-    let expect: [(&str, &str); 11] = [
+    let compose_file = compose_file_value();
+    let expect: [(&str, &str); 14] = [
+        // I11 · U5：这三项写漏了，手工跑 compose 就会把端口重建成 0.0.0.0，
+        // 所以它们和 key、端口一样要读回来对账
+        ("COMPOSE_PROJECT_NAME", PROJECT),
+        ("COMPOSE_PATH_SEPARATOR", compose_path_separator()),
+        ("COMPOSE_FILE", &compose_file),
         ("HUNTER_VERSION", input.tag),
         ("HUNTER_REGISTRY", input.registry_prefix),
         ("HUNTER_API_KEY", input.hunter_key),
@@ -1436,6 +1474,63 @@ mod tests {
         assert!(validate_compose("<html>404: Not Found</html>").is_err());
         let almost = format!("services:\n  web:\n{}", "# 填充\n".repeat(400));
         assert!(validate_compose(&almost).is_err(), "少了别的服务就该拦下");
+    }
+
+    /// **手工在 `~/.hunter/app` 里跑 compose 的人也要带上覆盖文件**（I11 · U5）。
+    ///
+    /// 2026-09-22 22:01 本地 Claude 在用户 Mac 上跑
+    /// `docker compose -p hunter up -d` 漏了 `-f docker-compose.launcher.yml`，
+    /// 容器被重建成 0.0.0.0 —— 五个端口在局域网可达了约 50 分钟。
+    /// 这三行就是拿来兜住那种情形的：compose 会从项目目录的 `.env` 读它们。
+    #[test]
+    fn env_里带着_compose_自己的那三项() {
+        let ports = Ports {
+            web: 3100,
+            api: 8100,
+            opencode: 3921,
+            postgres: 5442,
+            redis: 6479,
+        };
+        let m = parse_env(&render_env(&input(&ports, "gateway"), &StickySecrets::default()).unwrap());
+        assert_eq!(m.get("COMPOSE_PROJECT_NAME").map(String::as_str), Some(PROJECT));
+        let sep = m
+            .get("COMPOSE_PATH_SEPARATOR")
+            .expect("分隔符要写死，不赌 compose 的平台默认值");
+        assert_eq!(sep, compose_path_separator());
+        let files = m.get("COMPOSE_FILE").expect("COMPOSE_FILE 必须有");
+        let parts: Vec<&str> = files.split(sep.as_str()).collect();
+        assert_eq!(
+            parts,
+            vec!["docker-compose.yml", "docker-compose.launcher.yml"],
+            "覆盖文件必须排在后面，否则 !override 覆盖不到（红线 4 就白写了）"
+        );
+    }
+
+    /// 这三项要和 key、端口一样**写完读回来对账** —— 漏写一项，
+    /// 手工跑一次 compose 就能把端口重新开到局域网上。
+    #[test]
+    fn 少了_compose_那三项就不算写成功() {
+        let ports = Ports {
+            web: 3100,
+            api: 8100,
+            opencode: 3921,
+            postgres: 5442,
+            redis: 6479,
+        };
+        let i = input(&ports, "gateway");
+        let good = render_env(&i, &StickySecrets::default()).unwrap();
+        verify_env_written(&good, &i).expect("正常渲染出来的要过");
+        for key in ["COMPOSE_PROJECT_NAME", "COMPOSE_FILE", "COMPOSE_PATH_SEPARATOR"] {
+            let broken: String = good
+                .lines()
+                .filter(|l| !l.starts_with(&format!("{key}=")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                verify_env_written(&broken, &i).is_err(),
+                "{key} 被删掉了，对账应该失败"
+            );
+        }
     }
 
     #[test]

@@ -25,11 +25,20 @@ export function AssistPanel({
   errorMessage,
   stage,
   className = '',
+  onActed,
 }: {
   errorCode?: string
   errorMessage?: string
   stage?: string
   className?: string
+  /**
+   * 规则层或 AI **跑完任何一个动作**之后叫一声（I11 · U1）。
+   *
+   * 错误页拿它去重查「现在到底好了没有」。0.1.9 那次，AI 读了四遍日志、
+   * 动作也跑过，界面自始至终没有重新判断过现状 —— 于是服务早就好了，
+   * 用户看到的还是 41 分钟前那张失败卡片。
+   */
+  onActed?: () => void
 }) {
   const { t } = useStore()
   const [st, setSt] = useState<AssistState | null>(null)
@@ -62,6 +71,8 @@ export function AssistPanel({
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(null)
+      // 成功也好失败也好，机器的状态**可能已经变了** —— 让外面重新判一次
+      onActed?.()
     }
   }
 
@@ -262,6 +273,15 @@ export function AssistPanel({
         </Button>
         <Button size="sm" variant="ghost" onClick={() => setShowReport((v) => !v)}>
           {showReport ? t.assist.hideReport : t.assist.showReport}
+        </Button>
+        {/* I11 · U3：诊断卡片上也要有一条出路。回托盘，不退出、不停容器 */}
+        <Button
+          size="sm"
+          variant="ghost"
+          data-testid="assist-close"
+          onClick={() => void ipc.windowHide()}
+        >
+          {t.error.close}
         </Button>
         <div className="ml-auto flex items-center gap-3 text-xs text-muted">
           {!st.enabled && <span>{t.assist.offHint}</span>}
