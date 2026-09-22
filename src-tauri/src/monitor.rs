@@ -157,7 +157,7 @@ fn home_disk() -> Option<(String, u64, u64)> {
             continue;
         }
         let len = mp.as_os_str().len();
-        if best.as_ref().is_none_or(|b| len > b.0) {
+        if best.as_ref().map(|b| len > b.0).unwrap_or(true) {
             best = Some((
                 len,
                 mp.to_string_lossy().into_owned(),
@@ -208,13 +208,13 @@ fn mem_pressure() -> Result<(String, Level), String> {
             })
             .and_then(|v| v.parse::<f32>().ok())
             .ok_or_else(|| "/proc/pressure/memory 里没有 some avg10 这一项".to_string())?;
-        return Ok(if avg10 >= 10.0 {
+        Ok(if avg10 >= 10.0 {
             (format!("危急（PSI avg10 {avg10:.1}%）"), Level::Crit)
         } else if avg10 >= 1.0 {
             (format!("吃紧（PSI avg10 {avg10:.1}%）"), Level::Warn)
         } else {
             (format!("正常（PSI avg10 {avg10:.1}%）"), Level::Ok)
-        });
+        })
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -263,8 +263,7 @@ pub fn runtime() -> RuntimeMetrics {
         Ok((total, used)) => {
             m.mem_total_bytes = Some(total);
             m.mem_used_bytes = Some(used);
-            if total > 0 {
-                let pct = used * 100 / total;
+            if let Some(pct) = (used * 100).checked_div(total) {
                 m.mem_level = if pct >= u64::from(cfg.monitor.vm_mem_warn_pct) {
                     Level::Warn
                 } else {
@@ -283,8 +282,7 @@ pub fn runtime() -> RuntimeMetrics {
         Ok((total, used)) => {
             m.disk_total_bytes = Some(total);
             m.disk_used_bytes = Some(used);
-            if total > 0 {
-                let pct = used * 100 / total;
+            if let Some(pct) = (used * 100).checked_div(total) {
                 m.disk_level = if pct >= u64::from(cfg.monitor.vm_disk_warn_pct) {
                     Level::Warn
                 } else {
@@ -454,7 +452,7 @@ pub fn parse_stats(stdout: &str) -> BTreeMap<String, (f32, u64, Option<u64>)> {
             continue;
         };
         let mut parts = f[2].split('/');
-        let Some(used) = parts.next().and_then(|x| parse_binary_size(x)) else {
+        let Some(used) = parts.next().and_then(parse_binary_size) else {
             continue;
         };
         let limit = parts.next().and_then(parse_binary_size);
