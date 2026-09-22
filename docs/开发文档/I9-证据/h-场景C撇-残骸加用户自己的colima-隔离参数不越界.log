@@ -1,0 +1,16 @@
+=== C′ · 残骸 + 用户自己也有 colima（I9 报告 6.6 那一条）===
+--- 父进程里故意塞上我们自己的 COLIMA_HOME / DOCKER_HOST，看子进程收到什么 ---
+## 启动器已经替你做了这几步（全自动档）
+✓ 启动 Colima：退出码 Some(0)
+
+## 诊断结论（确定性规则 · daemon-down-app-installed）
+--- 用户那份 colima 实际收到的 ---
+argv: start --profile myprofile
+COLIMA_HOME=<没设,正确>
+LIMA_HOME=<没设,正确>
+DOCKER_HOST=<没设,正确>
+--- 单测（真的有 ~/.colima/myprofile 时走的是放行那一支）---
+test assist::guard::tests::有残骸时起用户原有的_profile_照样放行 ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 517 filtered out; finished in 0.00s
+test assist::guard::tests::不许拿用户的_colima_去写我们自己的家 ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 517 filtered out; finished in 0.00s
