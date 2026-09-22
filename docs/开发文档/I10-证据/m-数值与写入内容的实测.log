@@ -1,0 +1,24 @@
+# I10 · 数值与写入内容的实测（测试机 Linux，2026-09-22）
+
+## 1 · 要写进虚拟机的 systemd 服务，语法过不过
+systemd-analyze verify 退出码=0
+[Unit]
+Description=Hunter: write /etc/resolv.conf (this image has no systemd-resolved)
+Documentation=https://github.com/agentpit-io/HunterLauncher
+Before=docker.service containerd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/cp --remove-destination /etc/hunter/resolv.conf /etc/resolv.conf
+
+[Install]
+WantedBy=multi-user.target
+
+## 2 · 两个国内公共 DNS 在容器里真的能解析并连上网关吗
+223.6.6.6        HTTP 401 · 0.753385s
+119.29.29.29     HTTP 401 · 1.079962s
+
+## 3 · 容器里没有 DNS 时 curl 的原话（规则层就认这几句）
+nameserver 不应答：  curl: (28) Resolving timed out after 15000 milliseconds
+一条 nameserver 都没有： curl: (6) Could not resolve host: hunter.agentpit.io

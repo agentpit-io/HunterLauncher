@@ -1,0 +1,8 @@
+
+Hunter 启动器 · 网络必检
+──────────────────────────────────
+  虚拟机 DNS：不适用（内置运行时的虚拟机没在跑）
+  容器出网：容器连不上模型网关：这一次没能做这项探测（docker: Error response from daemon: No such image: ghcr.io/agentpit-io/hunter-community-api:1.2.0）
+    命令：/usr/bin/docker run --rm --pull=never --entrypoint curl ghcr.io/agentpit-io/hunter-community-api:1.2.0 -sS -o /dev/null -w %{http_code} --max-time 20 https://hunter.agentpit.io/api/saas/llm/v1/models
+
+（容器那一项这次没能测 —— 不当成失败，也不当成通过）

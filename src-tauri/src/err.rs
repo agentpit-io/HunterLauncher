@@ -55,6 +55,24 @@ pub enum Code {
     /// **这是本机配置的问题，换源永远修不好**。单独一个码，规则层才能给出
     /// 对症的动作（补 PATH 重试 / 另起一份不带 credsStore 的 docker 配置）。
     CredHelper,
+    /// **Hunter 自己那台虚拟机没有可用的 DNS**（I10）。
+    ///
+    /// 0.1.9 在用户 Mac 上这个现场被报成了 `E_START_TIMEOUT`（「180 秒还有 1 个
+    /// 服务没就绪」），规则层因此 `unknown`、诊断助手读了 4 次日志也没看出来。
+    /// 真正的事实是：启动器自带的那份 Ubuntu 24.04 minimal 镜像里没有
+    /// systemd-resolved，而 `/etc/resolv.conf` 出厂就是一条指向它的断链 ——
+    /// **虚拟机和它里面所有容器都没有任何 DNS**。
+    ///
+    /// 为什么必须单独一个码：这一条有确定的修法（在虚拟机里把 resolv.conf 写成
+    /// 普通文件，见 [`crate::runtime::vmdns`]），而「启动超时」没有。
+    /// 错误码错了，对症的那条规则就永远匹配不上 —— I5 在端口冲突上踩过一模一样的坑。
+    RuntimeNoDns,
+    /// **容器连不上模型网关**（I10）。
+    ///
+    /// 和上一条分开，因为「容器不通」不等于「虚拟机没 DNS」：用户自己的 Docker
+    /// 上也可能出现（代理只放行了宿主机、公司网络挡了 443），
+    /// 那种情况启动器**不能**去改他机器的网络设置，只能如实说清楚。
+    ContainerOffline,
     /// 网关限流（HTTP 429）。I2 实测的真实响应：
     /// `{"error":{"message":"请求太频繁了：每分钟最多 20 次…","type":"rate_limit_error",
     /// "code":"rate_limited","retry_after":60}}`，响应头 `retry-after: 60`。
@@ -82,6 +100,8 @@ impl Code {
             Code::PortInUse => "E_PORT_IN_USE",
             Code::PortConflict => "E_PORT_CONFLICT",
             Code::CredHelper => "E_CRED_HELPER",
+            Code::RuntimeNoDns => "E_RUNTIME_NO_DNS",
+            Code::ContainerOffline => "E_CONTAINER_OFFLINE",
             Code::StartTimeout => "E_START_TIMEOUT",
             Code::ProxyBlock => "E_PROXY_BLOCK",
             Code::UpdateFailed => "E_UPDATE_FAILED",
@@ -107,6 +127,8 @@ impl Code {
             Code::PortInUse => "端口被占用",
             Code::PortConflict => "Docker 说端口已经被占了",
             Code::CredHelper => "Docker 找不到它自己的凭据助手",
+            Code::RuntimeNoDns => "Hunter 自己那台虚拟机没有可用的 DNS",
+            Code::ContainerOffline => "容器连不上 Hunter 的模型网关",
             Code::StartTimeout => "服务在 180 秒内没有全部就绪",
             Code::ProxyBlock => "代理挡住了容器的网络",
             Code::UpdateFailed => "升级失败，已回滚",
@@ -145,6 +167,8 @@ impl Code {
         Code::PortInUse,
         Code::PortConflict,
         Code::CredHelper,
+        Code::RuntimeNoDns,
+        Code::ContainerOffline,
         Code::StartTimeout,
         Code::ProxyBlock,
         Code::UpdateFailed,

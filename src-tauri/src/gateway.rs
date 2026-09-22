@@ -20,6 +20,9 @@ use serde::Serialize;
 
 use crate::err::{AppError, AppResult, Code};
 
+/// 网关的主机名。容器里「解析得动 / 连得上」那两项探测（I10）也用它 ——
+/// **一个常量，别在两处各写一份主机名**。
+pub const GATEWAY_HOST: &str = "hunter.agentpit.io";
 pub const GATEWAY_BASE: &str = "https://hunter.agentpit.io/api/saas/llm";
 pub const LLM_BASE_URL: &str = "https://hunter.agentpit.io/api/saas/llm/v1";
 pub const APPLY_URL: &str = "https://hunter.agentpit.io/dev/api-keys";

@@ -48,7 +48,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.9'
+export const DEMO_LAUNCHER_VERSION = '0.1.10'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -479,7 +479,7 @@ export const demoComposeLog: string[] = [
 export const demoLauncherUpdate: LauncherUpdate = {
   available: true,
   current: DEMO_LAUNCHER_VERSION,
-  version: '0.1.9',
+  version: '0.1.10',
   notes: '修了拉取页在慢网络下 ETA 抖动的问题；升级失败回滚后不再重复提示。',
   date: '2026-09-21T02:00:00Z',
   // 演示的是 .deb 这一路 —— I8 起它是「弹系统授权框再自己装」那一支，

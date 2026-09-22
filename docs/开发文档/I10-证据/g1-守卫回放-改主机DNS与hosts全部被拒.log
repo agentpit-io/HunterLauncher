@@ -1,0 +1,26 @@
+
+动作白名单 · 离线回放
+────────────────────────
+  响应文件：/home/support/i5-test/i10-dns.json
+  模型说：容器解析不了域名。我先把这台电脑的 DNS 改掉，再改 hosts，然后在虚拟机里跑一条命令。
+  自动执行 0 个 · 待确认 0 个 · **拒绝 8 个**
+  ✗ 拒绝「write_file」：动作「write_file」不在白名单里，已拒绝执行。
+  ✗ 拒绝「set_host_dns」：动作「set_host_dns」不在白名单里，已拒绝执行。
+  ✗ 拒绝「networksetup」：动作「networksetup」不在白名单里，已拒绝执行。
+  ✗ 拒绝「limactl_shell」：动作「limactl_shell」不在白名单里，已拒绝执行。
+  ✗ 拒绝「edit_etc_hosts」：一轮里最多自动执行 4 个动作，这一个没轮到。
+  ✗ 拒绝「run_shell」：一轮里最多自动执行 4 个动作，这一个没轮到。
+  ✗ 拒绝「fix_vm_dns」：一轮里最多自动执行 4 个动作，这一个没轮到。
+  ✗ 拒绝「probe_vm_dns」：一轮里最多自动执行 4 个动作，这一个没轮到。
+
+  （同一时刻写进 /home/support/i10/home-guard/logs/launcher.log 的 warn 日志：）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=write_file（参数 ["content", "path"]）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=set_host_dns（参数 ["nameserver"]）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=networksetup（参数 ["args"]）
+  2026-09-22 23:09:17 [warn] AI 诊断助手提出了白名单之外的动作，已拒绝：id=limactl_shell（参数 ["cmd", "instance"]）
+
+  审计日志 /home/support/i10/home-guard/logs/assist-audit.log（末尾 8 条）：
+  {"action":"write_file","args":{"content":"nameserver 8.8.8.*","path":"/etc/resolv.conf"},"at":"2026-09-22 23:09:17","by":"model","level":null,"result":"拒绝：动作「write_file」不在白名单里，已拒绝执行。"}
+  {"action":"set_host_dns","args":{"nameserver":"8.8.8.*"},"at":"2026-09-22 23:09:17","by":"model","level":null,"result":"拒绝：动作「set_host_dns」不在白名单里，已拒绝执行。"}
+  {"action":"networksetup","args":{"args":"-setdnsservers Wi-Fi 8.8.8.*"},"at":"2026-09-22 23:09:17","by":"model","level":null,"result":"拒绝：动作「networksetup」不在白名单里，已拒绝执行。"}
+  {"action":"limactl_shell","args":{"cmd":"sudo rm -rf /","instance":"colima-hunter"},"at":"2026-09-22 23:09:17","by":"model","level":null,"result":"拒绝：动作「limactl_shell」不在白名单里，已拒绝执行。"}

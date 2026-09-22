@@ -1,0 +1,30 @@
+启动器 0.1.9 · linux x86_64
+Docker DockerEngine · server Some("29.8.1") · compose Some("v5.5.1")
+docker 定位：/usr/bin/docker（PATH）
+tag 1.2.0 · 源 ghcr.io/agentpit-io
+模型 gateway · 
+
+## 启动器日志
+2026-09-22 23:06:32 [info] headless 模式启动，参数 action=Some("check-net") registry=None
+2026-09-22 23:06:32 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-22 23:06:32 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+2026-09-22 23:06:32 [info] compose 定位：docker compose 插件 v5.5.1
+2026-09-22 23:07:07 [info] headless 模式启动，参数 action=Some("diagnose") registry=None
+2026-09-22 23:07:07 [info] docker 定位：/usr/bin/docker（PATH）
+2026-09-22 23:07:07 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+2026-09-22 23:07:08 [info] compose 定位：docker compose 插件 v5.5.1
+
+## 容器日志
+compose file "<用户目录>/i10/home-ok/app/docker-compose.yml" is invalid: open <用户目录>/i10/home-ok/app/docker-compose.yml: no such file or directory
+
+## Docker 现在可用，而这一套还没装完 —— 界面上会自动接着往下装
+
+## 诊断结论（确定性规则 · container-offline-user-docker）
+容器连不上 Hunter 的模型网关
+起了一个一次性容器去连 hunter.agentpit.io，没连上。
+这一套跑在**你自己装的 Docker** 上，容器的 DNS 与出网由它和你的网络环境决定。
+启动器**不会去改你电脑的 DNS、hosts、代理或防火墙设置** —— 
+这是写进程序里的红线，不是一句承诺。
+常见的两种原因：代理只放行了本机、没放行容器网段；或者网络挡了 443。
+容器起得来但问不出话时，先从这两条查。
+

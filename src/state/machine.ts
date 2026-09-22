@@ -63,6 +63,12 @@ export type ErrorCode =
   // 和 E_DAEMON_DOWN 分开，是因为两个现场的解法完全不同 —— 0.1.8 在用户 Mac 上
   // 把前者判成了后者，于是去「启动用户的 Colima」，而用户根本没装过 Colima
   | 'E_BUILTIN_DOWN'
+  // I10 补的两个。0.1.9 在用户 Mac 上这两个现场都被报成了 E_START_TIMEOUT，
+  // 规则层因此 unknown：启动器自带的虚拟机镜像里没有 systemd-resolved，
+  // /etc/resolv.conf 出厂就是断链 —— 虚拟机和它里面所有容器都没有 DNS。
+  // 「服务没就绪」和「根本没有 DNS」的修法完全不同，错误码必须分开
+  | 'E_RUNTIME_NO_DNS'
+  | 'E_CONTAINER_OFFLINE'
   | 'E_PROXY_BLOCK'
   | 'E_UPDATE_FAILED'
   // 下面三个方案 §18 没有，是实现时按真实失败模式补的：
@@ -90,6 +96,8 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_CRED_HELPER',
   'E_START_TIMEOUT',
   'E_BUILTIN_DOWN',
+  'E_RUNTIME_NO_DNS',
+  'E_CONTAINER_OFFLINE',
   'E_PROXY_BLOCK',
   'E_UPDATE_FAILED',
   'E_COMPOSE_FETCH',
@@ -179,6 +187,8 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   E_CRED_HELPER: 'AutoInstalling',
   E_START_TIMEOUT: 'AutoInstalling',
   E_BUILTIN_DOWN: 'AutoInstalling',
+  E_RUNTIME_NO_DNS: 'AutoInstalling',
+  E_CONTAINER_OFFLINE: 'AutoInstalling',
   E_COMPOSE_FETCH: 'AutoInstalling',
   E_CONFIG_WRITE: 'AutoInstalling',
 }

@@ -8,5 +8,7 @@ pub mod effective;
 pub mod elevate;
 pub mod env;
 pub mod manifest;
+pub mod netcheck;
 pub mod orbstack;
+pub mod vmdns;
 pub mod which;

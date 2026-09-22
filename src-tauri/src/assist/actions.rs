@@ -336,6 +336,38 @@ pub const ACTIONS: &[Spec] = &[
         params: &[],
         user_only: false,
     },
+    // ── I10（虚拟机 DNS）─────────────────────────────────────────────
+    Spec {
+        id: "probe_vm_dns",
+        level: Level::ReadOnly,
+        title: "查一下 Hunter 那台虚拟机有没有 DNS",
+        why: "容器解析不了域名时，根子多半在虚拟机的 /etc/resolv.conf 上",
+        desc: "只读：在 Hunter 自己那台虚拟机里读一次 /etc/resolv.conf，并解析一次 hunter.agentpit.io，\
+               返回读到的原文与解析结果。不改任何东西，也不碰你这台电脑的网络设置。没有参数。",
+        params: &[],
+        user_only: false,
+    },
+    Spec {
+        id: "probe_container_network",
+        level: Level::ReadOnly,
+        title: "起一个一次性容器，试试能不能连上模型网关",
+        why: "六个服务全绿也不等于容器能对话 —— 连不上网关就问不出任何一句话",
+        desc: "只读：用一个已经拉好的 Hunter 镜像起一个 --rm 的一次性容器，在里面 curl 一次模型网关，\
+               返回 HTTP 状态码或原始报错。**不带 key**。不改任何东西。没有参数。",
+        params: &[],
+        user_only: false,
+    },
+    Spec {
+        id: "fix_vm_dns",
+        level: Level::Safe,
+        title: "给 Hunter 那台虚拟机写好 DNS",
+        why: "启动器自带的这份虚拟机镜像里没有 systemd-resolved，/etc/resolv.conf 出厂就是断链",
+        desc: "在**Hunter 自己那台虚拟机**（colima profile hunter）里把 /etc/resolv.conf 写成普通文件，\
+               并装一个开机重写它的 systemd 服务；已经起着的容器拿不到新 DNS 时再重启虚拟机里的 dockerd。\
+               **只动这台虚拟机**：你 Mac 的 DNS、hosts、代理、防火墙一个字节都不碰。没有参数。",
+        params: &[],
+        user_only: false,
+    },
     Spec {
         id: "reuse_existing_hunter",
         level: Level::Sensitive,
@@ -355,6 +387,18 @@ pub const ACTIONS: &[Spec] = &[
         user_only: false,
     },
 ];
+
+/// 这几个动作**改变不了「这一步能不能成」这件事**（I10 实测补的）。
+///
+/// 现场：0.1.10 在测试机上对着一台「容器没有 DNS」的 docker 跑全自动安装，
+/// 规则层（正确地）认定这一类修不了、让路给模型，模型（也合理地）选了
+/// `export_feedback_bundle`。**问题出在总指挥**：它把「跑成了一个动作」
+/// 当成「做了点什么，值得重跑一次」，于是
+/// 「生成诊断包 → 重跑下载组件 → 又失败 → 生成诊断包」转了 4 个回合、
+/// 白花 22,400 token，最后还是同一句话。
+///
+/// 生成一个 zip 不会让容器多出一条 DNS。这张表就是把这件显然的事写进代码。
+pub const REPAIRS_NOTHING: &[&str] = &["export_feedback_bundle"];
 
 impl Spec {
     /// I4 的两分法（只读 / 改动系统）。界面还在用，由 `level` 推出，不再单独存一份。
@@ -663,6 +707,34 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             }
             p.summary = Some(s);
         }
+        // ── I10 ─────────────────────────────────────────────────────────
+        "probe_vm_dns" => {
+            p.summary = Some(format!(
+                "在虚拟机 {} 里读一次 /etc/resolv.conf 并解析一次 {}（只读）",
+                crate::runtime::vmdns::instance(),
+                crate::gateway::GATEWAY_HOST
+            ))
+        }
+        "probe_container_network" => {
+            p.summary = Some(match crate::runtime::netcheck::probe_image() {
+                Some(img) => {
+                    format!("用镜像 {img} 起一个 --rm 的一次性容器，curl 一次模型网关（不带 key）")
+                }
+                None => "本机还没有可以用来做这次探测的 Hunter 镜像".to_string(),
+            })
+        }
+        "fix_vm_dns" => {
+            p.summary = Some(format!(
+                "在虚拟机 {} 里把 /etc/resolv.conf 写成普通文件（nameserver {}），\
+                 并装上开机重写它的 hunter-dns.service。你 Mac 的网络设置一个字节都不动",
+                crate::runtime::vmdns::instance(),
+                crate::runtime::vmdns::NAMESERVERS
+                    .iter()
+                    .map(|(ns, _)| *ns)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            ))
+        }
         "uninstall_builtin_runtime" => {
             p.summary = Some(format!(
                 "删掉 colima 的 {} profile 与 {}（都是启动器自己生成的）",
@@ -698,13 +770,11 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
                 )
             })?;
             p.summary = Some(format!(
-                "把「{}」记进 launcher.toml，启动器改为管理它{}。不装新的一套，                 不改它的配置，任何情况下都不删它的卷。",
+                "把「{}」记进 launcher.toml，启动器改为管理它{}。\
+                 不装新的一套，不改它的配置，任何情况下都不删它的卷。",
                 c.project,
                 if c.manageable() {
-                    format!(
-                        "（工作目录 {}）",
-                        crate::redact::mask_home(&c.working_dir)
-                    )
+                    format!("（工作目录 {}）", crate::redact::mask_home(&c.working_dir))
                 } else {
                     "（读不到它的 compose 文件，所以只能看状态与日志）".to_string()
                 }
@@ -979,6 +1049,36 @@ pub fn execute_as(
             }
             let started = crate::runtime::builtin::start(&mut pr)?;
             format!("{cleaned}；{started}")
+        }
+        // ── I10 ─────────────────────────────────────────────────────────
+        "probe_vm_dns" => {
+            let d = crate::runtime::vmdns::probe()?;
+            let mut s = d.one_line();
+            if let crate::runtime::vmdns::ResolvState::File(text) = &d.resolv {
+                s.push_str("\n/etc/resolv.conf 原文：\n");
+                s.push_str(text.trim());
+            }
+            s
+        }
+        "probe_container_network" => crate::runtime::netcheck::probe().one_line(),
+        "fix_vm_dns" => {
+            let mut said = |line: &str| crate::linfo!("修虚拟机 DNS：{line}");
+            let mut nb = |_: u64, _: u64| {};
+            let no_cancel = || false;
+            let mut pr = crate::runtime::builtin::Progress {
+                say: &mut said,
+                bytes: &mut nb,
+                cancel: &no_cancel,
+            };
+            let d = crate::runtime::vmdns::ensure(&mut pr)?;
+            if !d.healthy() {
+                // **修完还是不通就如实报失败**，不拿一句「已处理」糊弄过去（红线 1）
+                return Err(AppError::new(
+                    Code::RuntimeNoDns,
+                    format!("修完之后虚拟机还是解析不了域名：{}", d.one_line()),
+                ));
+            }
+            d.one_line()
         }
         "uninstall_builtin_runtime" => crate::runtime::builtin::uninstall()?,
         "reuse_existing_hunter" => {
