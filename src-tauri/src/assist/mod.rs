@@ -149,6 +149,15 @@ pub fn diagnose_and_fix(
     diagnose_inner(error_code, error_message, stage, key, true, Vec::new(), 0)
 }
 
+/// 这个级别能不能在**诊断面板这条路**上自动跑（I9 的 P0-3）。
+///
+/// 只有 Safe / ReadOnly。`Sensitive` 走总指挥那条完整通路 ——
+/// 那边在执行前还有复核员那道门，这里没有；级别放宽一档、又少一道门，
+/// 两件事凑一起就是「悄悄把门拆了」。
+fn auto_runnable_level(level: guard::Level) -> bool {
+    level != guard::Level::Sensitive
+}
+
 /// 同一个问题最多自动跑几轮动作。到头了就停下来如实说，不无限试（I9）。
 const MAX_AUTO_ROUNDS: usize = 3;
 
@@ -185,6 +194,13 @@ fn diagnose_inner(
         let todo: Vec<actions::Plan> = rule
             .actions
             .iter()
+            // **只自动跑 Safe / ReadOnly**（任务书 P0-3 的原话就是「Safe 级动作」）。
+            //
+            // `Sensitive` 不在这条路上：总指挥那一侧在执行它之前还有**复核员**
+            // 那道门（`reviewer::needs_review`），这里没有。级别放宽一档、
+            // 少一道门——两件事凑一起就是「悄悄把门拆了」。
+            // 真要装运行时，走的是总指挥那条完整通路。
+            .filter(|p| auto_runnable_level(p.level))
             .filter(|p| !mode.needs_confirm(p.level))
             .filter(|p| !p.user_only)
             .filter(|p| !auto_ran.iter().any(|r| r.id == p.id))
@@ -525,6 +541,36 @@ mod tests {
         let e = run_rule_action("不存在的动作", None).expect_err("该拒绝");
         assert!(e.msg.contains("不在这一条建议里"), "{}", e.msg);
         reset().unwrap();
+    }
+
+    /// **全自动档下自动跑掉的只能是 Safe / ReadOnly。**
+    ///
+    /// `Sensitive` 走的是总指挥那条完整通路（那边在执行前还有复核员那道门）。
+    /// 在诊断面板这条路上放宽一档、又少一道门，等于悄悄把门拆了。
+    #[test]
+    fn 诊断面板这条路不自动跑_sensitive_动作() {
+        let _g = crate::paths::test_home("assist-no-sensitive");
+        // 表里每一个 Sensitive 动作都要被这道过滤挡住
+        // 造一份「规则层给了一个 Sensitive 动作」的建议，走 `auto_runnable`
+        // 那一道过滤 —— 它就是 `diagnose_inner` 里用的同一个判据
+        let sensitive: Vec<&'static actions::Spec> = actions::ACTIONS
+            .iter()
+            .filter(|s| s.level == guard::Level::Sensitive)
+            .collect();
+        assert!(
+            !sensitive.is_empty(),
+            "动作表里应当有 Sensitive 动作，否则这条测试没有意义"
+        );
+        for spec in sensitive {
+            assert!(
+                !auto_runnable_level(spec.level),
+                "{} 是 Sensitive，不该在诊断面板这条路上自动跑",
+                spec.id
+            );
+        }
+        // 反过来：Safe / ReadOnly 放行
+        assert!(auto_runnable_level(guard::Level::Safe));
+        assert!(auto_runnable_level(guard::Level::ReadOnly));
     }
 
     #[test]
