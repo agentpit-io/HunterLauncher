@@ -147,6 +147,16 @@ export type Event =
   | { type: 'BACK' }
   | { type: 'RETRY' }
   /**
+   * **复查发现它其实已经在正常跑了**（I11 的 U1）。
+   *
+   * 和 `AUTO_DONE` 的区别：那个是「这一次装完了」，这个是「根本没装，
+   * 因为本来就是好的」。两者都该落到运行面板，但**不经过完成页** ——
+   * 完成页会说「装好了」，而这一次一个字节都没下载。
+   *
+   * 从任何状态都能进（错误页、过程流、向导中途都可能收到）。
+   */
+  | { type: 'ALREADY_RUNNING' }
+  /**
    * 后端把 Docker 修好并已经自己把安装接着跑起来了（I9 的 P0-3）。
    *
    * 和 `RETRY` 的区别：`RETRY` 是用户点的，`RESUME_INSTALL` 是后端说的，
@@ -218,6 +228,15 @@ export function transition(state: State, event: Event): State {
   // 已经在那一页上就原地不动（那一页自己会从快照里把事件补齐）。
   if (event.type === 'RESUME_INSTALL') {
     return state.name === 'AutoInstalling' ? state : s('AutoInstalling')
+  }
+
+  // **复查说它已经在跑了 —— 从哪一页都直接去运行面板**（I11 的 U1）。
+  //
+  // 0.1.9 在用户 Mac 上，六个服务 22:05 就全绿了，界面一直到 22:50 还挂着
+  // 21:39 那张「出错了」。界面必须跟上现实，而不是让用户对着一张旧卡片
+  // 去点「重试」（点下去的结果是重新下载 849 MB）。
+  if (event.type === 'ALREADY_RUNNING') {
+    return state.name === 'Ready' ? state : s('Ready')
   }
 
   if (state.name === 'Error') {

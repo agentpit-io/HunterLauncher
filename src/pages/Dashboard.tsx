@@ -34,7 +34,7 @@ import { useStore } from '../state/context'
  * 按总控规则红线 1，拿不到的数字宁可空着也不编 —— 演示数据模式下同样是「—」。
  */
 export function Dashboard() {
-  const { t, locale, send, setOverlay, state } = useStore()
+  const { t, locale, send, setOverlay, state, notice, setNotice } = useStore()
   const rt = useAsync(() => ipc.runtimeStatus(), [])
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -192,6 +192,29 @@ export function Dashboard() {
               thousands(quota.limitDaily),
               quotaReset,
             )}
+          </div>
+        </div>
+      )}
+
+      {/* I11 · U1：错误页复查发现「其实已经好了」，自己把界面切到了这里 ——
+          切过来之后必须有人说一句刚才发生了什么，否则那一下会像界面自己乱跳。
+          这句话来自后端的复查结论（真实的服务数与 HTTP 状态码），不是前端编的。 */}
+      {notice && (
+        <div
+          className="mt-[14px] shrink-0 rounded-md border border-success/40 bg-success/5 px-4 py-2.5"
+          data-testid="recovered-banner"
+        >
+          <div className="flex items-center justify-between gap-[14px]">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-ok">{t.dashboard.recoveredTitle}</div>
+              <div className="mt-[4px] text-sm leading-[1.45] text-body">{notice}</div>
+              <div className="mt-[4px] text-xs leading-[1.45] text-muted">
+                {t.dashboard.recoveredBody}
+              </div>
+            </div>
+            <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
+              {t.common.gotIt}
+            </Button>
           </div>
         </div>
       )}

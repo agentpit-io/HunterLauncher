@@ -37,6 +37,14 @@ const DEMO_STATES: Record<string, State> = {
     from: 'Starting',
     detail: 'opencode 在 180 秒内没有变成 healthy（docker compose ps 的 Health 字段一直是 starting）',
   },
+  // I11：错误页复查发现「其实已经好了」。这一页会**自己跳到运行面板** ——
+  // 截出来的图正是那一跳之后的样子（顶上那条绿色横幅），也就是 U1 要的证据
+  'error-recovered': {
+    name: 'Error',
+    code: 'E_START_TIMEOUT',
+    from: 'AutoInstalling',
+    detail: 'opencode 在 180 秒内没有变成 healthy（docker compose ps 的 Health 字段一直是 starting）',
+  },
   // I9：上一次没装成功留下的内置运行时残骸（用户 Mac 上 0.1.8 那次的现场）。
   // 这一页同时也是「启动器已经替你做了这几步」那一块的样子
   'error-builtin': {
@@ -67,6 +75,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // 演示模式固定中文，截图才对得上视觉稿；正常模式按系统语言猜一个初值
   const [locale, setLocale] = useState<Locale>(() => (DEMO ? 'zh-CN' : guessLocale()))
   const [overlay, setOverlay] = useState<Overlay>(initialOverlay)
+  // 「刚才其实已经好了」那句话，跨页带一下（I11 · U1）
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -104,8 +114,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<Store>(
-    () => ({ state, send, locale, setLocale, t: dictOf(locale), overlay, setOverlay, demo: DEMO }),
-    [state, locale, overlay],
+    () => ({
+      state,
+      send,
+      locale,
+      setLocale,
+      t: dictOf(locale),
+      overlay,
+      setOverlay,
+      demo: DEMO,
+      notice,
+      setNotice,
+    }),
+    [state, locale, overlay, notice],
   )
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>

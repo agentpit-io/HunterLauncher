@@ -1,0 +1,28 @@
+
+Hunter 启动器 · AI 自动驾驶安装
+────────────────────────────────────────────
+工作目录 /home/support/.hunter-i10gui
+  从 /home/support/.hunter-launcher-test/key 读到一把 key（hunt_tools_****）
+  ✓ key 有效
+  授权档位：auto（全自动）
+  预算：单问题 4 回合 · 整次 10 回合 · 200000 token · 单次模型 45 秒
+
+[总览] 开始安装 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+… 先看看现在是什么情况
+[总览] 复查现状 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+   ✓ 查到的现状　Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）
+✓ 先看看现在是什么情况　Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）
+! 有容器的端口开到了本机之外　postgres、redis 现在绑在本机以外的地址上，同一个局域网里的其他机器能连到它
+   ✓ postgres 的现状　postgres（端口 5443）现在绑在 0.0.0.0 上，局域网里的其他机器能连到它
+   ✓ redis 的现状　redis（端口 6480）现在绑在 0.0.0.0 上，局域网里的其他机器能连到它
+   ✔ 已经按启动器的配置收回本机　重建了 postgres、redis，现在只有这台电脑能打开它们
+✔ 不用重装：Hunter 已经在运行　6 / 6 个服务健康，网页打得开。这一次没有下载任何东西，也没有动正在跑的容器。
+✓ 完成　打开 http://localhost:3101 就能用了
+[总览] 完成 · 已自动解决 1 个问题 · 回合 0/10 · token 0
+
+事件流：/home/support/.hunter-i10gui/logs/assist-events.jsonl
+审计日志：/home/support/.hunter-i10gui/logs/assist-audit.log
+统计：自动解决 1 个问题 · 0 个修复回合 · 0 token · 用时 5 秒
+
+✓ 没有重新安装：这一次没有重新下载任何镜像，健康的容器也一个都没重建。打开 http://localhost:3101
+EXIT=0

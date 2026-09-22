@@ -26,7 +26,9 @@ SETTLE="${SETTLE:-9}"
 # I7 又新增两页：dashboard-lan / settings-lan（升级上来、网页端口还对局域网开着的老机器）
 # I9 新增一页：error-builtin —— 上一次没装成功留下的内置运行时残骸
 # （用户 Mac 上 0.1.8 那次的现场），同时也是「启动器已经替你做了这几步」那一块的样子
-PAGES=(welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error error-builtin)
+# I11 新增一页：error-recovered —— 错误页复查发现「其实已经好了」，
+# 界面自己切到运行面板（截出来的是那一跳之后顶上那条绿色横幅）
+PAGES=(welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

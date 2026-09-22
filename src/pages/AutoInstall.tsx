@@ -18,7 +18,7 @@ import { ERROR_CODES, type ErrorCode } from '../state/machine'
  * （红线 1）。事件里没有的，这里就不显示，不拿占位数字凑。
  */
 export function AutoInstall() {
-  const { t, send } = useStore()
+  const { t, send, setNotice } = useStore()
   const [events, setEvents] = useState<AssistEvent[]>([])
   const [summary, setSummary] = useState<AssistSummary | null>(null)
   const [startError, setStartError] = useState<string | null>(null)
@@ -47,7 +47,12 @@ export function AutoInstall() {
       offs.push(
         await ipc.onAssistDone((o) => {
           if (!alive) return
-          if (o.ok) send({ type: 'AUTO_DONE' })
+          // **这一次什么都没装**（I11 · U2）：开工前的复查发现它本来就在跑。
+          // 那就不要走完成页 —— 那一页会说「装好了」，而这次一个字节都没下载。
+          if (o.ok && o.reused) {
+            setNotice(t.auto.reused)
+            send({ type: 'ALREADY_RUNNING' })
+          } else if (o.ok) send({ type: 'AUTO_DONE' })
           else
             send({
               type: 'AUTO_FAILED',
@@ -75,7 +80,7 @@ export function AutoInstall() {
       alive = false
       offs.forEach((f) => f())
     }
-    // send 来自 store，引用稳定
+    // send / setNotice 来自 store，引用稳定；t 只在语言切换时变，不值得重挂监听
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

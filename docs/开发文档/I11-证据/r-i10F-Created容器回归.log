@@ -1,0 +1,33 @@
+
+=================== 场景 F · 本项目留着「已创建未启动」的容器（I5 场景 6 / I9 场景 F 回归） ===================
+hunter-opencode-1 created
+hunter-web-1 created
+hunter-api-1 created
+hunter-postgres-1 created
+hunter-redis-1 created
+hunter-llm-shim-1 created
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　6 / 6 健康
+✓ 启动服务　6 / 6 健康
+✓ 完成　打开 http://localhost:3101 就能用了
+[总览] 完成 · 已自动解决 0 个问题 · 回合 0/10 · token 0
+
+事件流：/home/support/.hunter-i10a/logs/assist-events.jsonl
+审计日志：/home/support/.hunter-i10a/logs/assist-audit.log
+统计：自动解决 0 个问题 · 0 个修复回合 · 0 token · 用时 108 秒
+
+✓ 装好了。打开 http://localhost:3101

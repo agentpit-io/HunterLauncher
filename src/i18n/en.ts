@@ -42,6 +42,7 @@ const en: Dict = {
     internal: 'internal',
     working: 'Working…',
     refresh: 'Refresh',
+    gotIt: 'Got it',
     export: 'Export',
     exported: 'Exported',
     all: 'All',
@@ -125,6 +126,8 @@ const en: Dict = {
     confirmYes: 'Yes, do it',
   },
   auto: {
+    reused:
+      'Hunter was not reinstalled: nothing was downloaded again, and no healthy container was recreated.',
     title: 'The AI is installing Hunter',
     intro: 'Every line below is something that actually happened. From here until it is done you never have to click: when something goes wrong it works out the cause and takes the best course of action itself, and writes down what it decided and why.',
     reviewBadge: 'Review',
@@ -359,6 +362,9 @@ const en: Dict = {
     lanTighten: 'This computer only',
     lanTighteningNote: 'Recreating the web container…',
     lanOneWay: 'Cannot be undone (local-network access is a paid-plan feature).',
+    recoveredTitle: 'Hunter is already running',
+    recoveredBody:
+      'That error no longer holds — the services were fixed, either outside the launcher or by the launcher itself. Nothing was reinstalled and nothing was downloaded again.',
   },
   settings: {
     sectionAssist: 'AI assistant',
@@ -608,6 +614,17 @@ const en: Dict = {
       `The outbound gate found something sensitive in the text that would be sent and blocked it: ${what}. The "Open GitHub" button is withheld here — please review the bundle above and paste it manually.`,
     oneClickFeedback: 'Report this',
     viewLogs: 'View logs',
+    close: 'Close',
+    nowTitle: 'What things look like right now',
+    nowBadge: 'measured',
+    nowChecking: 'Checking what Hunter looks like on this machine…',
+    nowFailed: (why: string) => `Could not check this time: ${why}. The buttons below still work.`,
+    nowStat: (ready: number, total: number, status: number | null) =>
+      `Services ${ready} / ${total} ready · web ${status === null ? 'did not answer this time' : `HTTP ${status}`}`,
+    nowRefresh: 'Check again',
+    nowShow: 'Show the evidence',
+    nowHide: 'Hide the evidence',
+    nowAutoHint: 'This re-checks every 20 seconds; if everything is fine it takes you to the dashboard',
     codes: {
       E_DOCKER_MISSING: { title: 'Docker not found', hint: 'The launcher needs Docker to deploy Hunter. Install it, then check again.' },
       E_DAEMON_DOWN: { title: 'Docker daemon is not running', hint: 'The launcher already tried to start it for you and did not succeed. What it tried, and where it stopped, is listed below.' },

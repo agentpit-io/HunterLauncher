@@ -42,6 +42,7 @@ pub struct AppPresence {
 pub struct PortState {
     pub service: String,
     pub port: u16,
+    /// 三路都说没人听。**I11 起它不再是「这个端口可用」的同义词**
     pub free: bool,
     /// 占着这个端口的是**我们自己这一套** hunter 容器。
     ///
@@ -49,6 +50,10 @@ pub struct PortState {
     /// 3101 本来就该被我们的 web 容器占着。不分这一档的话，规则层会对着
     /// 一套跑得好好的 Hunter 说「5 个端口被别的程序占着」（I4 取错误页截图时撞到）。
     pub ours: bool,
+    /// 空闲 / 被 Hunter 自己占用 / 被其他程序占用（I11 · U4）
+    pub kind: crate::ports::Kind,
+    /// 占用者原话，一行人话。空闲时是空串
+    pub occupied_by: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,11 +168,43 @@ pub fn collect(
         .ports
         .as_pairs()
         .iter()
-        .map(|(name, port)| PortState {
-            service: (*name).to_string(),
-            port: *port,
-            free: survey.verdict(*port, &[crate::config::PROJECT]).free,
-            ours: ours.contains(port),
+        .map(|(name, port)| {
+            let v = survey.verdict(*port, &[crate::config::PROJECT]);
+            // `compose ps` 说这个端口是我们自己发布的 —— 这一路和 `docker ps`
+            // 互为佐证。任一路说「是我们自己」就算我们自己，不能报成「空闲」：
+            // 0.1.9 在用户 Mac 上导出的诊断里，五个正被 Hunter 占着的端口
+            // 全印着「空闲」，而用户当时正用着那五个端口上的服务。
+            let ours = ours.contains(port);
+            let kind = match v.kind() {
+                crate::ports::Kind::Free if ours => crate::ports::Kind::Mine,
+                k => k,
+            };
+            let occupied_by = match kind {
+                crate::ports::Kind::Free => String::new(),
+                crate::ports::Kind::Mine if v.mine.is_empty() => {
+                    "docker compose ps 报的本项目发布端口".to_string()
+                }
+                crate::ports::Kind::Mine => v
+                    .mine
+                    .iter()
+                    .map(crate::ports::Occupant::human)
+                    .collect::<Vec<_>>()
+                    .join("；"),
+                crate::ports::Kind::Other => v
+                    .occupants
+                    .iter()
+                    .map(crate::ports::Occupant::human)
+                    .collect::<Vec<_>>()
+                    .join("；"),
+            };
+            PortState {
+                service: (*name).to_string(),
+                port: *port,
+                free: v.free && !ours,
+                ours,
+                kind,
+                occupied_by: clean(&occupied_by),
+            }
         })
         .collect();
 
@@ -242,6 +279,33 @@ fn join_out(r: &crate::proc::Ran) -> String {
 
 impl Report {
     /// 送给模型的那一份（纯文本，比 JSON 省 token，读起来也顺）。
+    /// 端口一节。**分三类**（I11 · U4）。
+    ///
+    /// 0.1.9 那份用户导出的诊断里，五个正被 Hunter 自己占着的端口全印着
+    /// 「空闲」—— 送给模型的前提一错，后面的推理全是白做的。
+    ///
+    /// 命令行的 `--diagnose` 与界面上的「诊断报文」用的是这同一个函数，
+    /// 两边的口径因此不会再各写各的。
+    pub fn ports_section(&self) -> String {
+        let mut s = String::from("\n## 端口（空闲 / 被 Hunter 自己占用 / 被其他程序占用）\n");
+        for p in &self.ports {
+            let label = match p.kind {
+                crate::ports::Kind::Free => "空闲",
+                crate::ports::Kind::Mine => "被 Hunter 自己占用（正常，不是冲突）",
+                crate::ports::Kind::Other => "被其他程序占用",
+            };
+            if p.occupied_by.is_empty() {
+                s.push_str(&format!("{} {} {}\n", p.service, p.port, label));
+            } else {
+                s.push_str(&format!(
+                    "{} {} {} · {}\n",
+                    p.service, p.port, label, p.occupied_by
+                ));
+            }
+        }
+        s
+    }
+
     pub fn to_prompt(&self) -> String {
         let mut s = String::new();
         s.push_str(&format!(
@@ -292,21 +356,7 @@ impl Report {
                 a.evidence
             ));
         }
-        s.push_str("\n## 端口\n");
-        for p in &self.ports {
-            s.push_str(&format!(
-                "{} {} {}\n",
-                p.service,
-                p.port,
-                if p.free {
-                    "空闲"
-                } else if p.ours {
-                    "被 Hunter 自己的容器占着（正常，不是冲突）"
-                } else {
-                    "被别的程序占用"
-                }
-            ));
-        }
+        s.push_str(&self.ports_section());
         s.push_str(&format!(
             "\n磁盘: {}\n镜像源: {}（{}） · Hunter tag {}\n",
             match (self.disk_free, self.disk_total) {
@@ -666,6 +716,47 @@ mod tests {
     use super::*;
 
     const FAKE: &str = "hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2";
+
+    /// **0.1.9 那份诊断的回归**（I11 · U4）：端口一节必须分三类，
+    /// 被 Hunter 自己占着的那几个绝不能再印成「空闲」。
+    #[test]
+    fn 端口一节分三类且自己占着的不写空闲() {
+        let mut r = blank();
+        r.ports = vec![
+            PortState {
+                service: "web".into(),
+                port: 3100,
+                free: false,
+                ours: true,
+                kind: crate::ports::Kind::Mine,
+                occupied_by: "Docker 容器 hunter-web-1（compose 项目 hunter · 127.0.0.1:3100->3000/tcp）"
+                    .into(),
+            },
+            PortState {
+                service: "api".into(),
+                port: 8100,
+                free: false,
+                ours: false,
+                kind: crate::ports::Kind::Other,
+                occupied_by: "进程 nginx（pid 42）".into(),
+            },
+            PortState {
+                service: "redis".into(),
+                port: 6479,
+                free: true,
+                ours: false,
+                kind: crate::ports::Kind::Free,
+                occupied_by: String::new(),
+            },
+        ];
+        let s = r.ports_section();
+        assert!(s.contains("web 3100 被 Hunter 自己占用"), "{s}");
+        assert!(s.contains("api 8100 被其他程序占用 · 进程 nginx"), "{s}");
+        assert!(s.contains("redis 6479 空闲"), "{s}");
+        // 「自己占着」那一行里一个「空闲」都不能有 —— 这正是 0.1.9 那次错的地方
+        let web_line = s.lines().find(|l| l.starts_with("web ")).unwrap();
+        assert!(!web_line.contains("空闲"), "{web_line}");
+    }
 
     #[test]
     fn 出口闸认得出没打码的_key() {

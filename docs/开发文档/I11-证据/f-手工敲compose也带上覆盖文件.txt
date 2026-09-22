@@ -1,0 +1,42 @@
+# U5 · `.env` 里的 COMPOSE_PROJECT_NAME / COMPOSE_FILE 真的生效吗
+# 测试机 34.133.8.3，2026-09-23（上海时间）。命令与输出原样。
+
+$ grep -E '^COMPOSE_' ~/.hunter/app/.env
+COMPOSE_PROJECT_NAME=hunter
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=docker-compose.yml:docker-compose.launcher.yml
+
+# 像 2026-09-22 22:01 在用户 Mac 上那样：进到这个目录，**不带任何 -f / -p**
+$ cd ~/.hunter/app
+$ docker compose config | grep -E '^name:|published'
+name: hunter                ← 项目名对了（不会并出第二套）
+        published: "8101"
+        published: "3922"
+        published: "5443"
+        published: "6480"
+        published: "3101"
+
+$ docker compose up -d --force-recreate redis
+ Container hunter-redis-1 Recreated
+ Container hunter-redis-1 Starting
+ Container hunter-redis-1 Started
+$ docker ps --filter name=hunter-redis-1 --format '{{.Names}}\t{{.Ports}}'
+hunter-redis-1  127.0.0.1:6480->6379/tcp     ← 覆盖文件被带上了，端口只绑本机
+
+# 反面对照：显式只给基础 compose（绕过 .env 里的 COMPOSE_FILE），就会重建成 0.0.0.0
+$ docker compose -p hunter -f docker-compose.yml up -d --force-recreate redis postgres
+$ docker ps --filter label=com.docker.compose.project=hunter --format '{{.Names}}\t{{.Ports}}'
+hunter-postgres-1  0.0.0.0:5443->5432/tcp, [::]:5443->5432/tcp
+hunter-redis-1     0.0.0.0:6480->6379/tcp, [::]:6480->6379/tcp
+$ IP=$(hostname -I | awk '{print $1}')   # 10.128.0.9
+$ timeout 5 bash -c "</dev/tcp/$IP/6480" && echo 局域网可达
+！！10.128.0.9:6480 连得上 —— 局域网可达      ← 用户 Mac 上那 50 分钟就是这个样子
+
+# 启动器自己收回来（见 d-容器被重建成0.0.0.0-自动收回本机.log）
+$ docker ps --filter label=com.docker.compose.project=hunter --format '{{.Names}}\t{{.Ports}}'
+hunter-postgres-1  127.0.0.1:5443->5432/tcp
+hunter-redis-1     127.0.0.1:6480->6379/tcp
+$ timeout 5 bash -c "</dev/tcp/$IP/6480"
+bash: connect: Connection refused             ← 局域网已连不上
+$ timeout 5 bash -c "</dev/tcp/127.0.0.1/6480" && echo 本机可达
+127.0.0.1:6480 连得上（服务还在）             ← 服务没被弄坏

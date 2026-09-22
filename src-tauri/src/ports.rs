@@ -95,15 +95,41 @@ impl Occupant {
     }
 }
 
+/// 一个端口现在是什么情形。**三档，不是两档**（I11 · U4）。
+///
+/// 0.1.9 在用户 Mac 上导出的诊断信息里，3100 / 8100 / 3921 / 5442 / 6479
+/// 五个端口全写着「空闲」—— 而它们当时正被 Hunter 自己的服务占着
+/// （mac 上由 lima 的 ssh 端口转发在宿主上监听）。根因不是探测漏了，
+/// 是[`Verdict`]只有「空闲 / 被占用」两档，而「被我们自己占着」在安装那条路上
+/// 恰好也算「可用」，于是被直接写成了 `free = true`。
+///
+/// 「对安装来说可用」和「没有任何人在听」是两件事，现在分开表示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    /// 三路都说没人听
+    Free,
+    /// 有人听，而且那个人是 Hunter 自己（compose 项目 `hunter`）
+    Mine,
+    /// 有人听，是别的程序
+    Other,
+}
+
 /// 一个端口的裁定结果。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Verdict {
     pub port: u16,
-    /// **三路都说空闲**才是 true
+    /// **三路都说没人听**才是 true。
+    ///
+    /// 注意它不等于「这次安装能用这个端口」—— 被我们自己占着的端口同样能用，
+    /// 那种情况 `free = false` 而 [`Verdict::usable`] 为 true。
+    /// 想问「能不能用」一律走 `usable()`，想问「有没有人听」才看这个字段。
     pub free: bool,
-    /// 每一路查到的占用者。`free` 为 true 时是空的
+    /// 挡在前面的占用者（**不含 Hunter 自己**）。`usable()` 为 true 时是空的
     pub occupants: Vec<Occupant>,
+    /// 占着这个端口、但属于 Hunter 自己那一套的证据。不算冲突，但也不是空闲
+    pub mine: Vec<Occupant>,
 }
 
 impl Verdict {
@@ -112,21 +138,51 @@ impl Verdict {
             port,
             free: true,
             occupants: Vec::new(),
+            mine: Vec::new(),
+        }
+    }
+
+    /// **这次安装能不能用这个端口**：没人听，或者听着的就是我们自己。
+    pub fn usable(&self) -> bool {
+        self.occupants.is_empty()
+    }
+
+    /// 三档里的哪一档。
+    pub fn kind(&self) -> Kind {
+        if !self.occupants.is_empty() {
+            Kind::Other
+        } else if !self.mine.is_empty() {
+            Kind::Mine
+        } else {
+            Kind::Free
         }
     }
 
     /// 占用者里有没有属于某个 compose 项目的。
     pub fn owned_by(&self, project: &str) -> bool {
-        self.occupants.iter().any(|o| o.project() == Some(project))
+        self.occupants
+            .iter()
+            .chain(self.mine.iter())
+            .any(|o| o.project() == Some(project))
     }
 
     /// 一行人话：`8100 被占用 · Docker 容器 hunter-fresh-api-1（compose 项目 hunter-fresh · …）`
     pub fn human(&self) -> String {
-        if self.free {
-            return format!("{} 空闲", self.port);
+        match self.kind() {
+            Kind::Free => format!("{} 空闲", self.port),
+            Kind::Mine => {
+                let who: Vec<String> = self.mine.iter().map(Occupant::human).collect();
+                format!(
+                    "{} 被 Hunter 自己的服务占着（正常，不是冲突）· {}",
+                    self.port,
+                    who.join("；")
+                )
+            }
+            Kind::Other => {
+                let who: Vec<String> = self.occupants.iter().map(Occupant::human).collect();
+                format!("{} 被其他程序占用 · {}", self.port, who.join("；"))
+            }
         }
-        let who: Vec<String> = self.occupants.iter().map(Occupant::human).collect();
-        format!("{} 被占用 · {}", self.port, who.join("；"))
     }
 }
 
@@ -467,46 +523,61 @@ impl Survey {
     /// `ignore_projects` 里的 compose 项目**不算冲突** —— 我们自己那一套
     /// （项目 `hunter`）第二次打开启动器时本来就占着这些端口，
     /// 把它算成冲突的话端口每开一次就往上挪一格（M2 用例 9 的老坑）。
+    ///
+    /// **I11 改了一处**：原来发现「占着它的是我们自己」时直接 `return Verdict::free(port)`,
+    /// 连第 1、3 路都不跑了。对安装来说那个答案是对的（这个端口我们能用），
+    /// 对诊断来说是错的 —— 0.1.9 在用户 Mac 上导出的诊断里，
+    /// 五个正被 Hunter 自己占着的端口全印着「空闲」。
+    /// 现在三路照跑，只是把「属于我们自己」的证据归到 [`Verdict::mine`]，
+    /// 不再混进 `occupants`。
     pub fn verdict(&self, port: u16, ignore_projects: &[&str]) -> Verdict {
         let mut occ = Vec::new();
+        let mut mine = Vec::new();
 
         // 第 2 路先跑：它知道占用者是谁，也知道该不该忽略
-        let mut ignored_owner = false;
         for p in &self.published {
             let Some(mapping) = p.ports.get(&port) else {
                 continue;
             };
-            if ignore_projects.contains(&p.project.as_str()) {
-                ignored_owner = true;
-                continue;
-            }
-            occ.push(Occupant::Docker {
+            let who = Occupant::Docker {
                 container: p.container.clone(),
                 project: p.project.clone(),
                 mapping: mapping.clone(),
-            });
-        }
-
-        // 端口正被**我们自己**的容器占着时，第 1、3 路当然也会说「占用」——
-        // 那不是冲突，是我们自己。这时直接判空闲（对我们可用）。
-        if ignored_owner && occ.is_empty() {
-            return Verdict::free(port);
-        }
-
-        occ.extend(bind_probe(port));
-        for l in &self.listeners {
-            if l.port == port {
-                occ.push(Occupant::Process {
-                    name: l.name.clone(),
-                    pid: l.pid,
-                });
+            };
+            if ignore_projects.contains(&p.project.as_str()) {
+                mine.push(who);
+            } else {
+                occ.push(who);
             }
+        }
+
+        let bind = bind_probe(port);
+        let procs: Vec<Occupant> = self
+            .listeners
+            .iter()
+            .filter(|l| l.port == port)
+            .map(|l| Occupant::Process {
+                name: l.name.clone(),
+                pid: l.pid,
+            })
+            .collect();
+
+        // 端口正被**我们自己**的容器占着时，第 1、3 路当然也会说「有人在听」——
+        // 那个人就是我们自己（mac 上是 lima 的 ssh 端口转发进程，Linux 上是
+        // docker-proxy）。这两路分不清是谁，所以按第 2 路的结论归档。
+        if occ.is_empty() && !mine.is_empty() {
+            mine.extend(bind);
+            mine.extend(procs);
+        } else {
+            occ.extend(bind);
+            occ.extend(procs);
         }
 
         Verdict {
             port,
-            free: occ.is_empty(),
+            free: occ.is_empty() && mine.is_empty(),
             occupants: occ,
+            mine,
         }
     }
 }
@@ -535,6 +606,89 @@ mod tests {
         assert!(v[2].ports.is_empty(), "3999/tcp 没发布，不该算宿主端口");
         assert_eq!(v[3].project, "hunter-community");
         assert_eq!(v[3].ports[&8100], "0.0.0.0:8100->8000/tcp");
+    }
+
+    /// **0.1.9 在用户 Mac 上那份诊断信息的回归**（I11 · U4）。
+    ///
+    /// 现场：3100 / 8100 / 3921 / 5442 / 6479 五个端口正被 Hunter 自己的服务占着
+    /// （mac 上由 lima 的 ssh 端口转发在宿主上监听），而导出的诊断里五个全写着
+    /// 「空闲」。根因不是探测漏了，是发现「占着它的是我们自己」时直接
+    /// `return Verdict::free(port)` —— 对安装来说那个答案是对的，
+    /// 对诊断来说是错的，而送给模型的前提一错，后面的推理全白做。
+    #[test]
+    fn 被自己占着的端口不许报成空闲() {
+        // 用一个几乎不可能真被占的端口，让绑定探测那一路的结果是确定的
+        const P: u16 = 59_123;
+        let sv = Survey {
+            published: parse_ps(&format!(
+                "hunter-web-1\tghcr.io/agentpit-io/hunter-community-web:1.2.0\thunter\t127.0.0.1:{P}->3000/tcp\n"
+            )),
+            // mac 上宿主这一侧的监听者是 lima 的 ssh 端口转发进程
+            listeners: vec![Listener {
+                port: P,
+                name: "ssh".into(),
+                pid: Some(4321),
+            }],
+        };
+        let v = sv.verdict(P, &[crate::config::PROJECT]);
+        assert_eq!(v.kind(), Kind::Mine, "该判成「被 Hunter 自己占着」：{v:?}");
+        assert!(!v.free, "它不空闲 —— 我们自己的服务正听在上面");
+        assert!(v.usable(), "但对这次安装来说它可用（不算冲突）");
+        assert!(v.occupants.is_empty(), "自己人不该进 occupants：{v:?}");
+        assert!(
+            !v.human().contains("空闲"),
+            "诊断里这一行绝不能再写「空闲」：{}",
+            v.human()
+        );
+        assert!(v.human().contains("Hunter 自己"), "{}", v.human());
+        // lsof 认出来的那个转发进程要留在证据里（用户 Mac 上就是它）
+        assert!(v.mine.iter().any(|o| matches!(o, Occupant::Process { name, .. } if name == "ssh")));
+    }
+
+    /// 别人占着的时候三档要落在「被其他程序占用」，而且 `usable()` 为假。
+    #[test]
+    fn 被别人占着时既不空闲也不可用() {
+        const P: u16 = 59_124;
+        let sv = Survey {
+            published: parse_ps(&format!(
+                "hunter-fresh-api-1\tghcr.io/agentpit-io/hunter-community-api:1.2.0\thunter-fresh\t0.0.0.0:{P}->8000/tcp\n"
+            )),
+            listeners: Vec::new(),
+        };
+        let v = sv.verdict(P, &[crate::config::PROJECT]);
+        assert_eq!(v.kind(), Kind::Other);
+        assert!(!v.usable());
+        assert!(!v.free);
+        assert!(v.human().contains("被其他程序占用"), "{}", v.human());
+    }
+
+    /// 没人听的时候仍然是「空闲」——三档里的第一档不能被这次改动弄丢。
+    #[test]
+    fn 没人听就是空闲() {
+        const P: u16 = 59_125;
+        let sv = Survey::empty();
+        let v = sv.verdict(P, &[crate::config::PROJECT]);
+        assert_eq!(v.kind(), Kind::Free);
+        assert!(v.free && v.usable());
+        assert_eq!(v.human(), format!("{P} 空闲"));
+    }
+
+    /// **启动器自己装的那一套永远不算「另一套 Hunter」**（I11 · U2）。
+    ///
+    /// I8 定的规矩是「本机已有另一套 Hunter 就并存、换端口」。
+    /// 那条规矩只对**用户自己另外装的**成立 —— 要是把我们上一次装的那一套
+    /// 也算进去，点一次重试就会并出第二套，白占几个 G 的盘和内存。
+    #[test]
+    fn 自己上一次装的那一套不会被当成另一套_hunter() {
+        let s = "hunter-web-1\tghcr.io/agentpit-io/hunter-community-web:1.2.0\thunter\t127.0.0.1:3100->3000/tcp\n\
+                 hunter-api-1\tghcr.io/agentpit-io/hunter-community-api:1.2.0\thunter\t127.0.0.1:8100->8000/tcp\n\
+                 hunter-postgres-1\tpostgres:16-alpine\thunter\t127.0.0.1:5442->5432/tcp\n";
+        let v = other_hunter_installs(&parse_ps(s));
+        assert!(
+            v.is_empty(),
+            "项目 {} 是启动器自己的那一套，不该出现在「另一套 Hunter」里：{v:?}",
+            crate::config::PROJECT
+        );
     }
 
     #[test]
@@ -675,8 +829,13 @@ mod tests {
             published: parse_ps(s),
             listeners: Vec::new(),
         };
-        // 忽略 hunter 项目时判空闲；不忽略时判占用并说出是谁
-        assert!(sv.verdict(3101, &["hunter"]).free);
+        // 忽略 hunter 项目时「对这次安装可用」，但它**不是空闲**（I11 · U4 改了这一条：
+        // 原来这里断言的是 `.free`，而那正是 0.1.9 那份诊断把五个自己占着的端口
+        // 写成「空闲」的原因）。不忽略时判占用并说出是谁。
+        let mine = sv.verdict(3101, &["hunter"]);
+        assert!(mine.usable(), "自己占着不算冲突：{}", mine.human());
+        assert!(!mine.free, "但它也不空闲：{}", mine.human());
+        assert_eq!(mine.kind(), Kind::Mine);
         let v = sv.verdict(3101, &[]);
         assert!(!v.free);
         assert!(v.owned_by("hunter"));

@@ -40,6 +40,7 @@ const zhCN = {
     internal: '内部',
     working: '处理中…',
     refresh: '刷新',
+    gotIt: '知道了',
     export: '导出',
     exported: '已导出',
     all: '全部',
@@ -128,6 +129,9 @@ const zhCN = {
     confirmYes: '确定，就这么做',
   },
   auto: {
+    // I11 · U2：点「重试」之后复查发现本来就在跑，这一次一个安装动作都没做
+    reused:
+      'Hunter 没有被重新安装：这一次没有重新下载任何镜像，健康的容器也一个都没被重建。',
     title: 'AI 正在帮你安装',
     intro: '下面每一行都是真的在发生的事。从现在到装好，你一次都不用点 —— 出了问题它自己分析、自己按最好的办法解决，并把「做了什么决定、为什么」写在下面。',
     reviewBadge: '复核',
@@ -366,6 +370,10 @@ const zhCN = {
     lanTighten: '只允许本机访问',
     lanTighteningNote: '正在重建 web 容器…',
     lanOneWay: '收紧之后不能再放开（局域网访问是付费版功能）。',
+    // I11 · U1：错误页复查发现其实已经好了，自己切回了这一页
+    recoveredTitle: 'Hunter 已经在正常运行',
+    recoveredBody:
+      '刚才那个错误已经不成立了 —— 服务是在外部被修好的，也可能是启动器自己修好的。没有重新安装，也没有重复下载。',
   },
   settings: {
     sectionAssist: 'AI 助手',
@@ -615,6 +623,19 @@ const zhCN = {
       `出口闸在要发出去的文字里扫到了敏感内容，已经挡住：${what}。这条路先不给「打开 GitHub」的按钮 —— 请把上面的诊断包手动整理后再贴。`,
     oneClickFeedback: '一键反馈',
     viewLogs: '查看日志',
+    // I11 · U3：回托盘，不退出、不停容器
+    close: '关闭',
+    // I11 · U1：现状复查卡片
+    nowTitle: '现在是什么情况',
+    nowBadge: '实测',
+    nowChecking: '正在看这台机器上 Hunter 的现状…',
+    nowFailed: (why: string) => `这一次没问出来：${why}。下面那些按钮照常可用。`,
+    nowStat: (ready: number, total: number, status: number | null) =>
+      `服务 ${ready} / ${total} 就绪 · 网页${status === null ? '这一次没应答' : ` HTTP ${status}`}`,
+    nowRefresh: '重新查一次',
+    nowShow: '看逐条证据',
+    nowHide: '收起证据',
+    nowAutoHint: '这一块每 20 秒自己重查一次；查到一切正常会直接带你去运行面板',
     codes: {
       E_DOCKER_MISSING: { title: '没有找到 Docker', hint: '启动器需要 Docker 才能部署 Hunter。装好之后回来重新检测。' },
       // I9：这两条原来写的是「请执行 sudo systemctl start docker」「执行 wsl --install」——

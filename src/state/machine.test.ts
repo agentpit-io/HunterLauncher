@@ -502,3 +502,35 @@ describe('I9 · 修好了就接着装（P0-3）', () => {
     expect(transition(at, { type: 'RESUME_INSTALL' })).toBe(at)
   })
 })
+
+describe('I11 · 已经装好了就别再装（U1）', () => {
+  it('ALREADY_RUNNING 把界面从错误页直接带到运行面板', () => {
+    // 0.1.9 在用户 Mac 上：21:39 进这一页，22:05 六个服务全绿、网页 200，
+    // 界面一直到 22:50 还挂着 21:39 那张卡片。
+    const err = transition({ name: 'AutoInstalling' }, { type: 'FAIL', code: 'E_START_TIMEOUT' })
+    expect(err.name).toBe('Error')
+    expect(transition(err, { type: 'ALREADY_RUNNING' })).toEqual({ name: 'Ready' })
+  })
+
+  it('ALREADY_RUNNING 不经过完成页（这一次一个字节都没下载，不该说「装好了」）', () => {
+    const s = transition({ name: 'AutoInstalling' }, { type: 'ALREADY_RUNNING' })
+    expect(s).toEqual({ name: 'Ready' })
+    expect(pageOf(s)).toBe('dashboard')
+  })
+
+  it('ALREADY_RUNNING 从任何状态都能进', () => {
+    for (const from of ['AutoInstalling', 'Starting', 'Done', 'Welcome', 'CheckDaemon'] as const) {
+      expect(transition({ name: from }, { type: 'ALREADY_RUNNING' })).toEqual({ name: 'Ready' })
+    }
+  })
+
+  it('已经在运行面板上时 ALREADY_RUNNING 原地不动（别让面板无谓地重挂）', () => {
+    const at = { name: 'Ready' } as const
+    expect(transition(at, { type: 'ALREADY_RUNNING' })).toBe(at)
+  })
+
+  it('错误页仍然保留「重试」这条路：复查说没好的时候用户还得能再试一次', () => {
+    const err = transition({ name: 'AutoInstalling' }, { type: 'FAIL', code: 'E_START_TIMEOUT' })
+    expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'AutoInstalling' })
+  })
+})

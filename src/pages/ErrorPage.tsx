@@ -1,26 +1,53 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AssistPanel } from '../components/AssistPanel'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
-import { AlertTriangle } from '../components/Icons'
+import { AlertTriangle, CheckCircle, Spinner } from '../components/Icons'
 import { Modal } from '../components/Modal'
 import { OfflineImport } from '../components/OfflineImport'
 import { PlainLayout } from '../components/WizardLayout'
 import * as ipc from '../lib/ipc'
-import type { OneClickFeedback } from '../lib/types'
+import { useSelfCheck } from '../lib/useSelfCheck'
+import type { OneClickFeedback, SelfCheckReview } from '../lib/types'
 import { useStore } from '../state/context'
 import type { ErrorCode } from '../state/machine'
 
 /**
  * 通用错误页（技术方案第 18 节）。每个错误码一套标题 + 处理建议，
  * 下面永远有「一键反馈」（预填错误码）与「查看日志」两个出口。
+ *
+ * **I11 起这一页会自己去看现状**（U1 / U3）。0.1.9 在用户 Mac 上的那一幕：
+ * 21:39 报错进这一页，22:05 外部把根因修好、六个服务全绿、网页 200，
+ * 而这一页一直到 22:50 还挂着 21:39 那张卡片 —— 用户能做的只有点「重试」，
+ * 点下去是重新下载 849 MB。
+ *
+ * 现在这一页做三件新的事：
+ *   1. 低频复查（{@link useSelfCheck}），查到「已经在正常跑」就自己去运行面板；
+ *   2. 复查结论常驻在错误卡片下面，AI / 规则层每跑完一个动作就重查一次；
+ *   3. 多一个「关闭」—— 回托盘，不退出、不停容器。没异常时它就是主按钮。
  */
 export function ErrorPage() {
-  const { t, state, send, setOverlay } = useStore()
+  const { t, state, send, setOverlay, setNotice } = useStore()
+  const check = useSelfCheck(state.name === 'Error')
+  const review = check.review
+
+  // **已经在正常跑了就别把人留在这一页。**
+  // 判据是后端实测的「六个服务全就绪 + 本机网页真的应答」，不是我们猜的。
+  useEffect(() => {
+    if (!review || review.posture !== 'healthy') return
+    setNotice(review.headline)
+    send({ type: 'ALREADY_RUNNING' })
+    // send / setNotice 引用稳定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [review?.posture, review?.headline])
+
   if (state.name !== 'Error') return null
 
   const code = state.code as ErrorCode
   const info = t.error.codes[code] ?? t.error.codes.E_UNKNOWN
+  // 容器全绿（哪怕网页那一下没探成）就说明这台机器上没有异常 ——
+  // 这时候用户要的是「关掉它」，不是「再装一遍」
+  const nothingWrong = !!review && review.ready === review.total && review.missing.length === 0
 
   return (
     <PlainLayout
@@ -34,7 +61,22 @@ export function ErrorPage() {
             <Button size="sm" onClick={() => send({ type: 'BACK' })}>
               {t.common.back}
             </Button>
-            <Button size="sm" variant="primary" onClick={() => send({ type: 'RETRY' })}>
+            {/* I11 · U3：关闭 = 回托盘。不退出进程、不动正在跑的服务。
+                复查说没异常时它是主按钮 —— 那种情形下「重试」是错的那个选择。 */}
+            <Button
+              size="sm"
+              variant={nothingWrong ? 'primary' : 'secondary'}
+              data-testid="error-close"
+              onClick={() => void ipc.windowHide()}
+            >
+              {t.error.close}
+            </Button>
+            <Button
+              size="sm"
+              variant={nothingWrong ? 'secondary' : 'primary'}
+              data-testid="error-retry"
+              onClick={() => send({ type: 'RETRY' })}
+            >
               {t.common.retry}
             </Button>
           </div>
@@ -68,17 +110,100 @@ export function ErrorPage() {
         </div>
       </Card>
 
+      {/* 复查结论（I11 · U1）。它就在失败卡片下面，用户不用去别处找 */}
+      <NowCard className="mt-gap max-w-[820px]" check={check} />
+
       {/* 诊断助手（I4）：先跑确定性规则，认不出来才给「让 AI 帮我看看」。
-          错误页是它最该出现的地方 —— 用户走到这里就是卡住了。 */}
+          错误页是它最该出现的地方 —— 用户走到这里就是卡住了。
+
+          `onActed`：AI 或规则层**跑完任何一个动作**就重查一次现状（I11 · U1）。
+          0.1.9 那次，AI 读了四遍日志、规则层跑过若干动作，界面自始至终
+          没有重新判断过「现在到底好了没有」。 */}
       <AssistPanel
         className="mt-gap max-w-[820px]"
         errorCode={code}
         errorMessage={state.detail}
         stage={state.from}
+        onActed={check.refresh}
       />
     </PlainLayout>
   )
 }
+
+/**
+ * 「现在是什么情况」卡片。
+ *
+ * 里面每一个数字都来自后端的实测（服务数、HTTP 状态码、耗时），
+ * 拿不到的就写拿不到 —— 这一页最不该做的事就是让用户第二次误判现状。
+ */
+function NowCard({
+  check,
+  className = '',
+}: {
+  check: ReturnType<typeof useSelfCheck>
+  className?: string
+}) {
+  const { t } = useStore()
+  const [open, setOpen] = useState(false)
+  const { review, loading, error, refresh } = check
+
+  return (
+    <Card className={className} data-testid="error-now">
+      <div className="flex items-start gap-2.5">
+        {loading ? (
+          <Spinner size={14} className="mt-[3px] shrink-0 text-amber" />
+        ) : review && review.ready === review.total && review.missing.length === 0 ? (
+          <CheckCircle size={16} className="mt-[3px] shrink-0 text-success" />
+        ) : (
+          <AlertTriangle size={14} className="mt-[3px] shrink-0 text-muted" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-md font-medium text-ink">{t.error.nowTitle}</span>
+            <span className="tnum shrink-0 rounded border border-line-strong px-1.5 py-[1px] text-xs text-muted">
+              {t.error.nowBadge}
+            </span>
+          </div>
+          <div className="mt-2 text-sm leading-[1.55] text-body">
+            {loading
+              ? t.error.nowChecking
+              : error
+                ? t.error.nowFailed(error)
+                : review
+                  ? review.headline
+                  : t.error.nowChecking}
+          </div>
+          {review && (
+            <div className="tnum mt-[6px] text-xs text-muted">
+              {t.error.nowStat(review.ready, review.total, review.webStatus)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-[14px] flex flex-wrap items-center gap-[10px] border-t border-line pt-[12px]">
+        <Button size="sm" variant="ghost" data-testid="error-now-refresh" onClick={refresh}>
+          {t.error.nowRefresh}
+        </Button>
+        {review && review.lines.length > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
+            {open ? t.error.nowHide : t.error.nowShow}
+          </Button>
+        )}
+        <span className="ml-auto text-xs text-muted">{t.error.nowAutoHint}</span>
+      </div>
+
+      {open && review && (
+        <pre className="selectable tnum mt-[10px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log px-3 py-2.5 text-xs leading-[1.45] text-dim">
+          {review.lines.join('\n')}
+        </pre>
+      )}
+    </Card>
+  )
+}
+
+/** 复查结论的只读快照类型，给测试与演示数据共用。 */
+export type { SelfCheckReview }
 
 /**
  * 「发送诊断给开发者」（I7）。

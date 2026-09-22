@@ -34,6 +34,7 @@ import type {
   MissingEndpoint,
   OfflineImport,
   OneClickFeedback,
+  SelfCheckReview,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
@@ -109,6 +110,15 @@ export async function windowToggleMaximize(): Promise<void> {
 export async function windowClose(): Promise<void> {
   if (DEMO) return
   await call<void>('window_close')
+}
+
+/**
+ * 把窗口收起来回到托盘（I11 · U3）。**不退出进程、不动正在跑的服务。**
+ * 错误页上那个「关闭」走的是它，不是 `windowClose`（那个等于请求退出）。
+ */
+export async function windowHide(): Promise<void> {
+  if (DEMO) return
+  await call<void>('window_hide')
 }
 
 export async function openExternal(url: string): Promise<void> {
@@ -525,6 +535,17 @@ export async function assistConsent(
 export async function assistAutoStart(registryId?: string): Promise<void> {
   if (DEMO) return
   await call<void>('assist_auto_start', { registryId: registryId ?? null })
+}
+
+/**
+ * 现状复查：只读地问一句「Hunter 现在在不在跑」（I11 · U1）。
+ *
+ * `deep` 为真时多探一次「容器连不连得上模型网关」，要几秒到几十秒 ——
+ * 界面上的轮询一律不开它。
+ */
+export async function selfCheck(deep = false): Promise<SelfCheckReview> {
+  if (DEMO) return demo.demoSelfCheck(demoPage())
+  return call<SelfCheckReview>('self_check', { deep })
 }
 
 /** 回答「需要你」卡片。返回 false 表示这会儿并没有在等谁回答。 */

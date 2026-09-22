@@ -52,6 +52,7 @@ pub mod redact;
 pub mod registry;
 pub mod runtime;
 pub mod secretgen;
+pub mod selfcheck;
 pub mod selfupdate;
 pub mod takeover;
 pub mod telemetry;
@@ -135,6 +136,7 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_close,
+            commands::window_hide,
             commands::open_external,
             commands::boot_state,
             commands::detect_docker,
@@ -188,6 +190,8 @@ pub fn run() {
             commands::assist_auto_answer,
             commands::assist_auto_snapshot,
             commands::assist_audit_tail,
+            // I11 · 现状复查（错误页靠它自己看见「其实已经好了」）
+            commands::self_check,
             // I7 · 内置运行时 / 接管 / 一键反馈
             commands::builtin_runtime_status,
             commands::builtin_runtime_uninstall,
@@ -260,6 +264,44 @@ pub fn run() {
                     Ok(d) if d.healthy() => linfo!("开机自查：{}", d.one_line()),
                     Ok(d) => lwarn!("开机自查：虚拟机的 DNS 还是不行 —— {}", d.one_line()),
                     Err(e) => lwarn!("开机自查虚拟机 DNS 没做成：{}", e.msg),
+                }
+            });
+
+            // **端口有没有被谁开到了本机之外**（I11 · U5）。
+            //
+            // 2026-09-22 22:01 本地 Claude 在用户 Mac 上手工跑
+            // `docker compose -p hunter up -d`，漏了启动器的覆盖文件，
+            // 容器被重建成 0.0.0.0 —— 五个端口在局域网里可达了约 50 分钟。
+            //
+            // 启动器每次起来都对一遍：**跑着的容器**绑在哪，和磁盘上那份覆盖文件
+            // 说的一不一样。不一样就按覆盖文件重建那几个容器。
+            // 这不是替用户做新决定 —— 覆盖文件本来就写着 127.0.0.1，
+            // 是现实跑偏了。老机器有意对外的那一档（WebBind::LegacyLan）不在此列。
+            std::thread::spawn(|| {
+                if !crate::config::LauncherConfig::load().install.done {
+                    return;
+                }
+                let services = match compose::ps() {
+                    Ok(v) => v,
+                    Err(_) => return,
+                };
+                let drift = compose::bind_drift(&services);
+                if drift.is_empty() {
+                    return;
+                }
+                for d in &drift {
+                    lwarn!("开机自查端口绑定：{}", d.human());
+                }
+                match compose::fix_bind_drift(&drift) {
+                    Ok(()) => linfo!(
+                        "开机自查：已按覆盖文件把 {} 的端口收回 127.0.0.1",
+                        drift
+                            .iter()
+                            .map(|d| d.service.as_str())
+                            .collect::<Vec<_>>()
+                            .join("、")
+                    ),
+                    Err(e) => lwarn!("开机自查：端口没能收回本机 —— {}", e.msg),
                 }
             });
 

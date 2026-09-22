@@ -76,6 +76,21 @@ pub fn window_close(app: tauri::AppHandle) -> Result<()> {
         .map_err(|e| format!("E_UNKNOWN: {e}"))
 }
 
+/// **把窗口收起来回到托盘**（I11 · U3）。
+///
+/// 和 [`window_close`] 不是一回事：那个是「关窗口 = 请求退出」，
+/// 容器还在跑时会弹「保持后台运行 / 一起停止」。这个只是把界面藏起来 ——
+/// 进程不退、托盘还在、正在跑的服务一个都不动。
+///
+/// 错误页上那个「关闭」按钮走的就是它：用户已经确认没有异常了，
+/// 他要的是「别再烦我」，不是「把 Hunter 停掉」。
+#[tauri::command]
+pub fn window_hide(app: tauri::AppHandle) -> Result<()> {
+    main_window(&app)?
+        .hide()
+        .map_err(|e| format!("E_UNKNOWN: {e}"))
+}
+
 /// 用系统默认浏览器打开链接。只放行 https 与本机 http，防止被当成任意程序启动器。
 #[tauri::command]
 pub fn open_external(app: tauri::AppHandle, url: String) -> Result<()> {
@@ -1781,6 +1796,19 @@ pub fn assist_auto_snapshot() -> Result<AutoSnapshot> {
             summary: crate::assist::events::Summary::default(),
         },
     })
+}
+
+/// **现状复查**：Hunter 现在到底在不在跑（I11 · U1）。
+///
+/// 只读。错误页拿它做低频复查 —— 一旦查到六个服务全就绪、网页也打得开，
+/// 界面自己切到运行面板，而不是把用户留在一张 41 分钟前的失败卡片上
+/// （0.1.9 在用户 Mac 上就是那样）。
+///
+/// `deep` 为真时多探一次「容器连不连得上模型网关」，要几秒到几十秒 ——
+/// 界面上的轮询一律用浅查。
+#[tauri::command]
+pub async fn self_check(deep: Option<bool>) -> Result<crate::selfcheck::Review> {
+    blocking(move || Ok(crate::selfcheck::review(deep.unwrap_or(false)))).await
 }
 
 /// 审计日志的末尾若干条（设置页「AI 都做过什么」）。

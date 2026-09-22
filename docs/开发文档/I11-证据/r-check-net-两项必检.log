@@ -1,0 +1,8 @@
+
+Hunter 启动器 · 网络必检
+──────────────────────────────────
+  虚拟机 DNS：不适用（内置运行时的虚拟机没在跑）
+  容器出网：容器能连上模型网关（HTTP 401 · 1511 毫秒）
+    命令：/usr/bin/docker run --rm --pull=never --entrypoint curl ghcr.io/agentpit-io/hunter-community-api:1.2.0 -sS -o /dev/null -w %{http_code} --max-time 20 https://hunter.agentpit.io/api/saas/llm/v1/models
+
+✓ 两项都通
