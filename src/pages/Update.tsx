@@ -321,14 +321,23 @@ function HunterCard() {
 }
 
 // ── 备份 ─────────────────────────────────────────────────────────────────
+//
+// I13 起**恢复不在这一页做了**：它要逐字输入「恢复数据」、要先给当前数据做一份
+// 保命备份、要停服务再起回来 —— 那是「备份与恢复」那一页（`BackupPanel`）的事。
+// 这里只留清单与「现在备份一份」，「从这份恢复」按钮改成跳过去。
+// 留一个不做二次确认的恢复入口，等于在旁边开了一扇绕过那道门的小窗。
+
+/** 这一份备份里数据库那一半有多大。新格式看 `dumpBytes`，老备份看 `sqlBytes`。 */
+function dumpBytes(m: BackupMeta): number {
+  return m.dumpBytes ?? m.sqlBytes ?? 0
+}
 
 function BackupsCard() {
-  const { t } = useStore()
+  const { t, setOverlay } = useStore()
   const [nonce, setNonce] = useState(0)
   const b = useAsync(() => ipc.listBackups(), [nonce])
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState<string | null>(null)
-  const [restore, setRestore] = useState<BackupMeta | null>(null)
   const list = b.data ?? []
 
   async function makeOne() {
@@ -336,7 +345,7 @@ function BackupsCard() {
     setNote(null)
     try {
       const m = await ipc.createBackup()
-      setNote(t.update.backupRow(m.at, m.tag, m.sqlBytes ? bytes(m.sqlBytes) : '—'))
+      setNote(t.update.backupRow(m.at, m.tag, dumpBytes(m) > 0 ? bytes(dumpBytes(m)) : '—'))
       setNonce((n) => n + 1)
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e))
@@ -355,16 +364,16 @@ function BackupsCard() {
         {list.map((m) => (
           <li key={m.id} className="flex items-center justify-between gap-4 border-b border-line pb-[8px]">
             <span className="min-w-0 truncate">
-              {t.update.backupRow(m.at, m.tag, m.sqlBytes ? bytes(m.sqlBytes) : '—')}
-              {!m.sqlBytes && (
+              {t.update.backupRow(m.at, m.tag, dumpBytes(m) > 0 ? bytes(dumpBytes(m)) : '—')}
+              {dumpBytes(m) === 0 && (
                 <span className="ml-2 text-danger">
                   {t.update.backupNoDump}
-                  {m.sqlError ? ` · ${m.sqlError}` : ''}
+                  {m.dumpError || m.sqlError ? ` · ${m.dumpError ?? m.sqlError}` : ''}
                 </span>
               )}
             </span>
-            {!!m.sqlBytes && (
-              <Button size="sm" variant="danger" onClick={() => setRestore(m)}>
+            {dumpBytes(m) > 0 && (
+              <Button size="sm" onClick={() => setOverlay('backup')}>
                 {t.update.backupRestore}
               </Button>
             )}
@@ -380,40 +389,6 @@ function BackupsCard() {
         </Button>
       </div>
 
-      {restore && (
-        <Modal
-          testId="restore-confirm"
-          title={t.update.backupRestore}
-          onClose={() => setRestore(null)}
-          footer={
-            <>
-              <Button size="sm" variant="ghost" onClick={() => setRestore(null)}>
-                {t.common.cancel}
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                data-testid="restore-go"
-                onClick={() => {
-                  const id = restore.id
-                  setRestore(null)
-                  setBusy(true)
-                  void ipc
-                    .restoreBackup(id)
-                    .then(setNote)
-                    .catch((e: unknown) => setNote(e instanceof Error ? e.message : String(e)))
-                    .finally(() => setBusy(false))
-                }}
-              >
-                {t.update.backupRestore}
-              </Button>
-            </>
-          }
-        >
-          <p className="leading-[1.6]">{t.update.backupRestoreConfirm}</p>
-          <div className="tnum mt-[12px] text-sm text-muted">{restore.id}</div>
-        </Modal>
-      )}
     </Card>
   )
 }

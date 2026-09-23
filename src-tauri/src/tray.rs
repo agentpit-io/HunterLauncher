@@ -46,13 +46,16 @@ pub const ID_UPDATE: &str = "update";
 pub const ID_FEEDBACK: &str = "feedback";
 pub const ID_SETTINGS: &str = "settings";
 pub const ID_AUTOSTART: &str = "autostart";
+/// I13 · R6 / R7：出了事的时候托盘上那一行。点它把窗口叫出来（横幅就在面板顶上）
+pub const ID_ALERT: &str = "alert";
 pub const ID_QUIT: &str = "quit";
 
 /// 托盘菜单的全部 id，顺序即显示顺序。
 /// 有了它，「菜单每一项都点一遍」这种验收才有一份机器可读的清单。
-pub const MENU_IDS: [&str; 11] = [
+pub const MENU_IDS: [&str; 12] = [
     ID_OPEN,
     ID_STATUS,
+    ID_ALERT,
     ID_START,
     ID_STOP,
     ID_RESTART,
@@ -110,6 +113,19 @@ pub fn tooltip_with_update(
     web_url: Option<&str>,
     launcher_update: Option<&str>,
 ) -> String {
+    tooltip_full(status, web_url, launcher_update, None)
+}
+
+/// 完整版：再多一行「出事了」（I13 · R6 6.3 的「备份失败托盘通知」、R7 的严重级提醒）。
+///
+/// **没有系统级弹窗**：这一版走的是 tooltip + 一个托盘菜单项 ——
+/// 和「启动器有新版本」那一条同一套做法。理由写在 [`note_alert`] 上。
+pub fn tooltip_full(
+    status: &str,
+    web_url: Option<&str>,
+    launcher_update: Option<&str>,
+    alert: Option<&str>,
+) -> String {
     let mut s = format!("Hunter 启动器 · {status}");
     if let Some(u) = web_url {
         s.push('\n');
@@ -118,7 +134,53 @@ pub fn tooltip_with_update(
     if let Some(v) = launcher_update {
         s.push_str(&format!("\n启动器有新版本 v{v}，点开界面可以更新"));
     }
+    if let Some(a) = alert {
+        s.push_str(&format!("\n⚠ {a}"));
+    }
     s
+}
+
+/// 现在挂在托盘上的那条提醒（备份失败 / 严重级资源告警）。
+fn pending_alert() -> &'static std::sync::Mutex<Option<String>> {
+    static P: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    &P
+}
+
+pub fn alert_pending() -> Option<String> {
+    pending_alert().lock().ok().and_then(|g| g.clone())
+}
+
+/// 把一条提醒挂到托盘上（`None` = 清掉）。
+///
+/// ## 为什么不是系统级弹窗
+///
+/// 方案 R6 6.3 与 R7 写的是「托盘通知」。这一版的做法和
+/// [`note_alert`] 的邻居 [`note_launcher_update`] 完全一致：
+/// **改托盘 tooltip + 改一个托盘菜单项的文字**，不引第三方通知插件。
+///
+/// 两个理由，都不是偷懒：
+///
+/// 1. **能验。** 本项目唯一的真机是一台 Linux 测试机，它跑在 Xvfb 下，
+///    没有任何通知守护进程 —— 系统弹窗在那台机器上既弹不出来也截不了图，
+///    做了也只能在报告里写「未验证」。tooltip 与菜单项走的是同一条
+///    `--tray-menu` 遥控口，是**验得了**的（I1 起就是这么验的）。
+/// 2. **不打扰。** 「同一个问题 24 小时内不重复」那条规矩由
+///    [`crate::monitor::alerts`] 的状态文件保证；托盘这一层是常驻的、
+///    不抢焦点的，天然符合那条规矩。
+///
+/// 这是与方案的一处偏离，写进了 I13 报告的「偏离方案的决策」。
+pub fn note_alert<R: Runtime>(app: &AppHandle<R>, text: Option<&str>) {
+    if let Ok(mut g) = pending_alert().lock() {
+        *g = text.map(str::to_string);
+    }
+    if let Some(h) = app.try_state::<TrayHandles<R>>() {
+        let _ = h.alert_item.set_text(match text {
+            Some(t) => format!("⚠ {t}"),
+            None => "一切正常".to_string(),
+        });
+        let _ = h.alert_item.set_enabled(text.is_some());
+    }
+    refresh_status(app);
 }
 
 /// 后台查到的「启动器有新版本」。托盘的 tooltip 与菜单项文字都看它。
@@ -210,6 +272,8 @@ pub fn handle_menu(id: &str) -> Action {
         ID_UPDATE => Action::CheckUpdate,
         ID_AUTOSTART => Action::ToggleAutostart,
         ID_QUIT => Action::RequestQuit,
+        // 出事了那一行：点它把窗口叫出来 —— 横幅、详情与「一键处理」都在运行面板上
+        ID_ALERT => Action::Navigate("dashboard"),
         ID_STATUS => Action::Nothing,
         _ => Action::Nothing,
     }
@@ -221,6 +285,8 @@ pub struct TrayHandles<R: Runtime> {
     pub autostart_item: CheckMenuItem<R>,
     /// 「检查更新」那一项。查到启动器有新版本时它的文字会变（方案 §10 的「托盘提示」）
     pub update_item: MenuItem<R>,
+    /// 「⚠ …」那一项（I13）。平时写「一切正常」并且是灰的，出事了才亮起来
+    pub alert_item: MenuItem<R>,
     pub tray_id: tauri::tray::TrayIconId,
 }
 
@@ -229,6 +295,8 @@ pub struct TrayHandles<R: Runtime> {
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, ID_OPEN, "打开 Hunter", true, None::<&str>)?;
     let status = MenuItem::with_id(app, ID_STATUS, "状态：读取中…", false, None::<&str>)?;
+    // 平时是灰的「一切正常」；备份失败或者出现严重级资源告警时才亮起来（I13）
+    let alert = MenuItem::with_id(app, ID_ALERT, "一切正常", false, None::<&str>)?;
     let start = MenuItem::with_id(app, ID_START, "启动", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, ID_STOP, "停止", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, ID_RESTART, "重启", true, None::<&str>)?;
@@ -252,8 +320,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let menu = Menu::with_items(
         app,
         &[
-            &open, &status, &sep1, &start, &stop, &restart, &sep2, &logs, &update, &feedback,
-            &settings, &autostart, &sep3, &quit,
+            &open, &status, &alert, &sep1, &start, &stop, &restart, &sep2, &logs, &update,
+            &feedback, &settings, &autostart, &sep3, &quit,
         ],
     )?;
 
@@ -288,9 +356,11 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         status_item: status,
         autostart_item: autostart,
         update_item: update,
+        alert_item: alert,
         tray_id: tray.id().clone(),
     });
     spawn_status_poller(app.clone());
+    spawn_alert_poller(app.clone());
     Ok(())
 }
 
@@ -430,13 +500,15 @@ pub fn refresh_status<R: Runtime>(app: &AppHandle<R>) {
         .and_then(|s| s.port)
         .map(|p| format!("http://localhost:{p}"));
     let pending = launcher_update_pending();
+    let alert = alert_pending();
     if let Some(h) = app.try_state::<TrayHandles<R>>() {
         let _ = h.status_item.set_text(format!("状态：{text}"));
         if let Some(tray) = app.tray_by_id(&h.tray_id) {
-            let _ = tray.set_tooltip(Some(tooltip_with_update(
+            let _ = tray.set_tooltip(Some(tooltip_full(
                 &text,
                 url.as_deref(),
                 pending.as_deref(),
+                alert.as_deref(),
             )));
         }
     }
@@ -449,6 +521,51 @@ pub fn refresh_status<R: Runtime>(app: &AppHandle<R>) {
 /// 运行面板自己还会每 10 秒刷一次。15 秒对「托盘上那行状态字」足够新鲜，
 /// 只开着托盘时的开销降到约 0.7%。
 const POLL_INTERVAL: Duration = Duration::from_secs(15);
+
+/// 资源异常的轮询间隔（I13 · R7）。
+///
+/// 比状态轮询慢得多，因为这一层贵得多：一次 `monitor::alerts()` 要跑
+/// `sysinfo` 采样、`docker stats`、`docker system df -v`，还可能顺手算一遍
+/// 「能清掉多少」。而它盯的那几件事（磁盘满、反复重启、数据库长得快）
+/// 本来也不是秒级变化的 —— 10 分钟一次足够，运行面板打开时自己还会每分钟刷一次。
+const ALERT_INTERVAL: Duration = Duration::from_secs(600);
+
+/// 后台定期跑一遍七类监测，把最严重的那一条挂到托盘上（I13 · R7）。
+///
+/// 三道闸门：装过、`[monitor] notify` 开着、而且本项目确实有容器在跑。
+/// 没装过 / 全停着的机器上采这些指标没有意义，只是白起子进程。
+fn spawn_alert_poller<R: Runtime>(app: AppHandle<R>) {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(ALERT_INTERVAL);
+        let cfg = crate::config::LauncherConfig::load();
+        if !cfg.install.done || !cfg.monitor.notify {
+            continue;
+        }
+        if !compose::is_up() {
+            continue;
+        }
+        let a = crate::monitor::alerts();
+        // 只有**这一轮该说话**的那几条才动托盘 —— 「同一个问题 24 小时内不重复」
+        // 的判定在 monitor 那一侧（状态文件跨进程存着），这里不再自己记一份
+        let worth = a
+            .alerts
+            .iter()
+            .find(|x| x.level == crate::monitor::Level::Crit && a.notify.contains(&x.id))
+            .or_else(|| a.alerts.iter().find(|x| a.notify.contains(&x.id)));
+        match worth {
+            Some(x) => {
+                crate::lwarn!("托盘提醒：{} · {}", x.title, x.detail);
+                note_alert(&app, Some(&x.title));
+            }
+            None if a.alerts.is_empty() => note_alert(&app, None),
+            None => {}
+        }
+    });
+}
 
 /// 后台定期刷新状态（方案 §5.8「状态随服务变化」）。
 fn spawn_status_poller<R: Runtime>(app: AppHandle<R>) {
@@ -502,9 +619,10 @@ mod tests {
         ] {
             assert!(MENU_IDS.contains(&id), "菜单里少了 {id}");
         }
-        // 外加方案同一节要求的开机自启
+        // 外加方案同一节要求的开机自启，以及 I13 那条「出事了」
         assert!(MENU_IDS.contains(&ID_AUTOSTART));
-        assert_eq!(MENU_IDS.len(), 11);
+        assert!(MENU_IDS.contains(&ID_ALERT));
+        assert_eq!(MENU_IDS.len(), 12);
     }
 
     #[test]
@@ -520,6 +638,8 @@ mod tests {
         assert_eq!(handle_menu(ID_AUTOSTART), Action::ToggleAutostart);
         assert_eq!(handle_menu(ID_QUIT), Action::RequestQuit);
         assert_eq!(handle_menu(ID_STATUS), Action::Nothing);
+        // I13：点「⚠ …」把窗口叫出来 —— 横幅与「一键处理」都在运行面板上
+        assert_eq!(handle_menu(ID_ALERT), Action::Navigate("dashboard"));
         // 没有一项是「还没做」
         for id in MENU_IDS {
             let a = handle_menu(id);
@@ -585,5 +705,31 @@ mod tests {
         // 没有新版本时不能凭空多一行
         let t0 = tooltip_with_update("已停止", None, None);
         assert_eq!(t0, "Hunter 启动器 · 已停止");
+    }
+
+    #[test]
+    fn 托盘上那条提醒会进_tooltip() {
+        // I13 · R6 6.3：备份失败要让收在托盘里的用户也看得见
+        let normal = tooltip_full("运行中 · 6/6 健康", Some("http://localhost:3101"), None, None);
+        assert!(!normal.contains('⚠'), "{normal}");
+        let bad = tooltip_full(
+            "运行中 · 6/6 健康",
+            Some("http://localhost:3101"),
+            None,
+            Some("备份失败：备份目录所在的盘写满了"),
+        );
+        assert!(bad.contains("⚠ 备份失败：备份目录所在的盘写满了"), "{bad}");
+        // 「有新版本」那一条不该被它顶掉 —— 两件事要同时说得出来
+        let both = tooltip_full("已停止", None, Some("0.1.14"), Some("磁盘快满了"));
+        assert!(both.contains("0.1.14"), "{both}");
+        assert!(both.contains("磁盘快满了"), "{both}");
+    }
+
+    #[test]
+    fn 老的_tooltip_入口行为不变() {
+        assert_eq!(
+            tooltip_with_update("已停止", None, Some("0.1.14")),
+            tooltip_full("已停止", None, Some("0.1.14"), None)
+        );
     }
 }

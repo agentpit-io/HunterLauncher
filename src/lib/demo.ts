@@ -18,6 +18,7 @@ import type {
   AssistAutoSnapshot,
   AppInfo,
   BackupMeta,
+  BackupSettings,
   BootState,
   BuiltinRuntimeStatus,
   DataCheck,
@@ -47,6 +48,11 @@ import type {
   TakeoverState,
   TelemetryView,
   UpgradeCheck,
+  CleanupPlan,
+  MonitorAlerts,
+  RestorePreflight,
+  ScheduleStatus,
+  UninstallPlan,
 } from './types'
 
 /** 构建产物里能被 grep 到的标记，CI 用它确认发布包里没有演示数据。 */
@@ -57,7 +63,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.12'
+export const DEMO_LAUNCHER_VERSION = '0.1.13'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -519,16 +525,180 @@ export const demoHunterUpdate: UpgradeCheck = {
   reason: null,
 }
 
-export const demoBackups: BackupMeta[] = [
-  {
-    id: '2026-09-20_031854-v1.1.0',
+const demoFiles = ['.env', 'docker-compose.yml', 'docker-compose.launcher.yml', 'launcher.toml']
+
+function demoBackup(id: string, at: string, kind: BackupMeta['kind']): BackupMeta {
+  return {
+    id,
     tag: DEMO_HUNTER_TAG,
-    at: '2026-09-20 03:18:54',
-    sqlBytes: 1_482_301,
+    at,
+    kind,
+    launcherVersion: '0.1.13',
+    project: 'hunter',
+    entries: [
+      { name: 'hunter.dump', bytes: 486_233, sha256: '3f2a…' },
+      { name: 'secrets.tar.gz', bytes: 1_204, sha256: '9b71…' },
+    ],
+    dumpBytes: 486_233,
+    dumpError: null,
+    verified: true,
+    verifyNote: 'pg_restore --list 读出 214 条目录项',
+    tableCount: 23,
+    tables: [
+      { table: 'user_preference', rows: 2 },
+      { table: 'schema_migrations', rows: 23 },
+      { table: 'users', rows: 2 },
+    ],
+    rowsTotal: 31,
+    tablesNote: '',
+    volumes: [
+      { short: 'hunter_secrets', file: 'secrets.tar.gz', bytes: 1_204, error: null },
+      { short: 'hunter_user_skills', file: 'user_skills.tar.gz', bytes: 8_912, error: null },
+      { short: 'hunter_opencode_data', file: 'opencode_data.tar.gz', bytes: 142_336, error: null },
+    ],
+    totalBytes: 654_812,
+    elapsedMs: 9_120,
+    dir: `/home/user/Hunter-backups/${id}`,
+    files: demoFiles,
+    sqlBytes: null,
     sqlError: null,
-    files: ['.env', 'docker-compose.yml', 'docker-compose.launcher.yml', 'launcher.toml'],
-  },
+  }
+}
+
+export const demoBackups: BackupMeta[] = [
+  demoBackup('hunter-20260923-0000-v1.2.0', '2026-09-23 00:00:03', 'scheduled'),
+  demoBackup('hunter-20260922-0000-v1.2.0', '2026-09-22 00:00:02', 'scheduled'),
+  demoBackup('hunter-20260921-1004-v1.2.0', '2026-09-21 10:04:31', 'pre-upgrade'),
 ]
+
+export const demoBackupSettings: BackupSettings = {
+  enabled: true,
+  time: '00:00',
+  dir: '',
+  effectiveDir: '/home/user/Hunter-backups',
+  keepDays: 3,
+  includeSessions: true,
+  includeSkills: true,
+  lastOkAt: '2026-09-23 00:00:03',
+  lastError: '',
+  lastRunAt: '2026-09-23 00:00:03',
+  failStreak: 0,
+  count: 3,
+  totalBytes: 1_964_436,
+  diskFreeBytes: 76_836_319_232,
+  suggestedDir: '/home/user/Hunter-backups',
+  externalSuggestions: ['/media/user/T7/Hunter 备份'],
+}
+
+export const demoSchedule: ScheduleStatus = {
+  mech: 'systemd --user 定时器',
+  supported: true,
+  installed: true,
+  enabled: true,
+  wanted: true,
+  time: '00:00',
+  path: '<用户目录>/.config/systemd/user/hunter-backup.timer',
+  nextRun: 'Thu 2026-09-24 00:00:00 CST  14h left  -  -  hunter-backup.timer',
+  lines: ['systemctl --user is-enabled：enabled'],
+  reason: '',
+}
+
+export const demoPreflight: RestorePreflight = {
+  id: 'hunter-20260923-0000-v1.2.0',
+  dir: '<用户目录>/Hunter-backups/hunter-20260923-0000-v1.2.0',
+  tag: DEMO_HUNTER_TAG,
+  currentTag: DEMO_HUNTER_TAG,
+  needsUpgrade: false,
+  hasDump: true,
+  legacySql: false,
+  verified: true,
+  checksumMismatch: [],
+  volumes: ['hunter_secrets', 'hunter_user_skills', 'hunter_opencode_data'],
+  blocked: null,
+  lines: ['逐个核过 6 个文件的 sha256', '备份里有这些数据卷：hunter_secrets、hunter_user_skills、hunter_opencode_data'],
+}
+
+export function demoUninstallPlan(scope: string): UninstallPlan {
+  const all = scope === 'app-and-data'
+  return {
+    scope: all ? 'app-and-data' : 'app-only',
+    confirmPhrase: all ? '删除应用和数据' : '删除应用',
+    containers: ['hunter-web-1', 'hunter-api-1', 'hunter-opencode-1', 'hunter-llm-shim-1', 'hunter-postgres-1', 'hunter-redis-1'],
+    volumes: [
+      { name: 'hunter_hunter_pg_data', short: 'hunter_pg_data', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_pg_data/_data', sizeBytes: 50_800_000 },
+      { name: 'hunter_hunter_secrets', short: 'hunter_secrets', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_secrets/_data', sizeBytes: 4_096 },
+      { name: 'hunter_hunter_opencode_data', short: 'hunter_opencode_data', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_opencode_data/_data', sizeBytes: 380_000 },
+    ],
+    volumesBytes: 51_300_000,
+    images: [
+      { reference: 'ghcr.io/agentpit-io/hunter-community-web:1.2.0', bytes: 121_000_000 },
+      { reference: 'ghcr.io/agentpit-io/hunter-community-api:1.2.0', bytes: 1_900_000_000 },
+    ],
+    imagesBytes: 3_749_307_417,
+    imagesFound: 6,
+    homeBytes: 24_118_000,
+    runtimeBytes: all ? 4_220_000_000 : null,
+    builtinRuntime: true,
+    runtimeBlocked: all
+      ? null
+      : '这台电脑上 Hunter 跑在它自己的一台虚拟机里，你的数据就存在那台虚拟机的磁盘里。删掉运行环境等于把数据一起删掉 —— 而你选的是「保留数据」。',
+    tableCount: all ? 23 : null,
+    lastWrite: all ? '2026-09-23 09:41:02' : null,
+    backups: 3,
+    lastBackupAt: '2026-09-23 00:00:03',
+    backupDir: '<用户目录>/Hunter-backups',
+    scheduleInstalled: true,
+    estFreedBytes: all ? 4_075_000_000 : 24_118_000,
+    warnings: all ? ['备份目录 <用户目录>/Hunter-backups 不会被删除。'] : [],
+    lines: ['本项目名下有 6 个容器', '本项目名下有 6 个数据卷（判据是 docker 的 com.docker.compose.project 标签，不是名字前缀）'],
+  }
+}
+
+export const demoAlerts: MonitorAlerts = {
+  at: '2026-09-23 10:12:40',
+  alerts: [
+    {
+      id: 'host-disk',
+      level: 'warn',
+      title: '系统盘空间偏紧',
+      detail: '这块盘只剩 12.4 GB。Hunter 的镜像与数据加起来有几个 GB，盘满了容器会起不来、数据库也可能写不进去。',
+      facts: [
+        '系统盘（/）剩 12.4 GB / 共 207 GB',
+        '阈值：低于 20 GB 提醒、低于 5 GB 严重',
+        'Hunter 自己能安全清掉的：旧镜像 1.8 GB + 悬空卷 0 B + 过期备份 654 kB = 1.8 GB',
+      ],
+      actions: ['cleanup_project_space'],
+      advice: ['系统盘上别的文件（下载、废纸篓、旧的虚拟机镜像）要不要清，由你自己决定 —— 启动器不会去动 Hunter 之外的任何文件。'],
+      needsAi: false,
+    },
+    {
+      id: 'restart-api',
+      level: 'warn',
+      title: 'api 在反复重启',
+      detail: 'api 这个服务在最近 60 分钟里重启了 4 次。反复重启通常说明它每次起来都撞到同一个问题。',
+      facts: ['docker inspect 的 RestartCount 现在是 204', '窗口 60 分钟内的增量：4 次（阈值 3 次）'],
+      actions: [],
+      advice: ['点「让 AI 帮我看看」会把这个服务最近的日志（脱敏）交给诊断助手。'],
+      needsAi: true,
+    },
+  ],
+  notify: ['host-disk'],
+  reasons: {},
+}
+
+export const demoCleanupPlan: CleanupPlan = {
+  oldImages: [
+    { reference: 'ghcr.io/agentpit-io/hunter-community-api:1.1.0', id: 'sha256:1a2b', bytes: 1_800_000_000 },
+  ],
+  oldImagesBytes: 1_800_000_000,
+  orphanVolumes: [],
+  orphanVolumesBytes: 0,
+  expiredBackups: ['hunter-20260919-0000-v1.2.0'],
+  expiredBackupsBytes: 654_812,
+  totalBytes: 1_800_654_812,
+  lines: ['现在装的是 v1.2.0；本项目别的版本的镜像有 1 个没有任何容器在用'],
+  reasons: [],
+}
 
 export const demoOffline: OfflineImport = {
   path: '/home/user/hunter-images-1.2.0.tar',
@@ -1207,6 +1377,7 @@ export const demoDataCheck: DataCheck = {
   tableCount: null,
   lastWrite: null,
   backups: 2,
+  backupsWithSecrets: 2,
   deep: false,
   deepSkipped: null,
   headline: '检测到你以前的数据，将直接沿用，不会重建数据库、也不会重新生成密钥。',

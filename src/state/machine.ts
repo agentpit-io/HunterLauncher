@@ -162,6 +162,14 @@ export type Event =
   | { type: 'STOP' }
   | { type: 'START' }
   | { type: 'UPGRADE' }
+  /**
+   * 删除应用走完了（I13 · R4 第 3 步）。
+   *
+   * 两种范围都落到欢迎页：Rust 侧已经把 `install.done` 清掉了，
+   * 下一次打开启动器本来也会走到那里。**不留在运行面板上** ——
+   * 那一页上的六个服务格子已经不存在了。
+   */
+  | { type: 'UNINSTALLED' }
   | { type: 'UPGRADE_OK' }
   | { type: 'UPGRADE_FAILED'; detail?: string }
   | { type: 'BACK' }
@@ -351,9 +359,11 @@ export function transition(state: State, event: Event): State {
     case 'Ready':
       if (event.type === 'STOP') return s('Stopped')
       if (event.type === 'UPGRADE') return s('Upgrading')
+      if (event.type === 'UNINSTALLED') return s('Welcome')
       return state
 
     case 'Stopped':
+      if (event.type === 'UNINSTALLED') return s('Welcome')
       return event.type === 'START' ? s('Starting') : state
 
     case 'Upgrading':

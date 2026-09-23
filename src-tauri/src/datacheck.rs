@@ -105,6 +105,14 @@ pub struct DataCheck {
     pub last_write: Option<String>,
     /// 备份目录里有几份备份
     pub backups: usize,
+    /// 其中有几份**含密钥卷**（I13 · R6）。
+    ///
+    /// 这一项是给「缺密钥卷」那一档用的：0.1.12 的备份只有数据库与配置，
+    /// 那时候说「从备份恢复密钥卷」是一句空话（待办池 P1-32）。
+    /// I13 的备份格式里有 `secrets.tar.gz` 了，所以这里如实数一下**真的有几份**
+    /// —— 有才提这条路，没有就不提
+    #[serde(default)]
+    pub backups_with_secrets: usize,
     /// 深查做没做、为什么没做
     pub deep: bool,
     pub deep_skipped: Option<String>,
@@ -175,9 +183,20 @@ fn run(deep: bool) -> DataCheck {
         }
     ));
 
-    let backups = crate::backup::list().len();
+    let all_backups = crate::backup::list();
+    let backups = all_backups.len();
+    let backups_with_secrets = all_backups
+        .iter()
+        .filter(|m| {
+            m.volumes
+                .iter()
+                .any(|v| v.short == crate::compose::VOL_SECRETS && v.bytes.is_some())
+        })
+        .count();
     if backups > 0 {
-        lines.push(format!("备份目录里有 {backups} 份备份"));
+        lines.push(format!(
+            "备份目录里有 {backups} 份备份，其中 {backups_with_secrets} 份带着密钥卷"
+        ));
     }
 
     // 卷里那份库是哪个大版本。一个 `--rm` 的一次性容器，数据卷挂成 `:ro`
@@ -210,6 +229,7 @@ fn run(deep: bool) -> DataCheck {
         table_count: None,
         last_write: None,
         backups,
+        backups_with_secrets,
         deep: false,
         deep_skipped: None,
         headline: String::new(),
@@ -311,9 +331,18 @@ fn headline(c: &DataCheck) -> String {
             s
         }
         Decision::MissingSecrets => {
-            "数据库还在，但密钥卷（hunter_secrets）不见了。\
-             数据库里用它加密过的配置解不开 —— 别的数据不受影响。"
-                .to_string()
+            let base = "数据库还在，但密钥卷（hunter_secrets）不见了。\
+                        数据库里用它加密过的配置解不开 —— 别的数据不受影响。";
+            // I13：备份格式里有 `secrets.tar.gz` 之后，这一档才**真的**有第二条路
+            if c.backups_with_secrets > 0 {
+                format!(
+                    "{base}备份目录里有 {} 份带着密钥卷的备份，\
+                     装完之后可以在「备份与恢复」里把它恢复回来。",
+                    c.backups_with_secrets
+                )
+            } else {
+                base.to_string()
+            }
         }
         Decision::Downgrade => {
             let a = c.pg_version.as_deref().unwrap_or("—");
@@ -648,6 +677,7 @@ mod tests {
             table_count: None,
             last_write: None,
             backups: 0,
+            backups_with_secrets: 0,
             deep: false,
             deep_skipped: None,
             headline: String::new(),
@@ -768,5 +798,32 @@ mod tests {
     fn 目标_pg_大版本从镜像引用里切() {
         // 默认是 docker.io/library/postgres:16-alpine
         assert_eq!(target_pg_major().as_deref(), Some("16"));
+    }
+
+    /// I13 · R6：备份里真的有密钥卷了，「缺密钥卷」那一档才提得起第二条路。
+    ///
+    /// 0.1.12 的备份只有数据库与配置 —— 那时候说「从备份恢复密钥卷」是一句空话
+    /// （待办池 P1-32 记的就是这件事）。所以这里钉的是「有才说，没有不说」。
+    #[test]
+    fn 缺密钥卷_有带密钥卷的备份时才提那条路() {
+        let mut c = base();
+        c.has_db = true;
+        c.has_jwt_secret = true;
+        c.decision = Decision::MissingSecrets;
+
+        c.backups = 3;
+        c.backups_with_secrets = 0;
+        c.headline = headline(&c);
+        assert!(c.headline.contains("解不开"), "{}", c.headline);
+        assert!(
+            !c.headline.contains("备份与恢复"),
+            "一份带密钥卷的备份都没有时，不该提一条走不通的路：{}",
+            c.headline
+        );
+
+        c.backups_with_secrets = 2;
+        c.headline = headline(&c);
+        assert!(c.headline.contains("2 份"), "{}", c.headline);
+        assert!(c.headline.contains("备份与恢复"), "{}", c.headline);
     }
 }

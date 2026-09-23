@@ -286,10 +286,140 @@ pub struct InstallSection {
     pub stopped_by_user: bool,
 }
 
+/// 本机数据备份（方案第四节 `[backup]`、R6 · I13）。
+///
+/// 默认值全部来自用户 2026-09-22 的原话：**每晚 00:00、目录自动建议、保留近 3 天**。
+///
+/// 三件事值得单说：
+///
+/// 1. **`dir` 默认是空的，不是一个写死的路径。** 空 = 「用这台机器上该用的那一个」
+///    （[`BackupSection::effective_dir`]）。把建议值直接灌进配置文件的话，
+///    用户换了机器、改了家目录，配置里那一行就变成一个指向不存在目录的谎话。
+/// 2. **目录一定在 `~/.hunter` 之外。** 删除应用（R4）会把 `~/.hunter` 整个删掉，
+///    备份放在里面等于「删的时候连救命的那一份一起删」。
+/// 3. **`last_error` 与 `fail_streak` 落盘**：定时备份跑在一个**没有界面**的进程里
+///    （`--backup --scheduled`），它失败的时候没有人在看。这两项是下一次打开
+///    启动器时唯一能知道「上次出事了」的途径。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupSection {
+    /// 自动备份开关。**默认开**
+    pub enabled: bool,
+    /// 每天几点（本机时区），`HH:MM`。默认 `00:00`
+    pub time: String,
+    /// 备份目录。**空 = 按平台自动建议**，见 [`BackupSection::effective_dir`]
+    #[serde(default)]
+    pub dir: String,
+    /// 保留最近几天（按天保留最后一份）。默认 3，可改 1–30
+    pub keep_days: u32,
+    /// 会话记录卷（`hunter_opencode_data`）要不要一起打包。默认要
+    pub include_sessions: bool,
+    /// 自建技能卷（`hunter_user_skills`）要不要一起打包。默认要
+    pub include_skills: bool,
+    /// 最近一次成功的时间（上海时间）。空 = 从来没成功过
+    #[serde(default)]
+    pub last_ok_at: String,
+    /// 最近一次失败的原因。空 = 上一次是成功的
+    #[serde(default)]
+    pub last_error: String,
+    /// 最近一次**尝试**的时间（不管成没成）。判「有没有睡过头」用它
+    #[serde(default)]
+    pub last_run_at: String,
+    /// 连续失败了几次。**到 2 就交给诊断助手**（R6 6.3）
+    #[serde(default)]
+    pub fail_streak: u32,
+    /// 定时任务装没装（由 [`crate::schedule`] 写，只是个备忘；
+    /// 「装没装」的真值一律现查系统，不读这一项，红线 1）
+    #[serde(default)]
+    pub schedule_installed: bool,
+}
+
+impl Default for BackupSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            time: "00:00".into(),
+            dir: String::new(),
+            keep_days: 3,
+            include_sessions: true,
+            include_skills: true,
+            last_ok_at: String::new(),
+            last_error: String::new(),
+            last_run_at: String::new(),
+            fail_streak: 0,
+            schedule_installed: false,
+        }
+    }
+}
+
+impl BackupSection {
+    /// 这台机器该用哪个备份目录。用户填了就用他填的，没填就用建议值。
+    pub fn effective_dir(&self) -> std::path::PathBuf {
+        let s = self.dir.trim();
+        if s.is_empty() {
+            return suggested_backup_dir();
+        }
+        expand_home(s)
+    }
+
+    /// `HH:MM` → （时, 分）。认不出来就退回 00:00 —— **不报错，也不猜别的时间**。
+    pub fn hhmm(&self) -> (u8, u8) {
+        parse_hhmm(&self.time).unwrap_or((0, 0))
+    }
+
+    /// 保留天数收进 1–30。配置文件被手改成 0 的时候不能真的一份都不留。
+    pub fn keep_days_clamped(&self) -> u32 {
+        self.keep_days.clamp(1, 30)
+    }
+}
+
+/// `HH:MM` 解析。只认 24 小时制。
+///
+/// 方案写的是「可改为任意整点 / 半点」，这里**不拦** `07:15` 这类值 ——
+/// 三个平台的定时机制本来就接受任意分钟，没有理由替用户砍掉。
+pub fn parse_hhmm(s: &str) -> Option<(u8, u8)> {
+    let (h, m) = s.trim().split_once(':')?;
+    let h: u8 = h.trim().parse().ok()?;
+    let m: u8 = m.trim().parse().ok()?;
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// 把 `~/xxx` 展开成绝对路径。配置文件里写 `~` 是很自然的事。
+pub fn expand_home(s: &str) -> std::path::PathBuf {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("~/") {
+        return paths::home().join(rest);
+    }
+    if s == "~" {
+        return paths::home();
+    }
+    std::path::PathBuf::from(s)
+}
+
+/// 按平台自动建议的备份目录（方案 R6 6.1 那张表）。
+///
+/// 三个平台都落在**用户文档目录**下，理由是同一条：
+/// 它在 `~/.hunter` 之外（删除应用波及不到）、用户找得到、而且是他本来就会备份的地方。
+pub fn suggested_backup_dir() -> std::path::PathBuf {
+    let home = paths::home();
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Documents").join("Hunter 备份")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        home.join("Documents").join("Hunter 备份")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        home.join("Hunter-backups")
+    }
+}
+
 /// 资源监控的阈值（方案第四节 `[monitor]`）。
 ///
-/// I12 只做 R2「看得见」这一半：这些阈值决定运行面板上哪个数字标黄、哪个标红。
-/// R7 的「提醒 + 智能分析 + 一键处理」是 I13 的活，本轮**不发通知、不弹横幅**。
+/// I12 做了 R2「看得见」那一半：这些阈值决定运行面板上哪个数字标黄、哪个标红。
+/// I13 的 R7 接上「提醒 + 一键处理 + 交给诊断助手」，方案 R7 那张表里的
+/// 七类监测项各自的阈值都在这里，**一条都不写死在代码里**。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorSection {
     /// 系统盘剩余低于这个数（GB）标黄
@@ -298,10 +428,47 @@ pub struct MonitorSection {
     pub host_disk_crit_gb: u64,
     /// 运行环境虚拟机磁盘用量超过这个百分比标黄
     pub vm_disk_warn_pct: u8,
+    /// 超过这个百分比标红（R7 表：> 95%）
+    #[serde(default = "d_vm_disk_crit")]
+    pub vm_disk_crit_pct: u8,
     /// 运行环境虚拟机内存用量超过这个百分比标黄
     pub vm_mem_warn_pct: u8,
-    /// 允不允许弹系统通知。**I12 不读这一项**（本轮不发通知），留给 I13 的 R7
+    /// 一个服务在 [`Self::restart_window_min`] 分钟内重启这么多次就提醒（R7 表：≥ 3）
+    #[serde(default = "d_restart_warn")]
+    pub restart_warn_count: u32,
+    /// 上面那个窗口有多长（分钟）。R7 表写的是 1 小时
+    #[serde(default = "d_restart_window")]
+    pub restart_window_min: u32,
+    /// 数据库单日增长超过这么多 GB 就提醒（R7 表：> 1GB）
+    #[serde(default = "d_db_growth")]
+    pub db_growth_warn_gb: u64,
+    /// 备份目录所在盘至少要放得下几份备份，放不下就提醒（R7 表：剩余 < 3 份备份大小）
+    #[serde(default = "d_backup_copies")]
+    pub backup_disk_min_copies: u32,
+    /// 同一个问题多少小时内不重复打扰（R7：24 小时）
+    #[serde(default = "d_quiet_hours")]
+    pub quiet_hours: u32,
+    /// 允不允许弹系统通知（严重级才弹）
     pub notify: bool,
+}
+
+fn d_vm_disk_crit() -> u8 {
+    95
+}
+fn d_restart_warn() -> u32 {
+    3
+}
+fn d_restart_window() -> u32 {
+    60
+}
+fn d_db_growth() -> u64 {
+    1
+}
+fn d_backup_copies() -> u32 {
+    3
+}
+fn d_quiet_hours() -> u32 {
+    24
 }
 
 impl Default for MonitorSection {
@@ -310,7 +477,13 @@ impl Default for MonitorSection {
             host_disk_warn_gb: 20,
             host_disk_crit_gb: 5,
             vm_disk_warn_pct: 80,
+            vm_disk_crit_pct: d_vm_disk_crit(),
             vm_mem_warn_pct: 85,
+            restart_warn_count: d_restart_warn(),
+            restart_window_min: d_restart_window(),
+            db_growth_warn_gb: d_db_growth(),
+            backup_disk_min_copies: d_backup_copies(),
+            quiet_hours: d_quiet_hours(),
             notify: true,
         }
     }
@@ -519,6 +692,8 @@ pub struct LauncherConfig {
     pub takeover: TakeoverSection,
     #[serde(default)]
     pub monitor: MonitorSection,
+    #[serde(default)]
+    pub backup: BackupSection,
 }
 
 /// 「直接用这台机器上已经有的那一套 Hunter」（I7 · `reuse_existing_hunter`）。

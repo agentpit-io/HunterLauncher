@@ -23,6 +23,14 @@ const DEMO_STATES: Record<string, State> = {
   done: { name: 'Done' },
   dashboard: { name: 'Ready' },
   'dashboard-quota-exhausted': { name: 'Ready' },
+  // I13 · R7：运行面板顶上那条异常提醒（磁盘 / 反复重启）
+  'dashboard-alert': { name: 'Ready' },
+  // I13 · R6：备份与恢复那一页，以及它上面的「恢复数据」确认弹窗
+  backup: { name: 'Ready' },
+  'backup-restore': { name: 'Ready' },
+  // I13 · R4：删除应用（三步里的前两步：选范围 + 逐字输入）
+  uninstall: { name: 'Ready' },
+  'uninstall-all': { name: 'Ready' },
   // I7：升级上来的老机器（网页端口还对局域网开着）看到的那条横幅
   'dashboard-lan': { name: 'Ready' },
   settings: { name: 'Ready' },
@@ -68,7 +76,9 @@ function initialState(): State {
 
 function initialOverlay(): Overlay {
   const page = demoPage()
-  if (page === 'settings-lan') return 'settings'
+  if (page === 'settings-lan' || page === 'settings-backup') return 'settings'
+  // I13：「备份与恢复」是一张新的抽屉页
+  if (page === 'backup' || page === 'backup-restore') return 'backup'
   return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
     ? page
     : null

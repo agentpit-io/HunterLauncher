@@ -74,9 +74,76 @@ fn civil_from_unix(t: i64) -> (i64, u32, u32, u32, u32, u32) {
     )
 }
 
+/// `YYYY-MM-DD HH:MM:SS`（上海时间）→ Unix 秒。**[`format_shanghai`] 的逆运算**。
+///
+/// I13 才需要它：「上一次成功的自动备份是什么时候」存在配置里的是一串人看的时间，
+/// 而「距今多少小时」这个判断要拿它跟现在比。认不出来的格式返回 `None` ——
+/// 配置文件被手改成别的样子时，宁可不判也不猜（红线 1）。
+pub fn unix_from_shanghai(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (d, t) = s.split_once(' ')?;
+    let mut dp = d.split('-');
+    let y: i64 = dp.next()?.parse().ok()?;
+    let mo: u32 = dp.next()?.parse().ok()?;
+    let da: u32 = dp.next()?.parse().ok()?;
+    let mut tp = t.split(':');
+    let h: i64 = tp.next()?.parse().ok()?;
+    let mi: i64 = tp.next()?.parse().ok()?;
+    let se: i64 = tp.next().unwrap_or("0").parse().ok()?;
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&da) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    let days = days_from_civil(y, mo, da);
+    Some(days * 86_400 + h * 3600 + mi * 60 + se - SHANGHAI_OFFSET_SECS)
+}
+
+/// 距离那个时刻过去了多少小时（负数说明那个时间在未来）。认不出来返回 `None`。
+pub fn hours_since_shanghai(s: &str) -> Option<f64> {
+    let t = unix_from_shanghai(s)?;
+    Some((now_unix() - t) as f64 / 3600.0)
+}
+
+/// Howard Hinnant 的 days_from_civil，[`civil_from_unix`] 的逆。
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let m = m as i64;
+    let d = d as i64;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 上海时间来回换算是同一个数() {
+        for t in [1_789_794_881_i64, 1_709_222_399, 1_709_222_400, 0] {
+            let s = format_shanghai(t);
+            assert_eq!(unix_from_shanghai(&s), Some(t), "{s}");
+        }
+    }
+
+    #[test]
+    fn 认不出来的时间返回_none_不猜() {
+        assert_eq!(unix_from_shanghai(""), None);
+        assert_eq!(unix_from_shanghai("昨天"), None);
+        assert_eq!(unix_from_shanghai("2026-09-23"), None);
+        assert_eq!(unix_from_shanghai("2026-13-01 00:00:00"), None, "13 月");
+        assert_eq!(unix_from_shanghai("2026-09-23 25:00:00"), None, "25 点");
+    }
+
+    #[test]
+    fn 距今多少小时() {
+        let one_hour_ago = format_shanghai(now_unix() - 3600);
+        let h = hours_since_shanghai(&one_hour_ago).expect("认得出来");
+        assert!((h - 1.0).abs() < 0.1, "{h}");
+        assert_eq!(hours_since_shanghai("不是时间"), None);
+    }
 
     #[test]
     fn 按上海时间印出() {

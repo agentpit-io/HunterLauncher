@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { EnvList } from '../components/EnvList'
-import { Field, SegmentedControl, TextInput, Toggle } from '../components/Field'
+import { Checkbox, Field, SegmentedControl, TextInput, Toggle } from '../components/Field'
 import { Modal } from '../components/Modal'
 import { OfflineImport } from '../components/OfflineImport'
 import { PlainLayout } from '../components/WizardLayout'
@@ -10,7 +10,7 @@ import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import { useStore } from '../state/context'
 import { LOCALES, type Locale } from '../i18n'
-import type { LauncherSettings } from '../lib/types'
+import type { BackupSettings, LauncherSettings } from '../lib/types'
 
 /**
  * 出站地址白名单（技术方案第 15 节）。
@@ -167,6 +167,15 @@ export function Settings() {
             这一节里的每个数字（装了什么版本、多少字节、从哪个源下的）都来自
             Rust 当场读的 `installed.json`，界面不生成任何数字（红线 1）。 */}
         <RuntimeCard settings={d} t={t} onPatch={patch} onDone={() => s.reload()} />
+
+        {/* I13 · R6：数据备份。开关、时间、目录、保留天数、内容勾选都在这里，
+            改完**当场**去改系统里的定时任务 —— 「配置里写着几点」和
+            「系统里真的几点跑」永远不该是两件事（写在 write_backup_settings 里）。 */}
+        <BackupCard t={t} onOpen={() => setOverlay('backup')} />
+
+        {/* I13 · R7：资源提醒。阈值都是 `[monitor]` 里的真实配置，
+            右边那一行「现在有几条提醒」是当场跑一遍监测的结果，不是缓存 */}
+        <MonitorCard t={t} />
 
         <Card>
           <div className="text-md font-medium text-ink">{t.settings.sectionPrivacy}</div>
@@ -770,5 +779,221 @@ function AuditLog({ t }: { t: ReturnType<typeof useStore>['t'] }) {
         </pre>
       )}
     </div>
+  )
+}
+
+/**
+ * 「数据备份」分区（I13 · R6 6.1）。
+ *
+ * 界面上的每一项都对应 `launcher.toml [backup]` 里的一项，改一项落一次盘，
+ * **并且当场把系统里的定时任务改成一致的样子**。
+ *
+ * 「定时任务」那一行显示的是 Rust 现查系统的结果（`launchctl print` /
+ * `systemctl --user is-enabled` / `schtasks /Query`），不是配置里的备忘 ——
+ * 配置说「开着」而系统里根本没装，正是最需要被看见的那种情况。
+ */
+function BackupCard({ t, onOpen }: { t: ReturnType<typeof useStore>['t']; onOpen: () => void }) {
+  const [nonce, setNonce] = useState(0)
+  const b = useAsync(() => ipc.readBackupSettings(), [nonce])
+  const sc = useAsync(() => ipc.backupScheduleStatus(), [nonce])
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [draft, setDraft] = useState<BackupSettings | null>(null)
+  const d = draft ?? b.data
+
+  async function patch(p: Partial<BackupSettings>) {
+    if (!d) return
+    setSaving(true)
+    setErr(null)
+    const next = { ...d, ...p }
+    setDraft(next)
+    try {
+      setDraft(await ipc.writeBackupSettings(next))
+      setNonce((n) => n + 1)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setDraft(b.data)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function pick() {
+    try {
+      const p = await ipc.pickBackupDir()
+      if (p) await patch({ dir: p })
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <Card>
+      <div className="text-md font-medium text-ink">{t.settings.sectionBackup}</div>
+      <div className="mt-[6px] text-sm leading-[1.6] text-muted">{t.settings.backupHint}</div>
+      <div className="mt-[14px] flex flex-col gap-[6px]">
+        <Row label={t.settings.backupEnabled}>
+          <Toggle
+            on={d?.enabled ?? false}
+            testId="settings-backup-enabled"
+            onChange={(v) => void patch({ enabled: v })}
+            label={t.settings.backupEnabled}
+          />
+        </Row>
+      </div>
+      <Field className="mt-[14px]" label={t.settings.backupTime} hint={t.settings.backupTimeHint}>
+        <TextInput
+          value={d?.time ?? ''}
+          mono
+          onChange={(v) => setDraft(d ? { ...d, time: v } : d)}
+          placeholder="00:00"
+        />
+        <div className="mt-[8px]">
+          <Button
+            size="sm"
+            data-testid="settings-backup-time-save"
+            disabled={saving || !d}
+            onClick={() => d && void patch({ time: d.time })}
+          >
+            {t.common.save}
+          </Button>
+        </div>
+      </Field>
+      <Field className="mt-[14px]" label={t.settings.backupDir} hint={t.settings.backupDirHint}>
+        <div className="tnum break-all text-md text-ink" data-testid="settings-backup-dir">
+          {d?.effectiveDir ?? t.app.noData}
+        </div>
+        <div className="mt-[8px] flex flex-wrap gap-[10px]">
+          <Button size="sm" data-testid="settings-backup-pick" onClick={() => void pick()}>
+            {t.settings.backupDirPick}
+          </Button>
+          {d?.dir && (
+            <Button size="sm" variant="ghost" onClick={() => void patch({ dir: '' })}>
+              {t.settings.backupDirSuggest(d.suggestedDir)}
+            </Button>
+          )}
+        </div>
+        {d?.externalSuggestions.map((x) => (
+          <div key={x} className="mt-[8px] text-xs leading-[1.5] text-amber-text">
+            {t.settings.backupDirExternal(x)}
+          </div>
+        ))}
+      </Field>
+      <Field className="mt-[14px]" label={t.settings.backupKeepDays} hint={t.settings.backupKeepDaysHint}>
+        <SegmentedControl<string>
+          value={String(d?.keepDays ?? 3)}
+          testIdPrefix="settings-backup-keep"
+          onChange={(v) => void patch({ keepDays: Number(v) })}
+          options={['1', '3', '7', '14', '30'].map((n) => ({ id: n, label: n }))}
+        />
+      </Field>
+      <div className="mt-[14px] text-sm text-label">{t.settings.backupIncludes}</div>
+      <div className="mt-[8px] flex flex-col gap-[8px]">
+        <Checkbox on disabled onChange={() => {}}>
+          {t.settings.backupIncludeDb}
+        </Checkbox>
+        <Checkbox on disabled onChange={() => {}}>
+          {t.settings.backupIncludeSecrets}
+        </Checkbox>
+        <Checkbox on disabled onChange={() => {}}>
+          {t.settings.backupIncludeEnv}
+        </Checkbox>
+        <Checkbox
+          on={d?.includeSkills ?? true}
+          onChange={(v) => void patch({ includeSkills: v })}
+        >
+          <span data-testid="settings-backup-skills">{t.settings.backupIncludeSkills}</span>
+        </Checkbox>
+        <Checkbox
+          on={d?.includeSessions ?? true}
+          onChange={(v) => void patch({ includeSessions: v })}
+        >
+          <span data-testid="settings-backup-sessions">{t.settings.backupIncludeSessions}</span>
+        </Checkbox>
+      </div>
+      <div className="mt-[14px]">
+        <EnvList
+          items={[
+            {
+              label: t.settings.backupSchedule,
+              value: sc.data
+                ? `${sc.data.mech} · ${sc.data.installed ? (sc.data.enabled ? 'enabled' : 'installed') : 'not installed'}`
+                : null,
+              reason: sc.data?.reason || t.app.noDataReason,
+            },
+            {
+              label: t.settings.backupLastOk,
+              value: d?.lastOkAt || null,
+              reason: t.settings.backupNever,
+            },
+            {
+              label: t.settings.backupLastError,
+              value: d?.lastError || null,
+              reason: '—',
+            },
+          ]}
+        />
+      </div>
+      {sc.data?.nextRun && (
+        <div className="tnum mt-[8px] break-all text-xs text-muted">{sc.data.nextRun}</div>
+      )}
+      {sc.data && !sc.data.supported && (
+        <div className="mt-[8px] text-xs leading-[1.5] text-amber-text">{sc.data.reason}</div>
+      )}
+      {err && <div className="mt-[10px] text-sm leading-[1.5] text-danger">{err}</div>}
+      {saving && <div className="mt-[8px] text-xs text-amber-text">{t.settings.backupSaving}</div>}
+      <div className="mt-[14px]">
+        <Button size="sm" data-testid="settings-open-backup" onClick={onOpen}>
+          {t.settings.backupOpen}
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+/** 「资源提醒」分区（I13 · R7）。阈值是只读展示 —— 改它们要动 `[monitor]`，
+ *  而那几个数字的含义比一个滑块能表达的多，写进配置文件更诚实。 */
+function MonitorCard({ t }: { t: ReturnType<typeof useStore>['t'] }) {
+  const a = useAsync(() => ipc.monitorAlerts(), [])
+  const c = useAsync(() => ipc.cleanupPlan(), [])
+  return (
+    <Card>
+      <div className="text-md font-medium text-ink">{t.settings.sectionMonitor}</div>
+      <div className="mt-[6px] text-sm leading-[1.6] text-muted">{t.settings.monitorHint}</div>
+      <div className="mt-[14px]">
+        <EnvList
+          items={[
+            {
+              label: t.settings.monitorAlerts,
+              value: a.data ? (a.data.alerts.length === 0 ? t.settings.monitorNone : String(a.data.alerts.length)) : null,
+              reason: a.error?.message ?? t.app.noDataReason,
+            },
+            {
+              label: t.settings.monitorCleanup,
+              value: c.data ? fmtBytes(c.data.totalBytes) : null,
+              reason: c.data?.reasons[0] ?? t.app.noDataReason,
+            },
+          ]}
+        />
+      </div>
+      {a.data && a.data.alerts.length > 0 && (
+        <ul className="mt-[10px] flex flex-col gap-[6px] text-sm leading-[1.5] text-body" data-testid="settings-alerts">
+          {a.data.alerts.map((x) => (
+            <li key={x.id}>
+              · <span className={x.level === 'crit' ? 'text-danger' : 'text-amber-text'}>{x.title}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {a.data && Object.entries(a.data.reasons).length > 0 && (
+        <ul className="mt-[8px] flex flex-col gap-[4px] text-xs leading-[1.5] text-muted">
+          {Object.entries(a.data.reasons).map(([k, v]) => (
+            <li key={k}>
+              · {k}：{v}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   )
 }

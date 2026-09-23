@@ -90,6 +90,27 @@ pub struct Args {
     pub auto: bool,
     /// I5：`--assist-mode auto|confirm|off`，不给就用 `launcher.toml` 里存的那一档
     pub assist_mode: Option<String>,
+
+    // ── I13 ─────────────────────────────────────────────────────────────
+    /// `--backup --scheduled`：**这一次是定时任务跑的**（R6 6.3 的无界面入口）。
+    ///
+    /// 和手动备份的区别只有三点，而且每一点都有理由：
+    /// ① 结果要记进 `[backup]`（没有界面的那一次失败了，没人在看）；
+    /// ② Hunter 已停止时只临时起 postgres、做完**停回原状态**；
+    /// ③ 运行环境都没起的话**记为跳过**，不擅自把整套服务拉起来。
+    pub scheduled: bool,
+    /// `--restore <id 或目录>`：从一份备份恢复。要 `-y`
+    pub restore: Option<String>,
+    /// `--schedule <install|remove|status>`：管定时任务
+    pub schedule: Option<String>,
+    /// `--uninstall <app|all>`：删除应用。要 `-y` 和 `--confirm`
+    pub uninstall: Option<String>,
+    /// `--confirm <文字>`：逐字确认那句话
+    pub confirm: Option<String>,
+    /// `--with-images` / `--with-runtime` / `--backup-first`
+    pub with_images: bool,
+    pub with_runtime: bool,
+    pub backup_first: bool,
 }
 
 /// 手写参数解析。为这几个开关拖一个 clap 进来不划算，而且 Tauri 的可执行文件
@@ -119,6 +140,14 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         code: None,
         auto: false,
         assist_mode: None,
+        scheduled: false,
+        restore: None,
+        schedule: None,
+        uninstall: None,
+        confirm: None,
+        with_images: false,
+        with_runtime: false,
+        backup_first: false,
     };
     let v: Vec<String> = argv.into_iter().collect();
     let mut i = 0;
@@ -242,10 +271,43 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 }
                 a.headless = true;
             }
+            "--scheduled" => a.scheduled = true,
+            "--with-images" => a.with_images = true,
+            "--with-runtime" => a.with_runtime = true,
+            "--backup-first" => a.backup_first = true,
+            "--confirm" => {
+                a.confirm = v.get(i + 1).cloned();
+                i += 1;
+            }
+            "--restore" => {
+                a.restore = v.get(i + 1).filter(|x| !x.starts_with('-')).cloned();
+                if a.restore.is_some() {
+                    i += 1;
+                }
+                a.action = Some("restore".into());
+                a.headless = true;
+            }
+            "--schedule" => {
+                a.schedule = v.get(i + 1).filter(|x| !x.starts_with('-')).cloned();
+                if a.schedule.is_some() {
+                    i += 1;
+                }
+                a.action = Some("schedule".into());
+                a.headless = true;
+            }
+            "--uninstall" => {
+                a.uninstall = v.get(i + 1).filter(|x| !x.starts_with('-')).cloned();
+                if a.uninstall.is_some() {
+                    i += 1;
+                }
+                a.action = Some("uninstall".into());
+                a.headless = true;
+            }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
-            | "--backups" | "--check-net" | "--boot-state" | "--monitor" | "--data-check" => {
+            | "--backups" | "--check-net" | "--boot-state" | "--monitor" | "--data-check"
+            | "--backup" | "--alerts" | "--cleanup" | "--uninstall-plan" => {
                 a.action = Some(v[i].trim_start_matches("--").to_string());
                 a.headless = true;
             }
@@ -295,12 +357,25 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
   hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 走系统授权框装）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
-  hunter-launcher --backups             列出 ~/.hunter/backups/ 里的备份
+  hunter-launcher --backups             列出全部备份（当前备份目录 + 老的 ~/.hunter/backups）
+  hunter-launcher --backup              立刻做一次备份（pg_dump -Fc + 密钥卷 + 配置，做完校验）
+  hunter-launcher --backup --scheduled  定时任务用的无界面入口（Hunter 停着也能做；运行环境没起则记为跳过）
+  hunter-launcher --restore <id|目录>   从一份备份恢复（要 -y 与 --confirm 恢复数据）
+  hunter-launcher --schedule status|install|remove   管定时备份任务
+  hunter-launcher --uninstall-plan      删除应用会动到什么（只读）
+  hunter-launcher --uninstall app|all --confirm <文字> -y   删除应用
+  hunter-launcher --alerts              硬盘 / 内存 / 服务异常的提醒（R7，只读）
+  hunter-launcher --cleanup             只清本项目旧镜像、悬空卷、过期备份（要 -y 才真删）
   hunter-launcher --import-images <tar> 从离线包导入镜像，之后安装不再联网拉
   hunter-launcher --export-images <tar> 把本机的六个镜像打成离线包
 
 选项
   --key-file <路径>   从文件读 hunter key（文件建议权限 600）。不给就交互式输入
+  --scheduled         跟着 --backup 用：这一次是定时任务跑的
+  --confirm <文字>    跟着 --uninstall / --restore 用：逐字确认那句话
+  --with-images       跟着 --uninstall 用：连镜像一起删
+  --with-runtime      跟着 --uninstall 用：连运行环境（虚拟机）一起删
+  --backup-first      跟着 --uninstall 用：删之前先备份一次
   --registry <源>     固定镜像源：ghcr | tencent | 自定义前缀。不给就自动测速选
   --tag <版本>        Hunter 版本，默认 1.2.0
   --pull-only         只拉镜像不起容器（网速慢时可以先预下载）
@@ -364,6 +439,14 @@ pub fn run(args: &Args) -> i32 {
         Some("self-update") => cmd_self_update(),
         Some("upgrade") => cmd_upgrade(&st, args),
         Some("backups") => cmd_backups(),
+        // ── I13 ─────────────────────────────────────────────────────
+        Some("backup") => cmd_backup(args),
+        Some("restore") => cmd_restore(args),
+        Some("schedule") => cmd_schedule(args),
+        Some("uninstall-plan") => cmd_uninstall_plan(args),
+        Some("uninstall") => cmd_uninstall(args),
+        Some("alerts") => cmd_alerts(),
+        Some("cleanup") => cmd_cleanup(args),
         Some("import-images") => cmd_import_images(&st, args),
         Some("export-images") => cmd_export_images(&st, args),
         _ if args.auto => cmd_auto(&st, args),
@@ -2027,12 +2110,388 @@ fn cmd_upgrade(st: &AppState, args: &Args) -> AppResult<()> {
 /// `--backups`：列一下备份。
 fn cmd_backups() -> AppResult<()> {
     title("备份");
-    println!("目录 {}", paths::backups_dir().display());
+    let cfg = config::LauncherConfig::load();
+    println!("备份目录 {}", cfg.backup.effective_dir().display());
+    println!(
+        "老目录   {}（0.1.12 及之前的备份还在这儿，照样恢复得了）",
+        paths::backups_dir().display()
+    );
     for line in crate::backup::summary_lines() {
         println!("  {line}");
     }
-    println!("\n恢复某次备份的数据库：");
-    println!("  docker compose -p hunter exec -T postgres psql -U hunter -d hunter < <备份目录>/hunter.sql");
+    println!("\n恢复：hunter-launcher --restore <id 或目录> --confirm 恢复数据 -y");
+    Ok(())
+}
+
+// ── I13 · R6 备份与恢复 ───────────────────────────────────────────────────
+
+/// `--backup [--scheduled]`。**定时任务跑的就是这一条。**
+///
+/// 退出码：0 成功 / 0 跳过（不是失败，见下）/ 1 失败。
+/// 「跳过」为什么不算失败：Hunter 整套都没起、运行环境也没起的时候，
+/// 方案 R6 6.3 明确要求**不擅自启动整套服务**。那一次没有备份到东西，
+/// 但也没有出错 —— 报成失败会让「连续两次失败交给诊断助手」误触发。
+fn cmd_backup(args: &Args) -> AppResult<()> {
+    let cfg = config::LauncherConfig::load();
+    if args.scheduled {
+        // 无界面那一路把 stdout 也写进日志：这一次没有人在看屏幕
+        crate::linfo!("定时备份开始（--backup --scheduled）");
+    }
+    title(if args.scheduled {
+        "定时备份"
+    } else {
+        "备份"
+    });
+    println!("备份到 {}", cfg.backup.effective_dir().display());
+
+    // 运行环境都没起 → 记为跳过，**不擅自把整套服务拉起来**
+    let eff = crate::runtime::effective::current();
+    if !eff.running {
+        let why = format!(
+            "跳过：Hunter 的运行环境现在没在跑（{}）。备份需要 postgres，\
+             而定时备份不会替你把整套服务启动起来。下次打开启动器时可以点「立即备份一次」。",
+            eff.why
+        );
+        println!("  ⚠ {why}");
+        crate::lwarn!("定时备份{why}");
+        let mut c = config::LauncherConfig::load();
+        c.backup.last_run_at = crate::timefmt::now_shanghai();
+        let _ = c.save();
+        return Ok(());
+    }
+
+    // Hunter 停着的时候只临时起 postgres，**做完停回原状态**（方案 R6 6.3）
+    let was_running = compose::is_up();
+    let t0 = Instant::now();
+    let kind = if args.scheduled {
+        crate::backup::Kind::Scheduled
+    } else {
+        crate::backup::Kind::Manual
+    };
+    let r = crate::backup::create(kind, &cfg.hunter.tag, |t| println!("  {t}"));
+    match &r {
+        Ok(m) => {
+            crate::backup::record_result(true, None);
+            println!(
+                "\n✓ 备份完成 {} · {} · 校验 {} · 用时 {} 秒",
+                m.id,
+                human_bytes(m.total_bytes),
+                if m.verified { "通过" } else { "没做" },
+                t0.elapsed().as_secs()
+            );
+            if let Some(n) = m.table_count {
+                println!("  库里 {n} 张表，合计 {} 行", m.rows_total.unwrap_or(0));
+            }
+            for v in &m.volumes {
+                match (&v.bytes, &v.error) {
+                    (Some(b), _) => println!("  数据卷 {} → {}", v.short, human_bytes(*b)),
+                    (None, Some(e)) => println!("  数据卷 {} 没打上：{e}", v.short),
+                    _ => {}
+                }
+            }
+            let pr = crate::backup::prune();
+            if !pr.removed.is_empty() {
+                println!(
+                    "  轮换：删掉 {} 份过期备份，腾出 {}",
+                    pr.removed.len(),
+                    human_bytes(pr.freed_bytes)
+                );
+            }
+        }
+        Err(e) => {
+            let streak = crate::backup::record_result(false, Some(&e.msg));
+            crate::lerror!("备份失败（连续第 {streak} 次）：{}", e.msg);
+            if streak >= 2 {
+                println!("  这是连续第 {streak} 次失败。下次打开启动器时会把它交给诊断助手分析。");
+            }
+        }
+    }
+    // 停回原状态
+    if !was_running {
+        println!("  备份前 Hunter 是停着的，现在把临时起来的 postgres 停回去");
+        let _ = compose::run(&["stop", "postgres"], Duration::from_secs(120));
+    }
+    r.map(|_| ())
+}
+
+/// `--restore <id|目录> --confirm 恢复数据 -y`
+fn cmd_restore(args: &Args) -> AppResult<()> {
+    let id = args.restore.clone().unwrap_or_default();
+    title("从备份恢复");
+    let pre = crate::backup::preflight(&id)?;
+    println!("备份 {} · v{} · 目录 {}", pre.id, pre.tag, pre.dir);
+    for l in &pre.lines {
+        println!("  {l}");
+    }
+    if let Some(b) = &pre.blocked {
+        return Err(AppError::new(Code::UpdateFailed, b.clone()));
+    }
+    let typed = args.confirm.clone().unwrap_or_default();
+    if typed.trim() != crate::backup::RESTORE_PHRASE {
+        return Err(AppError::new(
+            Code::NotImplemented,
+            format!(
+                "要恢复得加上 --confirm {}（逐字）。恢复会把现在的数据替换掉。",
+                crate::backup::RESTORE_PHRASE
+            ),
+        ));
+    }
+    if !args.yes {
+        return Err(AppError::new(
+            Code::NotImplemented,
+            "恢复会替换现在的数据，命令行下要再加 -y。".to_string(),
+        ));
+    }
+    let rep = crate::backup::restore(&id, |t| println!("  {t}"))?;
+    println!("\n✓ {}", rep.headline);
+    if let Some(b) = &rep.safety_backup {
+        println!("  恢复之前的那份数据已经备份成 {b}（挑错了还能再恢复回来）");
+    }
+    Ok(())
+}
+
+/// `--schedule status|install|remove`
+fn cmd_schedule(args: &Args) -> AppResult<()> {
+    let sub = args.schedule.clone().unwrap_or_else(|| "status".into());
+    title("定时备份任务");
+    match sub.trim() {
+        "install" => {
+            let st = crate::schedule::install(|t| println!("  {t}"))?;
+            print_schedule(&st);
+        }
+        "remove" => {
+            crate::schedule::remove(|t| println!("  {t}"))?;
+            println!("  已移除（本来就没装的话这一步什么都不做）");
+        }
+        "status" | "" => print_schedule(&crate::schedule::status()),
+        other => {
+            return Err(AppError::new(
+                Code::NotImplemented,
+                format!("--schedule 只认 status / install / remove，收到「{other}」"),
+            ))
+        }
+    }
+    Ok(())
+}
+
+fn print_schedule(st: &crate::schedule::Status) {
+    println!("机制    {}", st.mech);
+    println!("配置    自动备份 {} · 每天 {}", onoff(st.wanted), st.time);
+    println!(
+        "系统里  {} · {}",
+        if st.installed { "已装" } else { "没装" },
+        if st.enabled { "已启用" } else { "未启用" }
+    );
+    if !st.path.is_empty() {
+        println!("任务    {}", st.path);
+    }
+    if !st.next_run.is_empty() {
+        println!("下次    {}", st.next_run);
+    }
+    for l in &st.lines {
+        println!("  {l}");
+    }
+    if !st.reason.is_empty() {
+        println!("  ⚠ {}", st.reason);
+    }
+}
+
+fn onoff(b: bool) -> &'static str {
+    if b {
+        "开"
+    } else {
+        "关"
+    }
+}
+
+// ── I13 · R4 删除应用 ─────────────────────────────────────────────────────
+
+fn cmd_uninstall_plan(args: &Args) -> AppResult<()> {
+    let scope = crate::uninstall::Scope::parse(args.uninstall.as_deref().unwrap_or("app"));
+    title("删除应用 · 会动到什么（只读）");
+    let p = crate::uninstall::plan(scope, args.deep);
+    print_uninstall_plan(&p);
+    Ok(())
+}
+
+fn print_uninstall_plan(p: &crate::uninstall::Plan) {
+    println!("范围      {}", p.scope.cn());
+    println!("要输入    {}", p.confirm_phrase);
+    println!("容器      {} 个", p.containers.len());
+    println!(
+        "数据卷    {} 个 · {}{}",
+        p.volumes.len(),
+        p.volumes_bytes
+            .map(human_bytes)
+            .unwrap_or_else(|| "大小没查到".into()),
+        if p.scope == crate::uninstall::Scope::AppOnly {
+            "（保留）"
+        } else {
+            "（删除）"
+        }
+    );
+    for v in &p.volumes {
+        println!(
+            "            {} · {}",
+            v.short,
+            v.size_bytes.map(human_bytes).unwrap_or_else(|| "—".into())
+        );
+    }
+    println!(
+        "镜像      {} 个 · {}",
+        p.images_found,
+        p.images_bytes
+            .map(human_bytes)
+            .unwrap_or_else(|| "大小没查到".into())
+    );
+    println!("工作目录  {}", human_bytes(p.home_bytes));
+    match p.runtime_bytes {
+        Some(b) => println!("运行环境  {}", human_bytes(b)),
+        None => println!("运行环境  没装内置运行时"),
+    }
+    if let Some(n) = p.table_count {
+        println!(
+            "数据概况  {n} 张表 · 最近写入 {}",
+            p.last_write.clone().unwrap_or_else(|| "—".into())
+        );
+    }
+    println!(
+        "备份      {} 份 · 目录 {}（永远不删）",
+        p.backups, p.backup_dir
+    );
+    println!(
+        "定时任务  {}",
+        if p.schedule_installed {
+            "装着（会一并移除）"
+        } else {
+            "没装"
+        }
+    );
+    if let Some(w) = &p.runtime_blocked {
+        println!("\n⚠ 不能同时删运行环境：{w}");
+    }
+    for w in &p.warnings {
+        println!("\n⚠ {w}");
+    }
+}
+
+fn cmd_uninstall(args: &Args) -> AppResult<()> {
+    let scope = crate::uninstall::Scope::parse(args.uninstall.as_deref().unwrap_or("app"));
+    title("删除应用");
+    let p = crate::uninstall::plan(scope, scope == crate::uninstall::Scope::AppAndData);
+    print_uninstall_plan(&p);
+    if !args.yes {
+        return Err(AppError::new(
+            Code::NotImplemented,
+            "命令行下删除应用要再加 -y。".to_string(),
+        ));
+    }
+    let opts = crate::uninstall::Options {
+        scope,
+        remove_images: args.with_images,
+        remove_runtime: args.with_runtime,
+        backup_first: args.backup_first,
+        confirm: args.confirm.clone().unwrap_or_default(),
+    };
+    println!();
+    let rep = crate::uninstall::run(&opts, |t| println!("  {t}"))?;
+    println!("\n✓ {}", rep.headline);
+    for k in &rep.kept {
+        println!("  保留：{k}");
+    }
+    for f in &rep.failures {
+        println!("  ⚠ {f}");
+    }
+    Ok(())
+}
+
+// ── I13 · R7 异常监测 ─────────────────────────────────────────────────────
+
+fn cmd_alerts() -> AppResult<()> {
+    title("硬盘 / 内存 / 服务异常");
+    let a = crate::monitor::alerts();
+    println!("采于 {}", a.at);
+    if a.alerts.is_empty() {
+        println!("  没有发现异常。");
+    }
+    for x in &a.alerts {
+        println!(
+            "\n[{}] {} · {}",
+            match x.level {
+                crate::monitor::Level::Crit => "严重",
+                crate::monitor::Level::Warn => "提醒",
+                crate::monitor::Level::Ok => "正常",
+            },
+            x.title,
+            x.id
+        );
+        println!("  {}", x.detail);
+        for f in &x.facts {
+            println!("    · {f}");
+        }
+        if !x.actions.is_empty() {
+            println!("    一键处理：{}", x.actions.join("、"));
+        }
+        for ad in &x.advice {
+            println!("    建议：{ad}");
+        }
+        if x.needs_ai {
+            println!("    规则层判不了这一条，界面上可以交给诊断助手");
+        }
+    }
+    for (k, v) in &a.reasons {
+        println!("\n（{k} 这一项没查成：{v}）");
+    }
+    if !a.notify.is_empty() {
+        println!("\n这一轮该弹通知的：{}", a.notify.join("、"));
+    }
+    Ok(())
+}
+
+fn cmd_cleanup(args: &Args) -> AppResult<()> {
+    title("一键腾空间（只清本项目旧镜像、悬空卷、过期备份）");
+    let p = crate::cleanup::plan();
+    for l in &p.lines {
+        println!("  {l}");
+    }
+    for r in &p.reasons {
+        println!("  ⚠ {r}");
+    }
+    println!(
+        "\n旧镜像 {} 个 · {}",
+        p.old_images.len(),
+        human_bytes(p.old_images_bytes)
+    );
+    for i in &p.old_images {
+        println!(
+            "  {} · {}",
+            i.reference,
+            i.bytes.map(human_bytes).unwrap_or_else(|| "—".into())
+        );
+    }
+    println!(
+        "悬空卷 {} 个 · {}",
+        p.orphan_volumes.len(),
+        human_bytes(p.orphan_volumes_bytes)
+    );
+    for v in &p.orphan_volumes {
+        println!("  {}", v.name);
+    }
+    println!(
+        "过期备份 {} 份 · {}",
+        p.expired_backups.len(),
+        human_bytes(p.expired_backups_bytes)
+    );
+    println!("合计能腾出 {}", human_bytes(p.total_bytes));
+    if !args.yes {
+        println!("\n（只看不删。真要清的话加 -y）");
+        return Ok(());
+    }
+    let d = crate::cleanup::run(|t| println!("  {t}"))?;
+    println!("\n✓ {}", d.headline);
+    for f in &d.failures {
+        println!("  ⚠ {f}");
+    }
     Ok(())
 }
 

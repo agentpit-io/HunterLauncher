@@ -119,6 +119,8 @@ export interface DataCheck {
   tableCount: number | null
   lastWrite: string | null
   backups: number
+  /** 其中有几份含密钥卷（I13 · R6）。有才提「从备份恢复密钥卷」那条路 */
+  backupsWithSecrets: number
   deep: boolean
   deepSkipped: string | null
   headline: string
@@ -677,14 +679,230 @@ export interface UpgradeStatus {
   error: string | null
 }
 
-/** 一次备份。`sqlBytes` 为 null 说明数据库那一半没做成，原因在 `sqlError`。 */
+// ── 数据备份与恢复（I13 · R6）─────────────────────────────────────────────
+
+export type BackupKind = 'manual' | 'scheduled' | 'pre-upgrade'
+
+export interface BackupFileEntry {
+  name: string
+  bytes: number
+  sha256: string
+}
+
+export interface BackupTableRows {
+  table: string
+  rows: number
+}
+
+export interface BackupVolumeEntry {
+  short: string
+  file: string
+  bytes: number | null
+  error: string | null
+}
+
+/**
+ * 一次备份。
+ *
+ * `dumpBytes` 为 null 说明数据库那一半没做成，原因在 `dumpError`；
+ * `sqlBytes` / `sqlError` 是 0.1.12 及之前那种纯 SQL 备份留下的老字段
+ * （那些备份照样列得出来、恢复得了）。
+ */
 export interface BackupMeta {
   id: string
   tag: string
   at: string
+  kind: BackupKind
+  launcherVersion: string
+  project: string
+  entries: BackupFileEntry[]
+  dumpBytes: number | null
+  dumpError: string | null
+  /** `pg_restore --list` 读得出目录吗。**读不出就不算成功的备份** */
+  verified: boolean
+  verifyNote: string
+  tableCount: number | null
+  tables: BackupTableRows[]
+  rowsTotal: number | null
+  tablesNote: string
+  volumes: BackupVolumeEntry[]
+  totalBytes: number
+  elapsedMs: number
+  dir: string
+  files: string[]
   sqlBytes: number | null
   sqlError: string | null
-  files: string[]
+}
+
+export interface BackupSettings {
+  enabled: boolean
+  time: string
+  dir: string
+  effectiveDir: string
+  keepDays: number
+  includeSessions: boolean
+  includeSkills: boolean
+  lastOkAt: string
+  lastError: string
+  lastRunAt: string
+  failStreak: number
+  count: number
+  totalBytes: number
+  diskFreeBytes: number | null
+  suggestedDir: string
+  externalSuggestions: string[]
+}
+
+export interface ScheduleStatus {
+  mech: string
+  supported: boolean
+  installed: boolean
+  enabled: boolean
+  wanted: boolean
+  time: string
+  path: string
+  nextRun: string
+  lines: string[]
+  reason: string
+}
+
+export interface RestorePreflight {
+  id: string
+  dir: string
+  tag: string
+  currentTag: string
+  needsUpgrade: boolean
+  hasDump: boolean
+  legacySql: boolean
+  verified: boolean
+  checksumMismatch: string[]
+  volumes: string[]
+  blocked: string | null
+  lines: string[]
+}
+
+export interface RestoreReport {
+  from: string
+  safetyBackup: string | null
+  steps: string[]
+  restoredVolumes: string[]
+  jwtRestored: boolean
+  ready: number
+  total: number
+  elapsedMs: number
+  headline: string
+}
+
+// ── 删除应用（I13 · R4）───────────────────────────────────────────────────
+
+export type UninstallScope = 'app-only' | 'app-and-data'
+
+export interface UninstallImageItem {
+  reference: string
+  bytes: number | null
+}
+
+export interface UninstallPlan {
+  scope: UninstallScope
+  confirmPhrase: string
+  containers: string[]
+  volumes: VolumeInfo[]
+  volumesBytes: number | null
+  images: UninstallImageItem[]
+  imagesBytes: number | null
+  imagesFound: number
+  homeBytes: number
+  runtimeBytes: number | null
+  builtinRuntime: boolean
+  /** 「保留数据的同时删运行环境」为什么不行。为 null 才允许勾 */
+  runtimeBlocked: string | null
+  tableCount: number | null
+  lastWrite: string | null
+  backups: number
+  lastBackupAt: string | null
+  backupDir: string
+  scheduleInstalled: boolean
+  estFreedBytes: number
+  warnings: string[]
+  lines: string[]
+}
+
+export interface UninstallOptions {
+  scope: UninstallScope
+  removeImages: boolean
+  removeRuntime: boolean
+  backupFirst: boolean
+  confirm: string
+}
+
+export interface UninstallReport {
+  scope: string
+  steps: string[]
+  removedContainers: number
+  removedVolumes: string[]
+  removedImages: string[]
+  removedRuntime: boolean
+  removedSchedule: boolean
+  kept: string[]
+  backupId: string | null
+  freedBytes: number
+  elapsedMs: number
+  headline: string
+  failures: string[]
+}
+
+// ── 异常监测与一键清理（I13 · R7）─────────────────────────────────────────
+
+export interface MonitorAlert {
+  id: string
+  level: MonitorLevel
+  title: string
+  detail: string
+  facts: string[]
+  actions: string[]
+  advice: string[]
+  needsAi: boolean
+}
+
+export interface MonitorAlerts {
+  at: string
+  alerts: MonitorAlert[]
+  notify: string[]
+  reasons: Record<string, string>
+}
+
+export interface CleanupOldImage {
+  reference: string
+  id: string
+  bytes: number | null
+}
+
+export interface CleanupOrphanVolume {
+  name: string
+  short: string
+  bytes: number | null
+}
+
+export interface CleanupPlan {
+  oldImages: CleanupOldImage[]
+  oldImagesBytes: number
+  orphanVolumes: CleanupOrphanVolume[]
+  orphanVolumesBytes: number
+  expiredBackups: string[]
+  expiredBackupsBytes: number
+  totalBytes: number
+  lines: string[]
+  reasons: string[]
+}
+
+export interface CleanupDone {
+  images: string[]
+  volumes: string[]
+  backups: string[]
+  freedBytes: number
+  steps: string[]
+  failures: string[]
+  headline: string
 }
 
 export interface MatchedImage {

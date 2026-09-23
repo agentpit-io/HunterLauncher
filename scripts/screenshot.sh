@@ -32,7 +32,11 @@ SETTLE="${SETTLE:-9}"
 # 它在真机上停留不到 1 秒，但那正是「不再闪欢迎页」的证据，要留档）、
 # data-found（容器没了、数据卷还在时的「检测到上次的数据」）。
 # dashboard 那一页这一轮也变了 —— 上半部多了三层资源（R2）
-PAGES=(booting data-found welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-quota-exhausted dashboard-lan takeover settings settings-lan logs feedback update error error-builtin error-recovered)
+# I13 新增五页：
+#   dashboard-alert —— 运行面板顶上那条异常提醒（R7）
+#   backup / backup-restore —— 「备份与恢复」那一页，以及它上面逐字输入「恢复数据」的弹窗（R6）
+#   uninstall / uninstall-all —— 删除应用的两档（R4）。第二档要摆出数据概况与「先备份一次」
+PAGES=(booting data-found welcome key consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }
