@@ -1,0 +1,33 @@
+
+[1m== R6 · 备份目录所在盘写满（真的 loop 设备） ==[0m
+/dev/loop3      7.3M   24K  6.4M   1% /tmp/i13-tiny
+--- 先把它填到只剩几百 KB ---
+/dev/loop3      7.3M  6.4M     0 100% /tmp/i13-tiny
+--- 现在做备份，期望失败并说清原因 ---
+
+备份
+────
+备份到 /tmp/i13-tiny
+
+✗ E_CONFIG_WRITE: 建备份目录 /tmp/i13-tiny/hunter-20260923-1935-v1.2.0 失败：No space left on device (os error 28)
+  日志：/home/support/.hunter/logs/launcher.log
+退出码                                      1
+--- 配置里记下来的失败 ---
+[backup]
+enabled = true
+time = "00:00"
+dir = "/tmp/i13-tiny"
+last_error = "建备份目录 /tmp/i13-tiny/hunter-20260923-1935-v1.2.0 失败：No space left on device (os error 28)"
+fail_streak = 1
+--- 再失败一次 → fail_streak 到 2 → 规则层该给结论 ---
+last_error = "建备份目录 /tmp/i13-tiny/hunter-20260923-1935-v1.2.0 失败：No space left on device (os error 28)"
+fail_streak = 2
+[严重] 自动备份连着失败了 2 次 · backup-failed
+  原因：建备份目录 /tmp/i13-tiny/hunter-20260923-1935-v1.2.0 失败：No space left on device (os error 28)
+    · 最近一次尝试：2026-09-23 19:35:40
+    · 最近一次成功：2026-09-23 19:18:33
+    建议：在设置页的「数据备份」里点「立即备份一次」能当场看到是哪一步出的问题。
+    规则层判不了这一条，界面上可以交给诊断助手
+
+这一轮该弹通知的：backup-failed
+--- 收拾现场 ---

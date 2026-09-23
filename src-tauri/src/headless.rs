@@ -295,19 +295,25 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.action = Some("schedule".into());
                 a.headless = true;
             }
-            "--uninstall" => {
+            // `--uninstall app|all` 与 `--uninstall-plan [app|all]`：
+            // 两条都**要吃掉后面那个范围词**。
+            //
+            // 一开始 `--uninstall-plan` 被塞进了下面那张「不带参数的动作」表里，
+            // 于是 `--uninstall-plan all` 里的 `all` 谁都没接住，范围默默落回默认的
+            // 「只删应用」—— 验收时两次输出一模一样才看出来（报告 5.2 节）。
+            "--uninstall" | "--uninstall-plan" => {
+                a.action = Some(v[i].trim_start_matches("--").to_string());
                 a.uninstall = v.get(i + 1).filter(|x| !x.starts_with('-')).cloned();
                 if a.uninstall.is_some() {
                     i += 1;
                 }
-                a.action = Some("uninstall".into());
                 a.headless = true;
             }
             "-h" | "--help" => a.help = true,
             "-V" | "--version" => a.version = true,
             "--status" | "--stop" | "--start" | "--restart" | "--down" | "--diagnose"
             | "--backups" | "--check-net" | "--boot-state" | "--monitor" | "--data-check"
-            | "--backup" | "--alerts" | "--cleanup" | "--uninstall-plan" => {
+            | "--backup" | "--alerts" | "--cleanup" => {
                 a.action = Some(v[i].trim_start_matches("--").to_string());
                 a.headless = true;
             }
@@ -2179,8 +2185,20 @@ fn cmd_backup(args: &Args) -> AppResult<()> {
                 if m.verified { "通过" } else { "没做" },
                 t0.elapsed().as_secs()
             );
+            // **没数过就不要写一个数**（红线 1）。表太多时 rows_total 是 None，
+            // 早先那一版写的是 `unwrap_or(0)` —— 屏幕上就成了「合计 0 行」
             if let Some(n) = m.table_count {
-                println!("  库里 {n} 张表，合计 {} 行", m.rows_total.unwrap_or(0));
+                match m.rows_total {
+                    Some(r) => println!("  库里 {n} 张表，合计 {r} 行"),
+                    None => println!(
+                        "  库里 {n} 张表（{}）",
+                        if m.tables_note.is_empty() {
+                            "没有逐表数行".to_string()
+                        } else {
+                            m.tables_note.clone()
+                        }
+                    ),
+                }
             }
             for v in &m.volumes {
                 match (&v.bytes, &v.error) {
@@ -2746,6 +2764,72 @@ mod tests {
             assert!(x.headless, "{arg} 应当隐含 headless");
             assert_eq!(x.action.as_deref(), Some(act));
         }
+    }
+
+    /// I13 验收时当场抓到的一条：`--uninstall-plan all` 里那个 `all` 谁都没接住。
+    ///
+    /// 症状是「两次输出一模一样」—— 范围默默落回默认的「只删应用」。
+    /// 一条不带参数的动作与一条带参数的动作长得太像，只能靠测试钉住。
+    #[test]
+    fn 删除应用的范围词要被接住() {
+        for (argv, action, scope) in [
+            (vec!["--uninstall-plan"], "uninstall-plan", None),
+            (
+                vec!["--uninstall-plan", "all"],
+                "uninstall-plan",
+                Some("all"),
+            ),
+            (
+                vec!["--uninstall-plan", "app"],
+                "uninstall-plan",
+                Some("app"),
+            ),
+            (vec!["--uninstall", "all"], "uninstall", Some("all")),
+            (vec!["--uninstall", "app"], "uninstall", Some("app")),
+        ] {
+            let x = a(&argv);
+            assert_eq!(x.action.as_deref(), Some(action), "{argv:?}");
+            assert_eq!(x.uninstall.as_deref(), scope, "{argv:?}");
+            assert!(x.headless, "{argv:?}");
+        }
+        // 后面跟的是别的开关时不能被当成范围词吃掉
+        let y = a(&["--uninstall-plan", "--deep"]);
+        assert_eq!(y.uninstall, None);
+        assert!(y.deep);
+        // 范围词真的会变成不同的 Scope
+        assert_eq!(
+            crate::uninstall::Scope::parse(
+                a(&["--uninstall", "all"]).uninstall.as_deref().unwrap()
+            ),
+            crate::uninstall::Scope::AppAndData
+        );
+        assert_eq!(
+            crate::uninstall::Scope::parse(
+                a(&["--uninstall", "app"]).uninstall.as_deref().unwrap()
+            ),
+            crate::uninstall::Scope::AppOnly
+        );
+    }
+
+    #[test]
+    fn 备份与恢复的开关都认得() {
+        let x = a(&["--backup", "--scheduled"]);
+        assert_eq!(x.action.as_deref(), Some("backup"));
+        assert!(x.scheduled);
+        let y = a(&["--restore", "/tmp/b", "--confirm", "恢复数据", "-y"]);
+        assert_eq!(y.action.as_deref(), Some("restore"));
+        assert_eq!(y.restore.as_deref(), Some("/tmp/b"));
+        assert_eq!(y.confirm.as_deref(), Some("恢复数据"));
+        assert!(y.yes);
+        let z = a(&["--schedule", "install"]);
+        assert_eq!(z.action.as_deref(), Some("schedule"));
+        assert_eq!(z.schedule.as_deref(), Some("install"));
+        // 不给子命令时默认看状态（只读的那一档）
+        let w = a(&["--schedule"]);
+        assert_eq!(w.action.as_deref(), Some("schedule"));
+        assert_eq!(w.schedule, None);
+        // --backup 不带 --scheduled 就是手动那一档
+        assert!(!a(&["--backup"]).scheduled);
     }
 
     #[test]

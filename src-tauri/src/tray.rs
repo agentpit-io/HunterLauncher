@@ -710,7 +710,12 @@ mod tests {
     #[test]
     fn 托盘上那条提醒会进_tooltip() {
         // I13 · R6 6.3：备份失败要让收在托盘里的用户也看得见
-        let normal = tooltip_full("运行中 · 6/6 健康", Some("http://localhost:3101"), None, None);
+        let normal = tooltip_full(
+            "运行中 · 6/6 健康",
+            Some("http://localhost:3101"),
+            None,
+            None,
+        );
         assert!(!normal.contains('⚠'), "{normal}");
         let bad = tooltip_full(
             "运行中 · 6/6 健康",

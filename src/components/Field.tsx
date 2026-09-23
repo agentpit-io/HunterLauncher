@@ -154,7 +154,10 @@ export function Checkbox({
       type="button"
       disabled={disabled}
       onClick={() => onChange(!on)}
-      className={`flex items-start gap-3 text-left ${disabled ? 'cursor-default' : ''}`}
+      // 禁用时要**看得出来是禁用的**（I13 截图时发现的）：
+      // 「顺便删掉运行环境」在「保留数据」那一档下是点不动的，而光把 onClick 拿掉，
+      // 用户只会觉得「我点了怎么没反应」。旁边那句原因也要有人愿意去读才有用
+      className={`flex items-start gap-3 text-left ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}
     >
       <span
         className={`mt-[2px] flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-colors duration-150 ${

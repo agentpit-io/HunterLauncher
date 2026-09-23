@@ -1,0 +1,81 @@
+
+[1m== R4 · 删除应用①（保留数据）→ 重装应沿用 ==[0m
+删除前：hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0
+JWT_SECRET 指纹                              ae3b234e0c2b6362
+定时任务装了吗                          enabled
+--- 删 ---
+
+删除应用
+────────
+范围      只删除应用，保留数据
+要输入    删除应用
+容器      6 个
+数据卷    6 个 · 69.6 MB（保留）
+            hunter_opencode_data · 536 KB
+            hunter_packages · 0 B
+            hunter_pg_data · 69.1 MB
+            hunter_redis_data · 89 B
+            hunter_secrets · 160 B
+            hunter_user_skills · 0 B
+镜像      6 个 · 3.7 GB
+工作目录  105 KB
+运行环境  没装内置运行时
+备份      5 份 · 目录 <用户目录>/Hunter-backups（永远不删）
+定时任务  装着（会一并移除）
+
+  已移除自动备份的定时任务
+  已删掉 6 个容器与本项目的网络
+  已清掉启动器的配置与日志；**`.env` 留着**（里面的数据库口令与 JWT_SECRET 一丢，留下来的数据库就再也连不上了）
+
+✓ 只删除应用，保留数据 · 腾出约 99.0 KB · 用时 30 秒
+  保留：6 个数据卷（数据库、密钥卷、会话、自建技能全都原样留着）
+  保留：6 个镜像（3.7 GB）—— 下次重装不用再下载一遍
+  保留：<用户目录>/.hunter/app/.env（含数据库口令与 JWT_SECRET，重装会直接沿用，登录不会失效）
+  保留：备份目录 <用户目录>/Hunter-backups（5 份备份，一份都没动）
+--- 断言：容器没了、卷还在、.env 还在、定时任务没了 ---
+容器                                         0 个
+  [32m✓[0m 6 个数据卷一个没少
+  [32m✓[0m .env 还在（数据库口令与 JWT_SECRET 都在里面）
+launcher.toml 里 install.done                 done = false
+备份设置还在吗                          [backup] enabled = true time = "00:00" dir = "" keep_days = 3 
+定时任务                                   not-found
+备份目录                                   5 份（一份都不该少）
+--- 重装（零点击）---
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　6 / 6 健康
+✓ 启动服务　6 / 6 健康
+✓ 完成　打开 http://localhost:3101 就能用了
+[总览] 完成 · 已自动解决 1 个问题 · 回合 0/10 · token 0
+
+事件流：/home/support/.hunter/logs/assist-events.jsonl
+审计日志：/home/support/.hunter/logs/assist-audit.log
+统计：自动解决 1 个问题 · 0 个修复回合 · 0 token · 用时 120 秒
+
+✓ 装好了。打开 http://localhost:3101
+重装耗时                                   121 秒
+  [32m✓[0m 6/6 健康
+重装后：hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0
+  [32m✓[0m 数据原样沿用，一行都没重建
+  [32m✓[0m JWT_SECRET 没变（ae3b234e0c2b6362），登录不会失效

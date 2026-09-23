@@ -1,0 +1,69 @@
+
+[1m== R7 · 一个服务在窗口内反复重启 ==[0m
+动手之前的 RestartCount                   0
+  llm-shim:
+    entrypoint: ["sh", "-c", "exit 1"]
+    restart: unless-stopped
+  postgres:
+ Container hunter-llm-shim-1 Starting 
+ Container hunter-llm-shim-1 Started 
+  第 1 次采样：RestartCount=8
+  第 2 次采样：RestartCount=9
+  第 3 次采样：RestartCount=9
+  第 4 次采样：RestartCount=10
+  第 5 次采样：RestartCount=10
+  第 6 次采样：RestartCount=10
+--- docker 怎么说 ---
+10 restarting 1
+--- 提醒 ---
+[提醒] llm-shim 在反复重启 · restart-llm-shim
+  llm-shim 这个服务在最近 60 分钟里重启了 6 次。反复重启通常说明它每次起来都撞到同一个问题。
+    · docker inspect 的 RestartCount 现在是 10
+    · 窗口 60 分钟内的增量：6 次（阈值 3 次）
+    建议：点「让 AI 帮我看看」会把这个服务最近的日志（脱敏）交给诊断助手。
+    规则层判不了这一条，界面上可以交给诊断助手
+--- 采样文件（窗口内的差值就是从这里算的）---
+{
+    "restarts": {
+        "api": [
+            [
+                1790160800,
+                0
+            ]
+        ],
+        "llm-shim": [
+            [
+                1790160702,
+                4
+            ],
+            [
+                1790160719,
+                8
+            ],
+            [
+                1790160748,
+                9
+            ],
+            [
+                1790160800,
+                10
+            ]
+        ],
+        "opencode": [
+            [
+                1790160800,
+                0
+            ]
+        ],
+        "postgres": [
+            [
+                1790160800,
+                0
+            ]
+        ],
+        "redis": [
+            [
+--- 收拾现场 ---
+ Container hunter-llm-shim-1 Starting 
+ Container hunter-llm-shim-1 Started 
+  [32m✓[0m 六个服务恢复健康

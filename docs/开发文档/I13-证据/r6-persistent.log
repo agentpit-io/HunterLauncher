@@ -1,0 +1,58 @@
+
+[1m== R6 · systemd 定时器的补跑（Persistent=true） ==[0m
+--- 启动器生成的那两份单元（原文）---
+# 由 Hunter 启动器生成 · 请勿手改（改了下次保存会被覆盖）
+[Unit]
+Description=Hunter 启动器 · 本机数据备份定时器
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+AccuracySec=1min
+Unit=hunter-backup.service
+
+[Install]
+WantedBy=timers.target
+# 由 Hunter 启动器生成 · 请勿手改（改了下次保存会被覆盖）
+[Unit]
+Description=Hunter 启动器 · 本机数据备份
+
+[Service]
+Type=oneshot
+ExecStart="/home/support/HunterLauncher/src-tauri/target/release/hunter-launcher" --backup --scheduled
+--- 一次性单元（只改了 Unit= 与 OnCalendar，Persistent 原样）---
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+Unit=hunter-backup-i13probe.service
+-rw-rw-r-- 1 support support 0 2026-09-22 00:00:00 /home/support/.local/share/systemd/timers/stamp-hunter-backup-i13probe.timer
+启动之前有几份备份                    6
+现在几点                                   11:54（OnCalendar 是 00:00，也就是已经错过）
+  [32m✓[0m 补跑了（11:54:24）
+现在有几份                                7
+NEXT LEFT LAST                        PASSED UNIT                         ACTIVATES
+-       - Wed 2026-09-23 11:54:19 UTC 5s ago hunter-backup-i13probe.timer hunter-backup-i13probe.service
+
+1 timers listed.
+● hunter-backup-i13probe.service - Hunter 启动器 · 本机数据备份
+     Loaded: loaded (/home/support/.config/systemd/user/hunter-backup-i13probe.service; static)
+     Active: activating (start) since Wed 2026-09-23 11:54:19 UTC; 5s ago
+TriggeredBy: ● hunter-backup-i13probe.timer
+   Main PID: 3788069 (hunter-launcher)
+      Tasks: 10 (limit: 8427)
+     Memory: 17.0M (peak: 27.3M)
+        CPU: 1.444s
+     CGroup: /user.slice/user-1004.slice/user@1004.service/app.slice/hunter-backup-i13probe.service
+             ├─3788069 /home/support/HunterLauncher/src-tauri/target/release/hunter-launcher --backup --scheduled
+             └─3788659 /usr/bin/docker run --rm -v hunter_hunter_user_skills:/vol:ro --entrypoint tar postgres:16-alpine -C /vol -czf - .
+
+Sep 23 11:54:19 hunter-test-01.us-central1-a.c.candaigo.internal systemd[76991]: Starting hunter-backup-i13probe.service - Hunter 启动器 · 本机数据备份...
+Sep 23 11:54:19 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]: 定时备份
+Sep 23 11:54:19 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]: ────────
+Sep 23 11:54:19 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]: 备份到 /home/support/Hunter-backups
+Sep 23 11:54:20 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]:   备份放到 <用户目录>/Hunter-backups/hunter-20260923-1954-v1.2.0
+Sep 23 11:54:20 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]:   已备份配置：.env、docker-compose.yml、docker-compose.launcher.yml、launcher.toml
+Sep 23 11:54:21 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]:   正在转储数据库 hunter（用户 hunter）…
+Sep 23 11:54:21 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3788069]:   数据库已转储（144 KB）
+--- 收拾现场：一次性单元删干净 ---
+0
+  一次性单元已经不在了

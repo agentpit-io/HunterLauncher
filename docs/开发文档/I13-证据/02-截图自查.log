@@ -1,0 +1,50 @@
+   i13-key.png                                             92131B  颜色数 2785   亮度 90‰  饱和度 446‰
+   i13-logs.png                                            82963B  颜色数 1848   亮度 74‰  饱和度 430‰
+   i13-model.png                                          102288B  颜色数 3199   亮度 95‰  饱和度 438‰
+   i13-settings-lan.png                                   116524B  颜色数 2957   亮度 105‰  饱和度 418‰
+   i13-settings.png                                       106252B  颜色数 2392   亮度 102‰  饱和度 429‰
+   i13-start.png                                           74397B  颜色数 2611   亮度 87‰  饱和度 448‰
+   i13-takeover.png                                        87437B  颜色数 2593   亮度 110‰  饱和度 403‰
+   i13-uninstall-all.png                                  141766B  颜色数 3693   亮度 79‰  饱和度 430‰
+   i13-uninstall.png                                      137549B  颜色数 3561   亮度 73‰  饱和度 433‰
+   i13-update.png                                         110858B  颜色数 2752   亮度 102‰  饱和度 432‰
+   i13-welcome.png                                        118512B  颜色数 2846   亮度 92‰  饱和度 442‰
+截图自查：全部通过（含「不许有两张一模一样」）
+全部完成：docs/screenshots/I13
++ tail -45
++ bash scripts/check-shots.sh docs/screenshots/I13
+== docs/screenshots/I13（31 张）==
+   i13-auto-need-user.png                                 137697B  颜色数 4408   亮度 116‰  饱和度 332‰
+   i13-auto-review.png                                    155039B  颜色数 3811   亮度 108‰  饱和度 413‰
+   i13-auto-takeover-offer.png                            142284B  颜色数 3073   亮度 102‰  饱和度 418‰
+   i13-auto.png                                           125588B  颜色数 3156   亮度 100‰  饱和度 418‰
+   i13-backup-restore.png                                 132374B  颜色数 2487   亮度 61‰  饱和度 456‰
+   i13-backup.png                                         113362B  颜色数 2388   亮度 104‰  饱和度 434‰
+   i13-booting.png                                         29927B  颜色数 1125   亮度 74‰  饱和度 470‰
+   i13-consent.png                                        186681B  颜色数 2909   亮度 108‰  饱和度 432‰
+   i13-dashboard-alert.png                                112434B  颜色数 3259   亮度 109‰  饱和度 412‰
+   i13-dashboard-lan.png                                  116954B  颜色数 3437   亮度 107‰  饱和度 410‰
+   i13-dashboard-quota-exhausted.png                      110113B  颜色数 3251   亮度 110‰  饱和度 423‰
+   i13-dashboard.png                                      103015B  颜色数 2839   亮度 104‰  饱和度 439‰
+   i13-data-found.png                                     106614B  颜色数 2838   亮度 101‰  饱和度 436‰
+   i13-docker-missing.png                                 112416B  颜色数 3144   亮度 95‰  饱和度 436‰
+   i13-docker.png                                          86793B  颜色数 2661   亮度 90‰  饱和度 445‰
+   i13-done.png                                            79754B  颜色数 2513   亮度 90‰  饱和度 449‰
+   i13-error-builtin.png                                   99340B  颜色数 2129   亮度 99‰  饱和度 446‰
+   i13-error-recovered.png                                112520B  颜色数 3338   亮度 106‰  饱和度 441‰
+   i13-error.png                                           76455B  颜色数 2124   亮度 95‰  饱和度 447‰
+   i13-feedback.png                                       112389B  颜色数 2470   亮度 91‰  饱和度 446‰
+   i13-key.png                                             92131B  颜色数 2785   亮度 90‰  饱和度 446‰
+   i13-logs.png                                            82963B  颜色数 1848   亮度 74‰  饱和度 430‰
+   i13-model.png                                          102288B  颜色数 3199   亮度 95‰  饱和度 438‰
+   i13-settings-lan.png                                   116524B  颜色数 2957   亮度 105‰  饱和度 418‰
+   i13-settings.png                                       106252B  颜色数 2392   亮度 102‰  饱和度 429‰
+   i13-start.png                                           74397B  颜色数 2611   亮度 87‰  饱和度 448‰
+   i13-takeover.png                                        87437B  颜色数 2593   亮度 110‰  饱和度 403‰
+   i13-uninstall-all.png                                  141766B  颜色数 3693   亮度 79‰  饱和度 430‰
+   i13-uninstall.png                                      137549B  颜色数 3561   亮度 73‰  饱和度 433‰
+   i13-update.png                                         110858B  颜色数 2752   亮度 102‰  饱和度 432‰
+   i13-welcome.png                                        118512B  颜色数 2846   亮度 92‰  饱和度 442‰
+截图自查：全部通过（含「不许有两张一模一样」）
++ echo '=== 完 ==='
+=== 完 ===

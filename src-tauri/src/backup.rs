@@ -56,8 +56,16 @@ const RESTORE_TIMEOUT: Duration = Duration::from_secs(1800);
 const TAR_TIMEOUT: Duration = Duration::from_secs(600);
 /// `pg_restore --list` 的上限。只读目录，很快。
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(120);
-/// 逐表数行数时，表多到这个数以上就只报表数不逐表数（避免在大库上跑几分钟）。
-const MAX_TABLES_TO_COUNT: usize = 40;
+/// 逐表数行数时，表多到这个数以上就只报表数、不逐表数行。
+///
+/// 80 这个数是照着**这套库真实的表数**定的：测试机 2026-09-23 实查
+/// `information_schema` 里有 60 张表。一开始写的是 40，于是每一份备份的
+/// `meta.json` 里 `tables` 都是空的 —— 这一项做了等于没做。
+///
+/// 逐表 `count(*)` 的总时长另有一道闸：[`psql_lines`] 的 120 秒超时。
+/// 真碰上一个大到数不完的库，会落到 `tables_note` 里如实说「没问出来」，
+/// 而不是给一个编出来的数。
+const MAX_TABLES_TO_COUNT: usize = 80;
 
 /// 转储文件名。**这一行是恢复那一侧的唯一依据**，改它等于让老备份恢复不了。
 pub const DUMP_NAME: &str = "hunter.dump";

@@ -501,6 +501,7 @@ const zhCN = {
     notVerified: '没有校验记录',
     verifyFailed: '校验没过',
     tables: (n: number, rows: number) => `${n} 张表 · ${rows} 行`,
+    tablesOnly: (n: number) => `${n} 张表（表太多，没有逐表数行）`,
     volumes: '数据卷',
     legacy: '老格式（0.1.12 及之前）',
     restore: '恢复到这一份',

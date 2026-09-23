@@ -1,0 +1,42 @@
+
+[1m== R4 · 两种范围各看一遍（只读） ==[0m
+
+删除应用 · 会动到什么（只读）
+────────────────────────────────
+范围      只删除应用，保留数据
+要输入    删除应用
+容器      6 个
+数据卷    6 个 · 68.4 MB（保留）
+            hunter_opencode_data · 534 KB
+            hunter_packages · 0 B
+            hunter_pg_data · 67.8 MB
+            hunter_redis_data · 89 B
+            hunter_secrets · 160 B
+            hunter_user_skills · 0 B
+镜像      6 个 · 3.7 GB
+工作目录  85.8 KB
+运行环境  没装内置运行时
+备份      1 份 · 目录 <用户目录>/Hunter-backups（永远不删）
+定时任务  没装
+
+
+删除应用 · 会动到什么（只读）
+────────────────────────────────
+范围      删除应用和全部数据
+要输入    删除应用和数据
+容器      6 个
+数据卷    6 个 · 68.4 MB（删除）
+            hunter_opencode_data · 534 KB
+            hunter_packages · 0 B
+            hunter_pg_data · 67.8 MB
+            hunter_redis_data · 89 B
+            hunter_secrets · 160 B
+            hunter_user_skills · 0 B
+镜像      6 个 · 3.7 GB
+工作目录  86.0 KB
+运行环境  没装内置运行时
+数据概况  61 张表 · 最近写入 2026-09-23 08:02
+备份      1 份 · 目录 <用户目录>/Hunter-backups（永远不删）
+定时任务  没装
+
+⚠ 备份目录 <用户目录>/Hunter-backups 不会被删除。

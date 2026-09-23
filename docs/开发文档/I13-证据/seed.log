@@ -1,0 +1,7 @@
+
+[1m== 往 hunter_config 里塞几行，好让后面的「前后一致」有东西可比 ==[0m
+hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0

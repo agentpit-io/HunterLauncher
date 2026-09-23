@@ -485,6 +485,7 @@ const en: Dict = {
     notVerified: 'not verified',
     verifyFailed: 'verification failed',
     tables: (n: number, rows: number) => `${n} tables · ${rows} rows`,
+    tablesOnly: (n: number) => `${n} tables (too many to count rows per table)`,
     volumes: 'Volumes',
     legacy: 'old format (0.1.12 and earlier)',
     restore: 'Restore this one',

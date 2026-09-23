@@ -26,7 +26,7 @@ use serde::Serialize;
 use crate::err::{AppError, AppResult, Code};
 use crate::{backup, compose, config};
 
-/// 本项目**自己那四个**服务镜像的仓库名末段。
+/// 本项目**自己那四个**服务镜像的名字（不含仓库前缀）。
 ///
 /// `postgres` 与 `redis` 刻意不在里面：它们是公共基础镜像，
 /// 这台机器上别的项目很可能也在用同一份。删了它们就是在动别人的东西。
@@ -36,6 +36,38 @@ pub const OWN_IMAGE_NAMES: &[&str] = &[
     "hunter-community-opencode",
     "hunter-community-llm-shim",
 ];
+
+/// **我们自己会去拉的那几个仓库**（完整的 `<前缀>/<名字>`）。
+///
+/// ## 为什么不能只看名字的末一段
+///
+/// 2026-09-23 验收当场抓到的（I13 报告 5.2 节）：测试机上有
+/// `hunter-community-api:dev`、`hunter-community-web:p2` 这样的镜像 ——
+/// **那是用户自己在本地构建的**，仓库名恰好也叫 `hunter-community-api`。
+/// 按末一段匹配，它们会被算成「本项目的旧镜像」，一键清理就会把它们删掉，
+/// 而它们根本不是启动器拉下来的。
+///
+/// 所以判据收紧成：仓库必须是 `<我们的某个镜像源前缀>/<那四个名字之一>`。
+/// 前缀取自 [`crate::registry::CANDIDATES`]（ghcr 与腾讯云香港）**再加上**
+/// 用户当前配置里那一个（他可能填了自建源）—— 只有这些地方的镜像是我们拉的。
+pub fn own_repos() -> BTreeSet<String> {
+    let cfg = config::LauncherConfig::load();
+    let mut prefixes: Vec<String> = crate::registry::CANDIDATES
+        .iter()
+        .map(|c| c.prefix.to_string())
+        .collect();
+    let cur = cfg.hunter.registry_prefix.trim().trim_end_matches('/');
+    if !cur.is_empty() {
+        prefixes.push(cur.to_string());
+    }
+    let mut out = BTreeSet::new();
+    for p in prefixes {
+        for n in OWN_IMAGE_NAMES {
+            out.insert(format!("{}/{n}", p.trim_end_matches('/')));
+        }
+    }
+    out
+}
 
 /// 一个可以清掉的镜像。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -97,19 +129,24 @@ pub fn parse_image_line(l: &str) -> Option<(String, String, String, String)> {
 
 /// 哪些镜像算「本项目的旧镜像」。**纯函数**，方便逐条单测。
 ///
-/// 三个条件缺一不可：仓库末段在 [`OWN_IMAGE_NAMES`] 里、tag 不是现在这一版、
-/// 而且**不在 `in_use` 里**（有容器在用它）。
+/// 四个条件缺一不可：
+///
+/// 1. 仓库**完整地**在 `own` 里（`<我们的镜像源前缀>/<那四个名字之一>`，见 [`own_repos`]）；
+/// 2. tag 不是现在这一版；
+/// 3. tag 不是 `<none>`；
+/// 4. **不在 `in_use` 里**（有容器在用它 —— 不管是谁的容器）。
 pub fn old_image_refs(
     lines: &str,
     current_tag: &str,
+    own: &BTreeSet<String>,
     in_use: &BTreeSet<String>,
 ) -> Vec<(String, String)> {
     let mut v = Vec::new();
     for l in lines.lines() {
-        let Some((repo, tag, id, last)) = parse_image_line(l) else {
+        let Some((repo, tag, id, _last)) = parse_image_line(l) else {
             continue;
         };
-        if !OWN_IMAGE_NAMES.contains(&last.as_str()) {
+        if !own.contains(&repo) {
             continue;
         }
         if tag == current_tag || tag == "<none>" {
@@ -159,8 +196,9 @@ pub fn plan() -> Plan {
     ) {
         Ok(r) if r.ok() => {
             let used = images_in_use();
+            let own = own_repos();
             let sizes = image_size_map(&r.stdout);
-            for (reference, id) in old_image_refs(&r.stdout, &cfg.hunter.tag, &used) {
+            for (reference, id) in old_image_refs(&r.stdout, &cfg.hunter.tag, &own, &used) {
                 p.old_images_bytes += sizes.get(&reference).copied().unwrap_or(0);
                 p.old_images.push(OldImage {
                     bytes: sizes.get(&reference).copied(),
@@ -169,8 +207,9 @@ pub fn plan() -> Plan {
                 });
             }
             p.lines.push(format!(
-                "现在装的是 v{}；本项目别的版本的镜像有 {} 个没有任何容器在用",
+                "现在装的是 v{}；启动器自己那几个仓库（{}）下别的版本的镜像有 {} 个没有任何容器在用",
                 cfg.hunter.tag,
+                own.len(),
                 p.old_images.len()
             ));
         }
@@ -476,24 +515,42 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
+    /// `docker image ls` 的一段真实输出（测试机 2026-09-23 实抓，只删了无关行）。
+    ///
+    /// 注意最后那三行：**那是测试机上别人本地构建的镜像**，仓库名恰好也叫
+    /// `hunter-community-api` / `hunter-community-web`。它们是这一组测试的重点。
     const LS: &str = "\
-ghcr.io/agentpit-io/hunter-community-web\t1.1.0\tsha256aaa\t120MB
-ghcr.io/agentpit-io/hunter-community-web\t1.2.0\tsha256bbb\t121MB
-ghcr.io/agentpit-io/hunter-community-api\t1.1.0\tsha256ccc\t900MB
+ghcr.io/agentpit-io/hunter-community-web\t1.1.0\tsha256aaa\t1.7GB
+ghcr.io/agentpit-io/hunter-community-web\t1.2.0\tsha256bbb\t1.7GB
+ghcr.io/agentpit-io/hunter-community-api\t1.1.0\tsha256ccc\t898MB
 postgres\t16-alpine\tsha256ddd\t250MB
 redis\t7-alpine\tsha256eee\t40MB
 ghcr.io/other/whatever\t1.0.0\tsha256fff\t10MB
-hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode\t1.0.9\tsha256ggg\t1.2GB
+hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode\t1.1.0\tsha256ggg\t619MB
+hunter-community-api\tdev\tsha256hhh\t898MB
+hunter-community-web\tp2\tsha256iii\t1.7GB
+hunter-community-llm-shim\tdev\tsha256jjj\t74.2MB
 ";
 
+    /// 测试机上那两个镜像源的前缀（`registry::CANDIDATES` 里那两条）。
+    fn own() -> BTreeSet<String> {
+        let mut o = BTreeSet::new();
+        for p in ["ghcr.io/agentpit-io", "hkccr.ccs.tencentyun.com/agentpit"] {
+            for n in OWN_IMAGE_NAMES {
+                o.insert(format!("{p}/{n}"));
+            }
+        }
+        o
+    }
+
     #[test]
-    fn 旧镜像_只认本项目那四个服务的镜像() {
-        let v = old_image_refs(LS, "1.2.0", &used(&[]));
+    fn 旧镜像_只认我们自己那几个仓库下的() {
+        let v = old_image_refs(LS, "1.2.0", &own(), &used(&[]));
         let names: Vec<&str> = v.iter().map(|(r, _)| r.as_str()).collect();
         assert!(names.contains(&"ghcr.io/agentpit-io/hunter-community-web:1.1.0"));
         assert!(names.contains(&"ghcr.io/agentpit-io/hunter-community-api:1.1.0"));
         assert!(
-            names.contains(&"hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode:1.0.9"),
+            names.contains(&"hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode:1.1.0"),
             "换过镜像源之后留下的那一份也算本项目的：{names:?}"
         );
         // 现在这一版不能删
@@ -505,11 +562,34 @@ hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode\t1.0.9\tsha256ggg\t1
         assert!(!names.iter().any(|n| n.contains("ghcr.io/other/")));
     }
 
+    /// **本轮验收当场抓到的那一条。**
+    ///
+    /// 第一版按「仓库名末一段」匹配，于是测试机上用户自己本地构建的
+    /// `hunter-community-api:dev` / `hunter-community-web:p2` 被算成了
+    /// 「本项目的旧镜像」，一键清理的清单里赫然列着它们（13.3 GB 里有 5 GB 是它们的）。
+    /// 那几个镜像**根本不是启动器拉下来的** —— 它们没有我们任何一个镜像源的前缀。
+    #[test]
+    fn 旧镜像_用户自己本地构建的同名镜像一个都不碰() {
+        let v = old_image_refs(LS, "1.2.0", &own(), &used(&[]));
+        let names: Vec<&str> = v.iter().map(|(r, _)| r.as_str()).collect();
+        for bad in [
+            "hunter-community-api:dev",
+            "hunter-community-web:p2",
+            "hunter-community-llm-shim:dev",
+        ] {
+            assert!(
+                !names.contains(&bad),
+                "「{bad}」是用户自己 build 的（没有我们任何一个镜像源的前缀），不该被清：{names:?}"
+            );
+        }
+    }
+
     #[test]
     fn 旧镜像_有容器在用的一律跳过() {
         let v = old_image_refs(
             LS,
             "1.2.0",
+            &own(),
             &used(&["ghcr.io/agentpit-io/hunter-community-api:1.1.0"]),
         );
         let names: Vec<&str> = v.iter().map(|(r, _)| r.as_str()).collect();
@@ -519,17 +599,32 @@ hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode\t1.0.9\tsha256ggg\t1
         );
         assert!(names.contains(&"ghcr.io/agentpit-io/hunter-community-web:1.1.0"));
         // 按 ID 命中也要跳过
-        let v2 = old_image_refs(LS, "1.2.0", &used(&["sha256aaa"]));
+        let v2 = old_image_refs(LS, "1.2.0", &own(), &used(&["sha256aaa"]));
         assert!(!v2.iter().any(|(r, _)| r.contains("web:1.1.0")));
     }
 
     #[test]
-    fn 旧镜像_查不到谁在用时一个都不删() {
-        // images_in_use() 问不出来时会塞一个哨兵，本身不匹配任何镜像；
-        // 所以这里钉的是「哨兵不会让别的镜像被误判成可删」之外的另一半：
-        // 调用方拿到 reasons 之后界面上不给「一键清理」。这里先钉纯函数的行为
-        let v = old_image_refs("", "1.2.0", &used(&["__查不到，一个都不删__"]));
-        assert!(v.is_empty());
+    fn 旧镜像_仓库集合是空的时候一个都不删() {
+        // 配置读不出来、镜像源前缀是空的 —— 宁可什么都不清，也不按名字猜
+        let v = old_image_refs(LS, "1.2.0", &BTreeSet::new(), &used(&[]));
+        assert!(v.is_empty(), "{v:?}");
+    }
+
+    #[test]
+    fn 我们自己那几个仓库的全名拼得对() {
+        let _h = crate::paths::test_home("cleanup-own-repos");
+        let o = own_repos();
+        assert!(
+            o.contains("ghcr.io/agentpit-io/hunter-community-web"),
+            "{o:?}"
+        );
+        assert!(
+            o.contains("hkccr.ccs.tencentyun.com/agentpit/hunter-community-api"),
+            "{o:?}"
+        );
+        // 不带前缀的裸名字**不在**里面 —— 那正是用户本地构建的那一种
+        assert!(!o.contains("hunter-community-web"), "{o:?}");
+        assert!(!o.iter().any(|x| x.contains("postgres")), "{o:?}");
     }
 
     #[test]

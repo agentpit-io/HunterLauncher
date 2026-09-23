@@ -20,6 +20,7 @@
 #   r7-oom         构造一次真的 OOM（给 llm-shim 一个极小的内存上限）→ 严重提醒
 #   r7-cleanup     一键腾空间：只清本项目旧镜像与悬空卷，别人的一个不碰
 #   guard          守卫越界：删别的项目的卷 / prune / 动别人的定时任务，一律要被拒
+#   seed           往库里塞几行真数据（空库上「行数前后一致」说明不了什么）
 set -uo pipefail
 
 BIN="${BIN:-$HOME/HunterLauncher/src-tauri/target/release/hunter-launcher}"
@@ -40,8 +41,11 @@ dc() { docker compose -p "$P" --project-directory "$APP" -f "$APP/docker-compose
 pg() { docker exec hunter-postgres-1 psql -U hunter -d hunter -tAc "$1" 2>/dev/null; }
 
 # 「关键表行数」—— 备份 / 恢复 / 删除前后必须对得上
+# 实查这套库里真的有行的那几张（`pg_stat_user_tables` 排出来的）：
+# schema_migrations 23 行、push_tasks 3 行、backtest_config 1 行，
+# 外加我们自己 seed 进去的 hunter_config。**不选空表** —— 0 == 0 什么也证明不了
 key_counts() {
-  for t in users stocks hunter_config schema_migrations user_preference; do
+  for t in hunter_config schema_migrations push_tasks backtest_config users; do
     printf '%s=%s\n' "$t" "$(pg "select count(*) from $t" || echo 读不到)"
   done
 }
@@ -58,6 +62,16 @@ wait_healthy() {
 }
 
 case "${1:-}" in
+
+# 往库里塞几行真数据 —— 「行数前后一字不差」这种断言在一个空库上说明不了什么
+seed)
+  say "往 hunter_config 里塞几行，好让后面的「前后一致」有东西可比"
+  # 列名是 k / v（实查 `\d hunter_config`，不是猜的 key / value）
+  for i in 1 2 3 4 5 6 7; do
+    pg "insert into hunter_config (k, v) values ('i13_seed_$i','v$i') on conflict (k) do update set v = excluded.v"
+  done
+  key_counts
+  ;;
 
 # ─────────────────────────────────────────────────────────────── R6 备份
 r6-backup)
@@ -161,26 +175,57 @@ r6-schedule)
 
 r6-persistent)
   say "R6 · systemd 定时器的补跑（Persistent=true）"
-  py "$TOML" set backup time "00:00"
+  #
+  # **这个现场在这台机器上只能近似造。** `Persistent=true` 的语义是
+  # 「开机 / 用户 manager 重新起来时，发现上一次该跑的时间已经过去了就补跑」——
+  # 而 systemd 把「上次什么时候触发过」同时记在盘上（stamp 文件）**和自己进程的内存里**。
+  # 第一遍的做法（stop → 删 stamp → start）不管用：内存里那一份还在
+  # （实测 list-timers 的 LAST 仍然是 11:18）。真要走那条路只能重启这台机器，
+  # 而这台机器上还跑着另外三套项目（总控规则红线 9）。
+  #
+  # 所以这里换一种造法：用**启动器生成的那两份单元文件的原文**另起一个一次性单元，
+  # 它从来没触发过（没有任何 stamp、没有内存记录），OnCalendar 指向今天 00:00
+  # —— 也就是「已经错过」。Persistent=true 该让它一 start 就补跑。
+  # 跑的是同一个 --backup --scheduled。跑完就把这个一次性单元删干净。
+  #
   "$BIN" --schedule install >/dev/null
-  systemctl --user stop hunter-backup.timer
-  # 把「上次触发时间」抹掉 = 造出「今天 00:00 那一次错过了」的现场
-  rm -f ~/.local/share/systemd/timers/stamp-hunter-backup.timer
+  echo "--- 启动器生成的那两份单元（原文）---"
+  cat ~/.config/systemd/user/hunter-backup.timer
+  cat ~/.config/systemd/user/hunter-backup.service
+  PROBE=hunter-backup-i13probe
+  sed 's/^Unit=hunter-backup.service$/Unit='"$PROBE"'.service/; s/^OnCalendar=.*/OnCalendar=*-*-* 00:00:00/' \
+    ~/.config/systemd/user/hunter-backup.timer > ~/.config/systemd/user/$PROBE.timer
+  cp ~/.config/systemd/user/hunter-backup.service ~/.config/systemd/user/$PROBE.service
+  echo "--- 一次性单元（只改了 Unit= 与 OnCalendar，Persistent 原样）---"
+  grep -E 'OnCalendar|Persistent|Unit=' ~/.config/systemd/user/$PROBE.timer
+  systemctl --user daemon-reload
+  # **stamp 文件是关键**：Persistent 的语义是「和上一次真的跑过的时间比」。
+  # 一个从来没跑过的定时器（没有 stamp）systemd 不会替它补跑 ——
+  # 否则每装一个每日定时器都会当场跑一次。所以这里手工造一个
+  # 「上一次是昨天跑的」的 stamp（stamp 文件的内容是空的，时间在 mtime 上）。
+  mkdir -p ~/.local/share/systemd/timers
+  : > ~/.local/share/systemd/timers/stamp-$PROBE.timer
+  touch -d "$(date -d 'yesterday 00:00' '+%Y-%m-%d %H:%M:%S')" ~/.local/share/systemd/timers/stamp-$PROBE.timer
+  ls -la --time-style=+%F\ %T ~/.local/share/systemd/timers/stamp-$PROBE.timer
   before=$(ls -1d "$BDIR"/hunter-* 2>/dev/null | wc -l)
-  row "启动定时器之前有几份" "$before"
-  echo "--- OnCalendar 是今天 00:00，现在是 $(date '+%H:%M')，也就是已经错过 ---"
-  grep OnCalendar ~/.config/systemd/user/hunter-backup.timer
-  grep Persistent ~/.config/systemd/user/hunter-backup.timer
-  systemctl --user start hunter-backup.timer
+  row "启动之前有几份备份" "$before"
+  row "现在几点" "$(date '+%H:%M')（OnCalendar 是 00:00，也就是已经错过）"
+  systemctl --user start $PROBE.timer
   n=0
   while [ $n -lt 36 ]; do
     now=$(ls -1d "$BDIR"/hunter-* 2>/dev/null | wc -l)
-    [ "$now" -gt "$before" ] && { ok "补跑了（$(date '+%H:%M:%S')）"; break; }
+    if [ "$now" -gt "$before" ]; then ok "补跑了（$(date '+%H:%M:%S')）"; break; fi
     sleep 5; n=$((n+1))
   done
   row "现在有几份" "$(ls -1d "$BDIR"/hunter-* 2>/dev/null | wc -l)"
-  systemctl --user list-timers hunter-backup.timer --no-pager --all
-  journalctl --user -u hunter-backup.service --no-pager -n 15 2>&1 | tail -15
+  systemctl --user list-timers $PROBE.timer --no-pager --all
+  systemctl --user status $PROBE.service --no-pager -n 12 2>&1 | head -20
+  echo "--- 收拾现场：一次性单元删干净 ---"
+  systemctl --user stop $PROBE.timer 2>/dev/null
+  rm -f ~/.config/systemd/user/$PROBE.timer ~/.config/systemd/user/$PROBE.service
+  rm -f ~/.local/share/systemd/timers/stamp-$PROBE.timer
+  systemctl --user daemon-reload
+  systemctl --user list-timers --no-pager --all | grep -c i13probe || echo "  一次性单元已经不在了"
   ;;
 
 r6-restore)
@@ -190,9 +235,10 @@ r6-restore)
   row "用这一份恢复" "$src"
   before=$(key_counts); echo "备份时：$before"
   fp0=$(jwt_fp); row "JWT_SECRET 指纹" "$fp0"
-  echo "--- 故意改数据：往 hunter_config 里插一行 ---"
-  pg "insert into hunter_config (key, value) values ('i13_probe','x') on conflict do nothing"
-  pg "select count(*) from hunter_config"
+  echo "--- 故意改数据：插一行、再删一行（列名是 k / v，实查过）---"
+  pg "insert into hunter_config (k, v) values ('i13_probe','x') on conflict (k) do nothing"
+  pg "delete from hunter_config where k = 'i13_seed_1'"
+  echo "改完共 $(pg "select count(*) from hunter_config") 行 · i13_probe $(pg "select count(*) from hunter_config where k='i13_probe'") 行 · i13_seed_1 $(pg "select count(*) from hunter_config where k='i13_seed_1'") 行"
   echo "--- 恢复 ---"
   t0=$(date +%s)
   "$BIN" --restore "$src" --confirm 恢复数据 -y
@@ -202,7 +248,7 @@ r6-restore)
   wait_healthy && ok "6/6 健康" || bad "没等到 6/6"
   after=$(key_counts); echo "恢复后：$after"
   [ "$before" = "$after" ] && ok "行数一字不差" || bad "行数对不上"
-  pg "select count(*) from hunter_config where key='i13_probe'"
+  echo "恢复后 i13_probe 应该没了（$(pg "select count(*) from hunter_config where k='i13_probe'") 行）· i13_seed_1 应该回来了（$(pg "select count(*) from hunter_config where k='i13_seed_1'") 行）"
   fp1=$(jwt_fp); row "JWT_SECRET 指纹（恢复后）" "$fp1"
   [ "$fp0" = "$fp1" ] && ok "JWT_SECRET 没变，登录不会失效" || bad "JWT_SECRET 变了"
   ;;
@@ -340,20 +386,39 @@ r7-disk)
 
 r7-restart)
   say "R7 · 一个服务在窗口内反复重启"
+  #
+  # **不能用 `docker restart` 造这个现场**：`RestartCount` 只数「重启策略重新拉起来」
+  # 的次数，手工 `docker restart` 一次都不算（第一遍就是这么跑的，四次之后它还是 0）。
+  # 真的现场是「容器自己退出 → unless-stopped 把它拉回来」，所以这里让它真的崩。
+  #
   rm -f "$HOME_DIR/monitor-state.json"
   before=$(docker inspect -f '{{.RestartCount}}' hunter-llm-shim-1)
-  row "重启前的 RestartCount" "$before"
-  "$BIN" --alerts >/dev/null 2>&1   # 先采一次基线
-  for i in 1 2 3 4; do
-    docker restart hunter-llm-shim-1 >/dev/null
-    sleep 2
-    "$BIN" --alerts >/dev/null 2>&1  # 每次都采一下，模拟界面在轮询
-    printf '  第 %d 次重启后 RestartCount=%s\n' "$i" "$(docker inspect -f '{{.RestartCount}}' hunter-llm-shim-1)"
+  row "动手之前的 RestartCount" "$before"
+  cp "$OVL" /tmp/i13-ovl.bak
+  python3 - <<'PYX'
+import os
+p = os.path.expanduser('~/.hunter/app/docker-compose.launcher.yml')
+s = open(p, encoding='utf-8').read()
+s = s.replace('  llm-shim:\n', '  llm-shim:\n    entrypoint: ["sh", "-c", "exit 1"]\n', 1)
+open(p, 'w', encoding='utf-8').write(s)
+PYX
+  grep -A3 'llm-shim:' "$OVL" | head -6
+  dc up -d --force-recreate llm-shim 2>&1 | tail -2
+  "$BIN" --alerts >/dev/null 2>&1        # 先采一次基线
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    "$BIN" --alerts >/dev/null 2>&1      # 模拟界面在轮询（每一次都往状态文件里记一笔）
+    printf '  第 %d 次采样：RestartCount=%s\n' "$i" "$(docker inspect -f '{{.RestartCount}}' hunter-llm-shim-1)"
   done
+  echo "--- docker 怎么说 ---"
+  docker inspect -f '{{.RestartCount}} {{.State.Status}} {{.State.ExitCode}}' hunter-llm-shim-1
   echo "--- 提醒 ---"
   "$BIN" --alerts 2>&1 | sed -n '/restart-llm-shim/,/^$/p'
-  echo "--- 采样文件 ---"
-  python3 -m json.tool "$HOME_DIR/monitor-state.json" | head -30
+  echo "--- 采样文件（窗口内的差值就是从这里算的）---"
+  python3 -m json.tool "$HOME_DIR/monitor-state.json" | head -40
+  echo "--- 收拾现场 ---"
+  cp /tmp/i13-ovl.bak "$OVL"
+  dc up -d --force-recreate llm-shim 2>&1 | tail -2
   wait_healthy && ok "六个服务恢复健康" || bad "没等到 6/6"
   ;;
 

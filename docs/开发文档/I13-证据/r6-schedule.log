@@ -1,0 +1,80 @@
+
+[1m== R6 · 定时备份：设成 2 分钟后，关掉启动器，到点自己跑 ==[0m
+现在                                         11:16:00
+设定时间                                   11:18
+
+定时备份任务
+────────────
+  已装好 systemd 用户定时器（每天 11:18，错过会补跑）
+机制    systemd --user 定时器
+配置    自动备份 开 · 每天 11:18
+系统里  已装 · 已启用
+任务    <用户目录>/.config/systemd/user/hunter-backup.timer
+下次    Wed 2026-09-23 11:18:00 UTC 1min 58s -         - hunter-backup.timer hunter-backup.service
+  systemctl --user is-enabled：enabled
+  这个账号开着 linger，退出登录之后定时器照样跑
+--- 系统里的单元文件 ---
+# 由 Hunter 启动器生成 · 请勿手改（改了下次保存会被覆盖）
+[Unit]
+Description=Hunter 启动器 · 本机数据备份定时器
+
+[Timer]
+OnCalendar=*-*-* 11:18:00
+Persistent=true
+AccuracySec=1min
+Unit=hunter-backup.service
+
+[Install]
+WantedBy=timers.target
+# 由 Hunter 启动器生成 · 请勿手改（改了下次保存会被覆盖）
+[Unit]
+Description=Hunter 启动器 · 本机数据备份
+
+[Service]
+Type=oneshot
+ExecStart="/home/support/HunterLauncher/src-tauri/target/release/hunter-launcher" --backup --scheduled
+NEXT                            LEFT LAST PASSED UNIT                ACTIVATES
+Wed 2026-09-23 11:18:00 UTC 1min 58s -         - hunter-backup.timer hunter-backup.service
+
+1 timers listed.
+现在有几份备份                          6
+--- 确认没有任何启动器进程在跑 ---
+  （一个都没有）
+--- 等到点（最多 240 秒）---
+  [32m✓[0m 11:18:28 生成了新备份
+新备份                                      /home/support/Hunter-backups/hunter-20260923-1918-v1.2.0
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+FileNotFoundError: [Errno 2] No such file or directory: '/home/support/Hunter-backups/hunter-20260923-1918-v1.2.0/meta.json'
+--- systemd 自己怎么说 ---
+● hunter-backup.service - Hunter 启动器 · 本机数据备份
+     Loaded: loaded (/home/support/.config/systemd/user/hunter-backup.service; static)
+     Active: activating (start) since Wed 2026-09-23 11:18:26 UTC; 2s ago
+TriggeredBy: ● hunter-backup.timer
+   Main PID: 3689576 (hunter-launcher)
+      Tasks: 15 (limit: 8427)
+     Memory: 19.7M (peak: 26.7M)
+        CPU: 963ms
+     CGroup: /user.slice/user-1004.slice/user@1004.service/app.slice/hunter-backup.service
+             ├─3689576 /home/support/HunterLauncher/src-tauri/target/release/hunter-launcher --backup --scheduled
+             ├─3689803 /usr/bin/docker compose --project-name hunter --project-directory /home/support/.hunter/app -f /home/support/.hunter/app/docker-compose.yml -f /home/support/.hunter/app/docker-compose.launcher.yml exec -T postgres psql -U hunter -d hunter -tA -F "|" -c "select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE' order by table_name"
+             └─3689819 /usr/libexec/docker/cli-plugins/docker-compose compose --project-name hunter --project-directory /home/support/.hunter/app -f /home/support/.hunter/app/docker-compose.yml -f /home/support/.hunter/app/docker-compose.launcher.yml exec -T postgres psql -U hunter -d hunter -tA -F "|" -c "select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE' order by table_name"
+
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal systemd[76991]: Starting hunter-backup.service - Hunter 启动器 · 本机数据备份...
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]: 定时备份
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]: ────────
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]: 备份到 /home/support/Hunter-backups
+Sep 23 11:18:27 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   备份放到 <用户目录>/Hunter-backups/hunter-20260923-1918-v1.2.0
+Sep 23 11:18:27 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   已备份配置：.env、docker-compose.yml、docker-compose.launcher.yml、launcher.toml
+Sep 23 11:18:27 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   正在转储数据库 hunter（用户 hunter）…
+Sep 23 11:18:28 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   数据库已转储（144 KB）
+Sep 23 11:18:28 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   校验通过 · pg_restore --list 读出 391 条目录项
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal systemd[76991]: Starting hunter-backup.service - Hunter 启动器 · 本机数据备份...
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]: 定时备份
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]: ────────
+Sep 23 11:18:26 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]: 备份到 /home/support/Hunter-backups
+Sep 23 11:18:27 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   备份放到 <用户目录>/Hunter-backups/hunter-20260923-1918-v1.2.0
+Sep 23 11:18:27 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   已备份配置：.env、docker-compose.yml、docker-compose.launcher.yml、launcher.toml
+Sep 23 11:18:27 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   正在转储数据库 hunter（用户 hunter）…
+Sep 23 11:18:28 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   数据库已转储（144 KB）
+Sep 23 11:18:28 hunter-test-01.us-central1-a.c.candaigo.internal hunter-launcher[3689576]:   校验通过 · pg_restore --list 读出 391 条目录项

@@ -1,0 +1,100 @@
+
+[1m== I5–I12 回归 ==[0m
+
+Hunter 启动器 · 开机判定
+──────────────────────────────────
+  现状     Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）
+  服务     6 / 6 就绪，网页 HTTP 200
+  该进哪   运行面板
+  安装标记 进来时 done=true，现在 done=true
+  记录     启动器 0.1.13，装于 2026-09-23 16:04:07，上次正常运行 2026-09-23 18:25:15
+
+  逐条证据：
+    · web · running · 健康
+    · api · running · 健康
+    · opencode · running · 健康
+    · llm-shim · running · 健康
+    · postgres · running · 健康
+    · redis · running · 健康
+    · GET http://127.0.0.1:3102/ → HTTP 200
+
+  用时 2232 毫秒（含复查 2209 毫秒）
+
+
+Hunter 启动器 · 资源监控
+──────────────────────────────────
+  [这台电脑]（sysinfo）
+    CPU        100.0%（2 核）
+    内存       4.5 GB / 8.3 GB
+    内存压力   正常（PSI avg10 0.3%）
+    系统盘     73.4 GB / 207 GB（/，前一个数是剩余）
+
+  [Hunter 运行环境]（limactl shell colima-hunter）
+    不适用：内置运行时的虚拟机没在跑
+
+  [Hunter 各服务]（docker stats --no-stream + docker inspect）
+    web           0.0%      147 MB  重启 0
+    api           0.2%     93.8 MB  重启 0
+    opencode      2.1%      239 MB  重启 0
+    llm-shim      0.0%     13.8 MB  重启 0
+    postgres      0.0%     23.7 MB  重启 0
+    redis         0.9%      3.7 MB  重启 0
+
+  [数据卷与镜像]（docker volume ls + docker system df -v + docker image inspect）
+    hunter_opencode_data               534 KB
+    hunter_packages                    0 B
+    hunter_pg_data                     67.8 MB
+    hunter_redis_data                  89 B
+    hunter_secrets                     160 B
+    hunter_user_skills                 0 B
+    合计                                 68.4 MB
+    镜像                                 3.7 GB（六个里查到 6）
+
+
+Hunter 启动器 · 检测已有数据（浅查：一个字节都不写）
+──────────────────────────────────────────────────────────────
+  结论     检测到你以前的数据，将直接沿用，不会重建
+  一句话   检测到你以前的数据，将直接沿用，不会重建数据库、也不会重新生成密钥。
+  拦不拦   不拦
+  数据库   在 · 密钥卷 在 · JWT_SECRET 在
+  PG 版本  数据卷里 16 → 目标镜像 16
+
+  逐条证据：
+    · 数据卷 hunter_hunter_opencode_data · hunter_opencode_data · 对话引擎的会话记录
+    · 数据卷 hunter_hunter_packages · hunter_packages · 依赖缓存（可再生）
+    · 数据卷 hunter_hunter_pg_data · hunter_pg_data · 数据库：账号、配置、自选股、历史分析
+    · 数据卷 hunter_hunter_redis_data · hunter_redis_data · 缓存（可再生）
+    · 数据卷 hunter_hunter_secrets · hunter_secrets · 密钥卷：数据库里加密的配置靠它才解得开
+    · 数据卷 hunter_hunter_user_skills · hunter_user_skills · 你自己建的技能
+    · <用户目录>/.hunter/app/.env 里的 JWT_SECRET：在（重装会原样沿用，登录不会失效）
+    · 数据卷里的 PostgreSQL 大版本：16
+    · 这次要装的 postgres 镜像是 16 系
+
+  用时 3930 毫秒
+
+
+Hunter 启动器 · 网络必检
+──────────────────────────────────
+  虚拟机 DNS：不适用（内置运行时的虚拟机没在跑）
+  容器出网：容器能连上模型网关（HTTP 401 · 2459 毫秒）
+    命令：/usr/bin/docker run --rm --pull=never --entrypoint curl ghcr.io/agentpit-io/hunter-community-api:1.2.0 -sS -o /dev/null -w %{http_code} --max-time 20 https://hunter.agentpit.io/api/saas/llm/v1/models
+
+✓ 两项都通
+
+
+Hunter 状态
+──────────────────
+装过：是
+运行：是
+版本：1.2.0
+地址：http://localhost:3102
+最新：1.2.1
+额度：今日已用 200,246 / 10,000,000 · 剩 9,799,754
+
+服务：
+  web        running    健康       3102
+  api        running    健康       8101
+  opencode   running    健康       3922
+  llm-shim   running    健康       内部
+  postgres   running    健康       5443
+  redis      running    健康       6480

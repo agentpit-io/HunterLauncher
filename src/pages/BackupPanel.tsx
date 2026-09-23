@@ -145,7 +145,9 @@ export function BackupPanel() {
       <p className="max-w-[860px] text-sm leading-[1.6] text-muted">{t.backup.intro}</p>
 
       <div className="mt-[18px] grid grid-cols-2 gap-gap">
-        <Card>
+        {/* min-w-0：栅格子项默认 min-width:auto，里面那串 systemd 的
+            「下次什么时候跑」很长且不含空格，不加这一条会把整个栅格撑宽 */}
+        <Card className="min-w-0">
           <CardHead title={t.backup.dir} />
           <div className="tnum mt-[12px] break-all text-md text-ink">
             {s?.effectiveDir ?? t.app.noData}
@@ -165,7 +167,7 @@ export function BackupPanel() {
           <div className="mt-[10px] text-xs leading-[1.5] text-muted">{t.backup.fromOtherHint}</div>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHead title={t.backup.scheduleTitle} />
           <div className="mt-[12px] text-md text-ink">
             {sc?.wanted ? t.backup.scheduleOn(sc.time) : t.backup.scheduleOff}
@@ -176,7 +178,9 @@ export function BackupPanel() {
             {sc?.supported && !sc.installed && sc.wanted && (
               <div className="text-amber-text">{t.backup.scheduleNotInstalled}</div>
             )}
-            {sc?.nextRun && <div className="tnum break-all">{t.backup.scheduleNext(sc.nextRun)}</div>}
+            {sc?.nextRun && (
+              <div className="tnum break-all leading-[1.5]">{t.backup.scheduleNext(sc.nextRun)}</div>
+            )}
             {sc?.lines.map((l) => (
               <div key={l} className="break-all">
                 · {l}
@@ -218,7 +222,13 @@ export function BackupPanel() {
               <div className="tnum mt-[6px] break-all text-xs text-muted">{m.dir || m.id}</div>
               <div className="tnum mt-[6px] text-sm text-body">
                 {bytes(m.totalBytes || m.dumpBytes || m.sqlBytes || 0)}
-                {m.tableCount != null && ` · ${t.backup.tables(m.tableCount, m.rowsTotal ?? 0)}`}
+                {/* 没数过就不要写一个数（红线 1）：表太多时 rowsTotal 是 null */}
+                {m.tableCount != null &&
+                  ` · ${
+                    m.rowsTotal != null
+                      ? t.backup.tables(m.tableCount, m.rowsTotal)
+                      : t.backup.tablesOnly(m.tableCount)
+                  }`}
                 {m.volumes.filter((v) => v.bytes != null).length > 0 &&
                   ` · ${t.backup.volumes} ${m.volumes
                     .filter((v) => v.bytes != null)
