@@ -416,6 +416,15 @@ pub fn resolve(program: &str) -> Probe {
     resolve_with(program, &explicit, &policy)
 }
 
+/// 「这台机器上有没有这个程序」—— 有就给绝对路径，没有就是 `None`（I13）。
+///
+/// 和 [`crate::proc::exists`] 的区别：那一个是真的 `spawn` 一次
+/// （`--version`），这一个**只看文件在不在、有没有可执行位**。
+/// 判「有没有 systemctl」这类事不该为此起一个子进程。
+pub fn find_program(program: &str) -> Option<PathBuf> {
+    resolve(program).resolved.map(PathBuf::from)
+}
+
 // ── 缓存 ──────────────────────────────────────────────────────────────────
 
 fn cache() -> &'static RwLock<Option<Probe>> {

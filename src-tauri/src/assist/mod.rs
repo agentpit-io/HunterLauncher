@@ -455,6 +455,92 @@ pub fn reset() -> AppResult<()> {
 /// 没有就从已经装好的 `~/.hunter/app/.env` 里读回来（第二次打开启动器时走这条）。
 ///
 /// 形状不对的一律当成没有 —— 拿一串乱码去打网关只会换回一个 401。
+/// I13 · R7：把**脱敏指标快照**交给诊断助手，让它说一段人话。
+///
+/// 和安装排障那条路（[`ask`]）刻意分开，三个理由：
+///
+/// 1. **这一层不给工具表。** 资源分析要的是一句结论，不是一个动作 ——
+///    真能动手的三件事（清旧镜像、清悬空卷、清过期备份）已经在规则层了，
+///    而剩下那些（删用户文件、给虚拟机扩容、调内存）本来就不允许自动做。
+///    不给工具表就少了一条本不该有的动手通路，顺带省几千 token 的输入。
+/// 2. **送出去的东西必须逐项可数。** 报文只有 [`crate::monitor::snapshot_for_ai`]
+///    给的那些行：数字、服务名、提醒 id。没有路径、没有主机名、没有 key，
+///    而且发之前还要再过一遍出口闸（[`probe::assert_no_secret`]，在 `send` 里）。
+/// 3. **不占安装诊断那几轮预算。** 这是一次性的一问一答，不进 `Live` 会话。
+///
+/// 降级（没 key / 关了 AI / 网关不通）一律**如实说**，不编一段结论出来。
+pub fn ask_resource(
+    st: &crate::flow::AppState,
+    alert: &crate::monitor::Alert,
+    snapshot: &[String],
+) -> AppResult<String> {
+    if !crate::config::LauncherConfig::load().assist.enabled {
+        return Err(AppError::new(
+            Code::NotImplemented,
+            "AI 助手在设置里是关着的。打开它之后再点这里。".to_string(),
+        ));
+    }
+    let Some(key) = usable_key(st.hunter_key()) else {
+        return Err(AppError::new(
+            Code::KeyInvalid,
+            "没有可用的 hunter key，问不了 AI。上面那些数字与结论都是本机实测的，不受影响。"
+                .to_string(),
+        ));
+    };
+    let body = snapshot.join(
+        "
+",
+    );
+    let msgs = vec![
+        serde_json::json!({"role": "system", "content": RESOURCE_PROMPT}),
+        serde_json::json!({"role": "user", "content": format!(
+            "启动器检测到一个情况：{}（{}）
+{}
+
+这是同一时刻的指标快照（已脱敏，只有数字与服务名）：
+
+{}
+
+             请判断最可能的原因，并给出一到两条用户自己做得到的处置。不确定就直说不确定。",
+            alert.title, alert.id, alert.detail, body
+        )}),
+    ];
+    let resp = ai::call_gateway_plain(&msgs, &key, std::time::Duration::from_secs(45), 800)
+        .map_err(|d| AppError::new(Code::Unknown, format!("问不成 AI：{}", d.message())))?;
+    let text = resp
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err(AppError::new(
+            Code::Unknown,
+            "AI 这一轮没给出内容（可能是 token 花在思考上了）。再试一次，或者照上面规则层给的建议做。"
+                .to_string(),
+        ));
+    }
+    crate::linfo!(
+        "资源分析交给了诊断助手：{} → {} 字",
+        alert.id,
+        text.chars().count()
+    );
+    Ok(text)
+}
+
+const RESOURCE_PROMPT: &str = "你是 Hunter 启动器的资源分析助手。用户的电脑上跑着 Hunter（一套 docker compose 起的自选股分析系统），启动器检测到磁盘 / 内存 / 服务重启方面的异常，把实测指标交给你判断。
+
+规则：
+1. 只用中文，说人话，两三句话说完。先给结论（最可能的原因），再给一到两条他自己做得到的事。
+2. **不要编任何数字**。只能引用下面快照里出现过的数字，没给的就说「这一项启动器没测到」。
+3. 不要让用户去终端敲命令 —— 启动器不会让他自己动手。要做的事请用「在设置页把 X 改成 Y」「在运行面板点 Z」这种说法。
+4. 不要建议删除用户自己的文件、改网络设置、或者用管理员权限做任何事。
+5. 不确定就说不确定，并说清还需要看什么才判得了。
+";
+
 fn usable_key(given: Option<String>) -> Option<String> {
     let k = given.filter(|s| !s.is_empty()).or_else(|| {
         crate::config::parse_env_file(&crate::paths::env_file())

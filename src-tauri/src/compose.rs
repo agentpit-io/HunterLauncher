@@ -1876,6 +1876,19 @@ pub const VOLUME_NOTES: &[(&str, &str)] = &[
 pub const VOL_DB: &str = "hunter_pg_data";
 /// 密钥卷。**必须和数据库成对**处理（方案第六节第 2 条）。
 pub const VOL_SECRETS: &str = "hunter_secrets";
+/// 用户自建技能。备份可选项之一（I13 · R6）。
+pub const VOL_SKILLS: &str = "hunter_user_skills";
+/// 对话引擎的会话记录。备份可选项之一（I13 · R6）。
+pub const VOL_SESSIONS: &str = "hunter_opencode_data";
+
+/// compose 文件里**声明过**的全部数据卷（短名）。
+///
+/// I13 的「悬空卷」判定靠它：带着本项目标签、但**不在这张表里**的卷，
+/// 就是历史上改过卷名之后留下的孤儿 —— 只有那种才允许一键清掉。
+/// 这张表和 [`VOLUME_NOTES`] 是同一份来源，避免两处各写一半。
+pub fn declared_volumes() -> Vec<&'static str> {
+    VOLUME_NOTES.iter().map(|(k, _)| *k).collect()
+}
 
 /// 本项目的卷一共占多少（`docker system df -v`）。
 ///
@@ -1990,6 +2003,32 @@ pub fn image_disk_usage(refs: &[String]) -> (Option<u64>, usize) {
     } else {
         (Some(total), hit)
     }
+}
+
+/// 每个镜像各自多大（I13 · R4 的删除报告要逐个摆出来）。
+///
+/// 和 [`image_disk_usage`] 的区别只有一个：那个给总数，这个给明细。
+/// **查不到的镜像不进这张表**（界面显示「—」，不猜），所以调用方要按引用去查，
+/// 查不到就是「本机没有这一个」。
+pub fn image_sizes(refs: &[String]) -> BTreeMap<String, u64> {
+    let mut m = BTreeMap::new();
+    let bin = which::docker_bin();
+    for r in refs {
+        let Ok(out) = proc::run_timeout(
+            &bin,
+            &["image", "inspect", r, "--format", "{{.Size}}"],
+            Duration::from_secs(20),
+        ) else {
+            continue;
+        };
+        if !out.ok() {
+            continue;
+        }
+        if let Ok(b) = out.stdout.trim().parse::<u64>() {
+            m.insert(r.clone(), b);
+        }
+    }
+    m
 }
 
 /// 每个容器的重启次数与「是不是被 OOM 杀过」（R2 的服务层）。

@@ -596,3 +596,25 @@ describe('I11 · 已经装好了就别再装（U1）', () => {
     expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'AutoInstalling' })
   })
 })
+
+/**
+ * I13 · R4：删除应用走完了以后，界面该去哪。
+ *
+ * 两种范围都落到欢迎页 —— Rust 侧已经把 `install.done` 清掉了，
+ * 留在运行面板上会是一页找不到任何服务的空壳。
+ */
+describe('I13 · 删除应用之后回到欢迎页', () => {
+  it('从运行面板删完 → 欢迎页', () => {
+    expect(transition({ name: 'Ready' }, { type: 'UNINSTALLED' }).name).toBe('Welcome')
+  })
+
+  it('从「已停止」删完 → 也是欢迎页', () => {
+    expect(transition({ name: 'Stopped' }, { type: 'UNINSTALLED' }).name).toBe('Welcome')
+  })
+
+  it('别的状态收到这条事件时原地不动（删除只可能从面板发起）', () => {
+    for (const name of ['Welcome', 'NeedKey', 'AutoInstalling'] as const) {
+      expect(transition({ name }, { type: 'UNINSTALLED' }).name).toBe(name)
+    }
+  })
+})

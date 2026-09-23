@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { AlertBanner } from '../components/AlertBanner'
 import { Badge } from '../components/Badge'
 import { Modal } from '../components/Modal'
+import { UninstallDialog } from '../components/UninstallDialog'
 import { Button, ChevronRight } from '../components/Button'
 import { Card, CardHead } from '../components/Card'
 import { EnvList } from '../components/EnvList'
@@ -12,8 +14,9 @@ import { StatCard } from '../components/StatCard'
 import { StatusDot } from '../components/StatusDot'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
-import type { LauncherUpdate, StackOpResult, StackPlan } from '../lib/types'
-import { duration, percent, shanghaiStamp, thousands } from '../lib/format'
+import type { BackupSettings, LauncherUpdate, StackOpResult, StackPlan } from '../lib/types'
+import { bytes, duration, percent, shanghaiStamp, thousands } from '../lib/format'
+import { backupOverdue } from '../lib/danger'
 import { useStore } from '../state/context'
 
 /**
@@ -51,6 +54,15 @@ export function Dashboard() {
   const [opSteps, setOpSteps] = useState<string[]>([])
   const [opResult, setOpResult] = useState<StackOpResult | null>(null)
   const [plan, setPlan] = useState<StackPlan | null>(null)
+  // I13 · R4 / R6：删除应用放在「更多 ▾」里（方案第三节第 2 条：颜色弱化，不放主按钮区）
+  const [more, setMore] = useState(false)
+  // 截图脚本用 HUNTER_DEMO_PAGE=uninstall / uninstall-all 直接把这个弹窗打开
+  const [uninstalling, setUninstalling] = useState(
+    () => ipc.demoPage() === 'uninstall' || ipc.demoPage() === 'uninstall-all',
+  )
+  const [backupNonce, setBackupNonce] = useState(0)
+  const bk = useAsync<BackupSettings>(() => ipc.readBackupSettings(), [backupNonce])
+  const [backingUp, setBackingUp] = useState(false)
   const d = rt.data
 
   async function onTighten() {
@@ -120,6 +132,21 @@ export function Dashboard() {
     } finally {
       setBusy(null)
       rt.reload()
+    }
+  }
+
+  /** 面板上那条「立即备份一次」。做完刷新那一行，失败就把原话摆出来。 */
+  async function backupNow() {
+    setBackingUp(true)
+    setNote(null)
+    try {
+      const m = await ipc.createBackup()
+      setNote(`${m.id} · ${bytes(m.totalBytes)}`)
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBackingUp(false)
+      setBackupNonce((n) => n + 1)
     }
   }
 
@@ -285,6 +312,38 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* I13 · R7：硬盘 / 内存 / 服务异常的提醒。排在资源卡之前 ——
+          有问题的时候，用户要先看到结论，再去看那一堆数字 */}
+      <AlertBanner />
+
+      {/* I13 · R6：上一次自动备份失败了，或者它好像错过了一次。
+          这条只在**真的出事**时出现；一切正常时面板上一个字都不多 */}
+      {bk.data && (bk.data.lastError || backupOverdue(bk.data)) && (
+        <div
+          className={`mt-[14px] flex shrink-0 items-center justify-between gap-4 rounded-md border px-4 py-2.5 ${
+            bk.data.lastError ? 'border-danger/45 bg-danger-soft' : 'border-amber/45 bg-amber-soft'
+          }`}
+          data-testid="backup-banner"
+        >
+          <span className={`min-w-0 text-sm leading-[1.45] ${bk.data.lastError ? 'text-danger' : 'text-amber-text'}`}>
+            {bk.data.lastError ? t.dashboard.backupFailed(bk.data.lastError) : t.dashboard.missedBackup}
+          </span>
+          <div className="flex shrink-0 gap-[10px]">
+            <Button
+              size="sm"
+              data-testid="backup-now"
+              disabled={backingUp}
+              onClick={() => void backupNow()}
+            >
+              {backingUp ? t.dashboard.backingUp : t.dashboard.backupNow}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOverlay('backup')}>
+              {t.dashboard.openBackup}
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* I12 · R2：三层资源。放在统计卡之前 —— 用户打开面板最先想知道的是
           「它现在占了我多少东西」，而不是额度还剩多少 */}
       <ResourcePanel />
@@ -389,6 +448,18 @@ export function Dashboard() {
                 // I12 · R1：启动器记住的那条安装记录。摆出来才看得见它对不对
                 { label: t.dashboard.envInstalledAt, value: envOf(d, 'installedAt'), reason: t.dashboard.envInstalledAtNone },
                 { label: t.dashboard.envLastHealthy, value: envOf(d, 'lastHealthy'), reason: t.dashboard.envLastHealthyNone },
+                // I13 · R6：最近一次备份。失败过就标红 —— 这一行是「备份到底有没有在跑」唯一看得见的地方
+                {
+                  label: t.dashboard.envLastBackup,
+                  value: bk.data?.lastError
+                    ? null
+                    : bk.data?.lastOkAt
+                      ? `${bk.data.lastOkAt}（${bk.data.count} 份 · ${bytes(bk.data.totalBytes)}）`
+                      : null,
+                  reason: bk.data?.lastError
+                    ? t.dashboard.backupFailed(bk.data.lastError)
+                    : t.dashboard.envLastBackupNone,
+                },
               ]}
             />
           </div>
@@ -456,9 +527,36 @@ export function Dashboard() {
             <Button size="sm" data-testid="open-update" onClick={() => setOverlay('update')}>
               {t.update.hunterCheck}
             </Button>
+            <Button size="sm" data-testid="open-backup" onClick={() => setOverlay('backup')}>
+              {t.dashboard.openBackup}
+            </Button>
             <Button size="sm" onClick={() => setOverlay('feedback')}>
               {t.common.feedback}
             </Button>
+            {/* 「更多 ▾」：删除应用放在这里，不放主按钮区（方案第三节第 2 条） */}
+            <div className="relative">
+              <Button size="sm" variant="ghost" data-testid="open-more" onClick={() => setMore((v) => !v)}>
+                {t.dashboard.more} ▾
+              </Button>
+              {more && (
+                <div
+                  className="absolute bottom-[40px] right-0 z-20 w-[160px] rounded-md border border-line-strong bg-card py-1 shadow-2xl"
+                  data-testid="more-menu"
+                >
+                  <button
+                    type="button"
+                    data-testid="open-uninstall"
+                    onClick={() => {
+                      setMore(false)
+                      setUninstalling(true)
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm text-danger transition-colors hover:bg-danger-soft"
+                  >
+                    {t.dashboard.uninstall}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </Card>
       </div>
@@ -553,6 +651,17 @@ export function Dashboard() {
             ))}
           </div>
         </Modal>
+      )}
+
+      {uninstalling && (
+        <UninstallDialog
+          onClose={() => setUninstalling(false)}
+          onDone={() => {
+            setUninstalling(false)
+            // 删完回到欢迎页：状态机重新判一次（Rust 侧的 install.done 已经被清掉了）
+            send({ type: 'UNINSTALLED' })
+          }}
+        />
       )}
 
       {showMissing && d && (

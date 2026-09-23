@@ -296,7 +296,7 @@ pub fn upgrade(
 
     // ② 备份
     note("正在备份（数据库 + 配置）…");
-    let backup = crate::backup::create(&from, &mut note)?;
+    let backup = crate::backup::create(crate::backup::Kind::PreUpgrade, &from, &mut note)?;
     let _ = crate::backup::write_readme(&backup.id);
     if !backup.has_dump() {
         // 数据库没备份成功就不往下走。升级最坏的结果是数据出问题，
@@ -306,7 +306,7 @@ pub fn upgrade(
             format!(
                 "数据库没备份成功（{}），升级中止。什么都没有改动。",
                 backup
-                    .sql_error
+                    .dump_error
                     .clone()
                     .unwrap_or_else(|| "原因不明".into())
             ),

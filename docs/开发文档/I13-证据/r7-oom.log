@@ -1,0 +1,24 @@
+
+[1m== R7 · 构造一次真的 OOM（给 llm-shim 一个极小的内存上限） ==[0m
+  llm-shim:
+    mem_limit: 6m
+    restart: unless-stopped
+  postgres:
+ Container hunter-llm-shim-1 Recreated 
+ Container hunter-llm-shim-1 Starting 
+ Container hunter-llm-shim-1 Started 
+--- docker 怎么说 ---
+true 137 8
+--- 提醒 ---
+[严重] llm-shim 被系统当成内存大户杀掉过 · oom-llm-shim
+  docker 报 llm-shim 这个容器上一次退出是被 OOM 杀的 —— 内存不够用了。
+    · docker inspect llm-shim：OOMKilled = true
+    · 它现在占 0 B
+    建议：这一档启动器不替你改内存分配：给虚拟机调内存要重启运行环境，是个会中断服务的决定。点「让 AI 帮我看看」会把这个服务的日志（脱敏）交给诊断助手分析。
+    规则层判不了这一条，界面上可以交给诊断助手
+
+这一轮该弹通知的：oom-llm-shim
+--- 收拾现场 ---
+ Container hunter-llm-shim-1 Starting 
+ Container hunter-llm-shim-1 Started 
+  [32m✓[0m 六个服务恢复健康

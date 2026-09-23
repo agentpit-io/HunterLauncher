@@ -23,7 +23,10 @@
 //! | [`upstream`] | §13 | 从本机 api 读面板要的数字（读不到就 `—`） |
 //! | [`selfupdate`] | §10 | 启动器自更新（Tauri updater + 两个端点 + 签名校验） |
 //! | [`upgrade`] | §5.6、§10 | Hunter 版本检查与升级，失败自动回滚 |
-//! | [`backup`] | §10 | 升级前的 `pg_dump` 与配置备份 |
+//! | [`backup`] | §10 · R6 | 数据备份与恢复（`pg_dump -Fc` + 数据卷 + 校验 + 轮换） |
+//! | [`schedule`] | R6 6.3 | 三平台的定时备份任务（LaunchAgent / systemd --user / 任务计划） |
+//! | [`uninstall`] | R4 | 删除应用（两种范围 + 逐字确认 + 只动本项目） |
+//! | [`cleanup`] | R7 | 一键腾空间：只清本项目旧镜像、悬空卷、过期备份 |
 //! | [`offline`] | §9 | 离线包导入 / 导出（`docker load` / `save`） |
 
 use serde::Serialize;
@@ -32,6 +35,7 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 pub mod assist;
 pub mod autostart;
 pub mod backup;
+pub mod cleanup;
 pub mod commands;
 pub mod compose;
 pub mod config;
@@ -53,6 +57,7 @@ pub mod proc;
 pub mod redact;
 pub mod registry;
 pub mod runtime;
+pub mod schedule;
 pub mod secretgen;
 pub mod selfcheck;
 pub mod selfupdate;
@@ -60,6 +65,7 @@ pub mod takeover;
 pub mod telemetry;
 pub mod timefmt;
 pub mod tray;
+pub mod uninstall;
 pub mod upgrade;
 pub mod upstream;
 pub mod zip;
@@ -178,6 +184,23 @@ pub fn run() {
             commands::list_backups,
             commands::create_backup,
             commands::restore_backup,
+            // I13 · R6 备份与恢复
+            commands::read_backup_settings,
+            commands::write_backup_settings,
+            commands::backup_schedule_status,
+            commands::restore_preflight,
+            commands::restore_confirm_text,
+            commands::backups_in_dir,
+            commands::pick_backup_dir,
+            // I13 · R4 删除应用
+            commands::uninstall_plan,
+            commands::uninstall_confirm_text,
+            commands::uninstall_run,
+            // I13 · R7 异常监测与一键清理
+            commands::monitor_alerts,
+            commands::cleanup_plan,
+            commands::cleanup_run,
+            commands::assist_resource_ask,
             commands::pick_offline_tar,
             commands::import_offline,
             commands::offline_ready,
@@ -403,6 +426,64 @@ pub fn run() {
                         "开机自查容器：已经用两份 compose 文件把本项目拉回运行（不需要你点任何按钮）"
                     ),
                     Err(e) => lwarn!("开机自查容器：没能自动拉起 —— {}", e.msg),
+                }
+            });
+
+            // **定时备份任务要和配置对得上**（I13 · R6 6.3）。
+            //
+            // 「配置里写着每天 00:00」和「系统里真的有这个定时任务」是两件事：
+            // 用户可能换过机器、可能自己 `launchctl unload` 过、也可能是从
+            // 0.1.12 升上来的（那一版根本没装过这个任务）。启动器每次起来对一遍，
+            // **不一致就按配置改回来**。
+            //
+            // 三道闸门：装过（没装过的机器上备份没有意义）、
+            // 自动备份是开着的、而且系统里那一份确实不在。
+            // 卸掉那一路（开关关了、任务还在）也在这里收 —— `sync` 两边都管。
+            std::thread::spawn(|| {
+                let cfg = crate::config::LauncherConfig::load();
+                if !cfg.install.done {
+                    return;
+                }
+                let st = crate::schedule::status();
+                if !st.supported {
+                    lwarn!("开机自查定时备份：{}", st.reason);
+                    return;
+                }
+                if st.installed == cfg.backup.enabled && (!cfg.backup.enabled || st.enabled) {
+                    return;
+                }
+                match crate::schedule::sync(|t| linfo!("开机自查定时备份：{t}")) {
+                    Ok(s) => linfo!(
+                        "开机自查定时备份：已对齐（想要 {} · 系统里 {}）",
+                        s.wanted,
+                        s.installed
+                    ),
+                    Err(e) => lwarn!("开机自查定时备份：没能对齐 —— {}", e.msg),
+                }
+            });
+
+            // **上一次自动备份是不是出事了**（I13 · R6 6.3）。
+            //
+            // 定时备份跑在一个没有界面的进程里，它失败的时候没有人在看。
+            // 所以启动器一起来就把这件事摆到托盘上 —— 连着失败两次的那一档
+            // 在运行面板上是红色横幅，这里只负责让收在托盘里的用户也看得见。
+            std::thread::spawn({
+                let h = handle.clone();
+                move || {
+                    let cfg = crate::config::LauncherConfig::load();
+                    if !cfg.backup.last_error.is_empty() {
+                        lwarn!(
+                            "上一次自动备份失败了（连续 {} 次）：{}",
+                            cfg.backup.fail_streak,
+                            cfg.backup.last_error
+                        );
+                        tray::note_alert(&h, Some(&format!("备份失败：{}", cfg.backup.last_error)));
+                        return;
+                    }
+                    if let Some(m) = crate::schedule::missed() {
+                        lwarn!("{m}");
+                        tray::note_alert(&h, Some("自动备份好像错过了一次"));
+                    }
                 }
             });
 

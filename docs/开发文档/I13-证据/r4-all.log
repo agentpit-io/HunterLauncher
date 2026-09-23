@@ -1,0 +1,106 @@
+
+[1m== R4 · 删除应用②（先备份）→ 全新安装 → 从备份恢复 ==[0m
+删除前：hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0
+JWT_SECRET 指纹                              ae3b234e0c2b6362
+--- 删（带 --backup-first）---
+
+删除应用
+────────
+范围      删除应用和全部数据
+要输入    删除应用和数据
+容器      6 个
+数据卷    6 个 · 69.6 MB（删除）
+            hunter_opencode_data · 536 KB
+            hunter_packages · 0 B
+            hunter_pg_data · 69.1 MB
+            hunter_redis_data · 89 B
+            hunter_secrets · 160 B
+            hunter_user_skills · 0 B
+镜像      6 个 · 3.7 GB
+工作目录  47.5 KB
+运行环境  没装内置运行时
+数据概况  61 张表 · 最近写入 2026-09-23 11:10
+备份      5 份 · 目录 <用户目录>/Hunter-backups（永远不删）
+定时任务  装着（会一并移除）
+
+⚠ 备份目录 <用户目录>/Hunter-backups 不会被删除。
+
+  已先备份到 <用户目录>/Hunter-backups/hunter-20260923-2004-v1.2.0（190 KB）
+  已移除自动备份的定时任务
+  已删掉 6 个容器与本项目的网络
+  已删掉 6 个数据卷
+  已删掉工作目录 <用户目录>/.hunter
+
+✓ 删除应用和全部数据 · 腾出约 69.7 MB · 用时 40 秒
+  保留：6 个镜像（3.7 GB）—— 下次重装不用再下载一遍
+  保留：备份目录 <用户目录>/Hunter-backups（6 份备份，一份都没动）
+删除前那份备份                          /home/support/Hunter-backups/hunter-20260923-2004-v1.2.0
+--- 断言：容器、卷、工作目录都没了；备份还在 ---
+容器                                         0 个
+数据卷                                      0 个
+~/.hunter                                      没了
+备份目录                                   6 份
+别的项目的卷（不该被动）           6
+--- 全新安装 ---
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　5 / 6 健康
+… 启动服务　6 / 6 健康
+✓ 启动服务　6 / 6 健康
+✓ 完成　打开 http://localhost:3101 就能用了
+[总览] 完成 · 已自动解决 1 个问题 · 回合 0/10 · token 0
+
+事件流：/home/support/.hunter/logs/assist-events.jsonl
+审计日志：/home/support/.hunter/logs/assist-audit.log
+统计：自动解决 1 个问题 · 0 个修复回合 · 0 token · 用时 114 秒
+
+✓ 装好了。打开 http://localhost:3101
+安装耗时                                   116 秒
+  [32m✓[0m 6/6 健康
+全新安装后（应该是空库）：hunter_config=0
+schema_migrations=23
+push_tasks=3
+backtest_config=1
+users=0
+--- 从那份备份恢复 ---
+
+从备份恢复
+──────────
+备份 hunter-20260923-2004-v1.2.0 · v1.2.0 · 目录 <用户目录>/Hunter-backups/hunter-20260923-2004-v1.2.0
+  逐个核过 8 个文件的 sha256
+  备份里有这些数据卷：hunter_secrets、hunter_user_skills、hunter_opencode_data
+  先把现在的数据备份成 hunter-20260923-2007-v1.2.0
+  已停下 api、opencode、web、llm-shim
+  数据库已灌回（144 KB）
+  已恢复数据卷 hunter_secrets
+  已恢复数据卷 hunter_user_skills
+  已恢复数据卷 hunter_opencode_data
+  已把备份里的 JWT_SECRET 写回（登录不会失效）
+  已重新启动全部服务
+
+✓ 已从 hunter-20260923-2004-v1.2.0 恢复 · 6/6 个服务就绪 · 用时 92 秒
+  恢复之前的那份数据已经备份成 hunter-20260923-2007-v1.2.0（挑错了还能再恢复回来）
+  [32m✓[0m 6/6 健康
+恢复后：hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0
+  [32m✓[0m 数据完整恢复
+  [32m✓[0m JWT_SECRET 恢复了（ae3b234e0c2b6362），加密配置读得出来
+--- 密钥卷真的回来了吗 ---
+total 12
+drwxr-xr-x    2 root     root          4096 Sep 23 12:07 .
+drwxr-xr-x    1 root     root          4096 Sep 23 12:08 ..
+-rw-r-----    1 1001     1001           160 Sep 23 08:02 secrets.env

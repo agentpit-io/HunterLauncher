@@ -1,0 +1,139 @@
+
+[1m== R6 · 做一次备份并校验 ==[0m
+hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0
+
+备份
+────
+备份到 /home/support/Hunter-backups
+  备份放到 <用户目录>/Hunter-backups/hunter-20260923-2102-v1.2.0
+  已备份配置：.env、docker-compose.yml、docker-compose.launcher.yml、launcher.toml
+  正在转储数据库 hunter（用户 hunter）…
+  数据库已转储（144 KB）
+  校验通过 · pg_restore --list 读出 391 条目录项
+  已打包 hunter_secrets（303 B）
+  已打包 hunter_user_skills（87 B）
+  已打包 hunter_opencode_data（15.1 KB）
+
+✓ 备份完成 hunter-20260923-2102-v1.2.0 · 190 KB · 校验 通过 · 用时 7 秒
+  库里 60 张表，合计 68 行
+  数据卷 hunter_secrets → 303 B
+  数据卷 hunter_user_skills → 87 B
+  数据卷 hunter_opencode_data → 15.1 KB
+  轮换：删掉 3 份过期备份，腾出 593 KB
+退出码                                      0
+耗时                                         7 秒
+备份目录                                   /home/support/Hunter-backups/hunter-20260923-2102-v1.2.0
+total 224
+drwx------ 2 support support   4096 Sep 23 13:02 .
+drwxrwxr-x 7 support support   4096 Sep 23 13:02 ..
+-rw------- 1 support support   3498 Sep 23 13:02 .env
+-rw-rw-r-- 1 support support   1121 Sep 23 13:02 README.txt
+-rw------- 1 support support   1277 Sep 23 13:02 docker-compose.launcher.yml
+-rw------- 1 support support  23990 Sep 23 13:02 docker-compose.yml
+-rw-rw-r-- 1 support support 144069 Sep 23 13:02 hunter.dump
+-rw------- 1 support support   1744 Sep 23 13:02 launcher.toml
+-rw-rw-r-- 1 support support   5978 Sep 23 13:02 meta.json
+-rw-rw-r-- 1 support support  15113 Sep 23 13:02 opencode_data.tar.gz
+-rw-rw-r-- 1 support support    303 Sep 23 13:02 secrets.tar.gz
+-rw-rw-r-- 1 support support     87 Sep 23 13:02 user_skills.tar.gz
+--- meta.json ---
+{
+    "id": "hunter-20260923-2102-v1.2.0",
+    "tag": "1.2.0",
+    "at": "2026-09-23 21:02:04",
+    "kind": "manual",
+    "launcherVersion": "0.1.13",
+    "project": "hunter",
+    "entries": [
+        {
+            "name": ".env",
+            "bytes": 3498,
+            "sha256": "faec5b7fd7c6a2518e6eef59012978b1341486b65c501a4d6e8624a4de3248ff"
+        },
+        {
+            "name": "docker-compose.launcher.yml",
+            "bytes": 1277,
+            "sha256": "ec39876d6db631bb4f4d4f8ad9746a63c5a5c95876bbc5a85d354799c37fc219"
+        },
+        {
+            "name": "docker-compose.yml",
+            "bytes": 23990,
+            "sha256": "4732348f491779051bfab0783ea7b552a2b35314d051c0ea7c95cf5471162ee2"
+        },
+        {
+            "name": "hunter.dump",
+            "bytes": 144069,
+            "sha256": "861348a1b40672fb9d6fc6aef7a36244f15994c636016e064dd8f311e3db4734"
+        },
+        {
+            "name": "launcher.toml",
+            "bytes": 1744,
+            "sha256": "f87a20472c8b7a45e3aca49061051e66967d06eb802ca36580c1f72ae5addc17"
+        },
+        {
+            "name": "opencode_data.tar.gz",
+            "bytes": 15113,
+            "sha256": "f144eaf5d9842baab2957c1caaf4d1d529fe95581f8df2cb07ba0b38e2bb06ee"
+        },
+        {
+            "name": "secrets.tar.gz",
+            "bytes": 303,
+            "sha256": "f605f95e038e67f24913149d21c5da247472c9bfcb92cd469d07c3611077d26e"
+        },
+        {
+            "name": "user_skills.tar.gz",
+            "bytes": 87,
+            "sha256": "0de1630fd2293cb6367fdefb2aef2f043b8189a2e71588b650afc9c9b8fe71ff"
+        }
+    ],
+    "dumpBytes": 144069,
+    "dumpError": null,
+    "verified": true,
+    "verifyNote": "pg_restore --list \u8bfb\u51fa 391 \u6761\u76ee\u5f55\u9879",
+    "tableCount": 60,
+    "tables": [
+        {
+            "table": "schema_migrations",
+            "rows": 46
+        },
+        {
+            "table": "hunter_config",
+            "rows": 14
+        },
+        {
+            "table": "push_tasks",
+            "rows": 6
+        },
+        {
+            "table": "backtest_config",
+            "rows": 2
+        },
+        {
+            "table": "backtest_trade",
+            "rows": 0
+        },
+        {
+            "table": "chat_session_owner",
+            "rows": 0
+        },
+        {
+--- 目录权限（必须 700）---
+700 /home/support/Hunter-backups/hunter-20260923-2102-v1.2.0
+600 /home/support/Hunter-backups/hunter-20260923-2102-v1.2.0/.env
+--- 校验：手工再跑一遍 pg_restore --list ---
+391
+--- 卷包里真的有东西吗 ---
+secrets.tar.gz           2 个文件
+user_skills.tar.gz       1 个文件
+opencode_data.tar.gz     12 个文件
+--- 备份期间数据没被动过 ---
+hunter_config=14
+schema_migrations=46
+push_tasks=6
+backtest_config=2
+users=0
+  [32m✓[0m 行数前后一字不差

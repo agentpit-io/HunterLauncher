@@ -1552,21 +1552,326 @@ pub async fn list_backups() -> Result<Vec<crate::backup::BackupMeta>> {
 }
 
 /// 手动做一次备份（不升级也能备份 —— 换机器、动配置前都用得上）。
+///
+/// 做完顺手按保留策略轮换一次：用户点一次备份就多一份，
+/// 「保留最近 3 天」这件事不该只在定时任务那条路上生效。
 #[tauri::command]
 pub async fn create_backup(app: tauri::AppHandle) -> Result<crate::backup::BackupMeta> {
     blocking(move || {
         let tag = state(&app).config().hunter.tag;
-        let m = crate::backup::create(&tag, |_| {})?;
-        let _ = crate::backup::write_readme(&m.id);
-        Ok(m)
+        let r = crate::backup::create(crate::backup::Kind::Manual, &tag, |_| {});
+        match &r {
+            Ok(_) => {
+                crate::backup::record_result(true, None);
+                crate::backup::prune();
+            }
+            Err(e) => {
+                crate::backup::record_result(false, Some(&e.msg));
+            }
+        }
+        r
     })
     .await
 }
 
-/// 从某次备份把数据库灌回去。**只在用户显式要求时做**（见 [`crate::backup`] 的模块头）。
+/// 从某次备份把数据库灌回去。**只在用户显式要求时做**。
+///
+/// 0.1.13 起它走的是 [`crate::backup::restore`] 那条完整的路
+/// （先备份当前 → 停服务 → `pg_restore` → 卷与 `JWT_SECRET` → 起回来 → 等健康），
+/// 而不是 0.1.12 的「只灌一次 SQL」。`confirm` 必须逐字是「恢复数据」。
 #[tauri::command]
-pub async fn restore_backup(id: String) -> Result<String> {
-    blocking(move || crate::backup::restore_db(&id)).await
+pub async fn restore_backup(
+    app: tauri::AppHandle,
+    id: String,
+    confirm: String,
+) -> Result<crate::backup::RestoreReport> {
+    blocking(move || {
+        if confirm.trim() != crate::backup::RESTORE_PHRASE {
+            return Err(AppError::new(
+                Code::NotImplemented,
+                format!(
+                    "要恢复得逐字输入「{}」。恢复会把现在的数据替换掉，这一步是故意做成这样的。",
+                    crate::backup::RESTORE_PHRASE
+                ),
+            ));
+        }
+        crate::backup::restore(&id, |t| {
+            let _ = app.emit("hunter://backup", t.to_string());
+        })
+    })
+    .await
+}
+
+// ── I13 · R6 数据备份与恢复 ───────────────────────────────────────────────
+
+/// 设置页「数据备份」那一分区读到的东西。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSettings {
+    pub enabled: bool,
+    pub time: String,
+    /// 用户填的目录（空 = 用建议值）
+    pub dir: String,
+    /// **现在实际用的**那个目录（只读，界面显示它）
+    #[serde(default)]
+    pub effective_dir: String,
+    pub keep_days: u32,
+    pub include_sessions: bool,
+    pub include_skills: bool,
+    /// 下面这些都是只读的现状
+    #[serde(default)]
+    pub last_ok_at: String,
+    #[serde(default)]
+    pub last_error: String,
+    #[serde(default)]
+    pub last_run_at: String,
+    #[serde(default)]
+    pub fail_streak: u32,
+    #[serde(default)]
+    pub count: usize,
+    #[serde(default)]
+    pub total_bytes: u64,
+    /// 备份目录所在盘还剩多少（查不到就是 `None` → 界面「—」）
+    #[serde(default)]
+    pub disk_free_bytes: Option<u64>,
+    /// 按平台建议的目录
+    #[serde(default)]
+    pub suggested_dir: String,
+    /// 检测到的外接盘上的建议位置（**只建议，不自动选**）
+    #[serde(default)]
+    pub external_suggestions: Vec<String>,
+}
+
+fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
+    let eff = c.backup.effective_dir();
+    let all = crate::backup::list();
+    BackupSettings {
+        enabled: c.backup.enabled,
+        time: c.backup.time.clone(),
+        dir: c.backup.dir.clone(),
+        effective_dir: eff.to_string_lossy().into_owned(),
+        keep_days: c.backup.keep_days,
+        include_sessions: c.backup.include_sessions,
+        include_skills: c.backup.include_skills,
+        last_ok_at: c.backup.last_ok_at.clone(),
+        last_error: c.backup.last_error.clone(),
+        last_run_at: c.backup.last_run_at.clone(),
+        fail_streak: c.backup.fail_streak,
+        count: all.len(),
+        total_bytes: crate::backup::total_bytes(),
+        disk_free_bytes: crate::monitor::disk_for(&eff).map(|(_, f, _)| f),
+        suggested_dir: crate::config::suggested_backup_dir()
+            .to_string_lossy()
+            .into_owned(),
+        external_suggestions: crate::backup::external_suggestions(),
+    }
+}
+
+#[tauri::command]
+pub async fn read_backup_settings(app: tauri::AppHandle) -> Result<BackupSettings> {
+    blocking(move || Ok(to_backup_settings(&state(&app).config()))).await
+}
+
+/// 存备份设置，并**当场把系统里的定时任务改成一致的样子**。
+///
+/// 「配置里写着几点」和「系统里真的几点跑」永远不该是两件事 ——
+/// 所以这两件事在同一个命令里完成，不给它们分开的机会。
+#[tauri::command]
+pub async fn write_backup_settings(
+    app: tauri::AppHandle,
+    settings: BackupSettings,
+) -> Result<BackupSettings> {
+    blocking(move || {
+        let st = state(&app);
+        let mut c = st.config();
+        if crate::config::parse_hhmm(&settings.time).is_none() {
+            return Err(AppError::new(
+                Code::ConfigWrite,
+                format!(
+                    "「{}」不是一个时间。要的是 24 小时制的 HH:MM，例如 00:00 或 07:30。",
+                    crate::redact::redact(&settings.time)
+                ),
+            ));
+        }
+        // 目录：写得进去才算数 —— 存一个写不进去的路径等于埋一个只有半夜才炸的雷
+        let want = crate::config::expand_home(&settings.dir);
+        if !settings.dir.trim().is_empty() {
+            std::fs::create_dir_all(&want).map_err(|e| {
+                AppError::new(
+                    Code::ConfigWrite,
+                    format!(
+                        "建不了备份目录 {}：{e}。换一个目录，或者先把那块盘接上。",
+                        crate::redact::mask_home(&want.to_string_lossy())
+                    ),
+                )
+            })?;
+            let probe = want.join(".hunter-write-test");
+            std::fs::write(&probe, b"ok").map_err(|e| {
+                AppError::new(
+                    Code::ConfigWrite,
+                    format!(
+                        "{} 写不进去：{e}。换一个你有写权限的目录。",
+                        crate::redact::mask_home(&want.to_string_lossy())
+                    ),
+                )
+            })?;
+            let _ = std::fs::remove_file(&probe);
+            if want.starts_with(crate::paths::root()) {
+                return Err(AppError::new(
+                    Code::ConfigWrite,
+                    "备份目录不能放在 Hunter 的工作目录里 —— 「删除应用」会把那里整个删掉，                     备份会跟着一起没。换一个别的地方。"
+                        .to_string(),
+                ));
+            }
+        }
+        c.backup.enabled = settings.enabled;
+        c.backup.time = settings.time.trim().to_string();
+        c.backup.dir = settings.dir.trim().to_string();
+        c.backup.keep_days = settings.keep_days.clamp(1, 30);
+        c.backup.include_sessions = settings.include_sessions;
+        c.backup.include_skills = settings.include_skills;
+        c.save()?;
+        st.set_config(c.clone());
+        // 系统里的定时任务跟着改。装不上（例如没有 systemd）**不算保存失败** ——
+        // 设置该存下来，界面上用 schedule_status 如实说明它现在跑不起来
+        if let Err(e) = crate::schedule::sync(|t| crate::linfo!("定时备份：{t}")) {
+            crate::lwarn!("定时备份任务没装成：{}", e.msg);
+        }
+        Ok(to_backup_settings(&c))
+    })
+    .await
+}
+
+/// 定时任务的现状（**现查系统**，不读配置里的备忘）。
+#[tauri::command]
+pub async fn backup_schedule_status() -> Result<crate::schedule::Status> {
+    blocking(|| Ok(crate::schedule::status())).await
+}
+
+/// 恢复前的只读体检。
+#[tauri::command]
+pub async fn restore_preflight(id: String) -> Result<crate::backup::RestorePreflight> {
+    blocking(move || crate::backup::preflight(&id)).await
+}
+
+/// 列某个任意目录里的备份（换电脑迁移：把备份拷过来，指给启动器看）。
+#[tauri::command]
+pub async fn backups_in_dir(dir: String) -> Result<Vec<crate::backup::BackupMeta>> {
+    blocking(move || {
+        let p = crate::config::expand_home(&dir);
+        if !p.is_dir() {
+            return Err(AppError::new(
+                Code::NotImplemented,
+                format!("{} 不是一个目录。", crate::redact::mask_home(&dir)),
+            ));
+        }
+        Ok(crate::backup::list_in(&p))
+    })
+    .await
+}
+
+/// 弹系统目录选择框挑备份目录。挑完只返回路径，**不改任何设置**。
+#[tauri::command]
+pub async fn pick_backup_dir(app: tauri::AppHandle) -> Result<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_title("选一个放备份的文件夹")
+        .pick_folder(move |p| {
+            let _ = tx.send(p.map(|x| x.to_string()));
+        });
+    Ok(rx.recv().unwrap_or(None))
+}
+
+/// 恢复要逐字输入的那句话（界面拿它填提示，不自己另写一套）。
+#[tauri::command]
+pub async fn restore_confirm_text() -> Result<String> {
+    Ok(crate::backup::RESTORE_PHRASE.to_string())
+}
+
+// ── I13 · R4 删除应用 ─────────────────────────────────────────────────────
+
+/// 这次删除会动到什么（只读）。`deep` 为真时连表数与最近写入一起问出来。
+#[tauri::command]
+pub async fn uninstall_plan(scope: String, deep: bool) -> Result<crate::uninstall::Plan> {
+    blocking(move || {
+        Ok(crate::uninstall::plan(
+            crate::uninstall::Scope::parse(&scope),
+            deep,
+        ))
+    })
+    .await
+}
+
+/// 这一档要逐字输入的那句话。
+#[tauri::command]
+pub async fn uninstall_confirm_text(scope: String) -> Result<String> {
+    Ok(crate::uninstall::confirm_phrase(crate::uninstall::Scope::parse(&scope)).to_string())
+}
+
+/// 真的删。过程逐条推 `hunter://uninstall`。
+#[tauri::command]
+pub async fn uninstall_run(
+    app: tauri::AppHandle,
+    options: crate::uninstall::Options,
+) -> Result<crate::uninstall::Report> {
+    blocking(move || {
+        let r = crate::uninstall::run(&options, |t| {
+            let _ = app.emit("hunter://uninstall", t.to_string());
+        });
+        if r.is_ok() {
+            let st = state(&app);
+            st.set_config(crate::config::LauncherConfig::load());
+        }
+        r
+    })
+    .await
+}
+
+// ── I13 · R7 异常监测 ─────────────────────────────────────────────────────
+
+/// 跑一遍七类监测，返回提醒列表（运行面板的横幅读它）。
+#[tauri::command]
+pub async fn monitor_alerts() -> Result<crate::monitor::Alerts> {
+    blocking(|| Ok(crate::monitor::alerts())).await
+}
+
+/// 能安全清掉多少（只读）。
+#[tauri::command]
+pub async fn cleanup_plan() -> Result<crate::cleanup::Plan> {
+    blocking(|| Ok(crate::cleanup::plan())).await
+}
+
+/// 一键清理。**只清本项目旧镜像、悬空卷、过期备份**，别的一律不动。
+#[tauri::command]
+pub async fn cleanup_run(app: tauri::AppHandle) -> Result<crate::cleanup::Done> {
+    blocking(move || {
+        crate::cleanup::run(|t| {
+            let _ = app.emit("hunter://cleanup", t.to_string());
+        })
+    })
+    .await
+}
+
+/// 规则层判不了的那几条，把**脱敏指标快照**交给诊断助手（沿用现有预算与动作表）。
+#[tauri::command]
+pub async fn assist_resource_ask(app: tauri::AppHandle, alert_id: String) -> Result<String> {
+    blocking(move || {
+        let a = crate::monitor::alerts();
+        let Some(one) = a.alerts.iter().find(|x| x.id == alert_id) else {
+            return Err(AppError::new(
+                Code::NotImplemented,
+                format!(
+                    "现在已经没有「{}」这条提醒了 —— 可能它自己好了。",
+                    crate::redact::redact(&alert_id)
+                ),
+            ));
+        };
+        let snap = crate::monitor::snapshot_for_ai(&a);
+        crate::assist::ask_resource(&state(&app), one, &snap)
+    })
+    .await
 }
 
 // ── M4 · 离线包 ───────────────────────────────────────────────────────────

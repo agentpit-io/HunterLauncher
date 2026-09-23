@@ -800,7 +800,24 @@ pub fn start(
             cfg.mark_installed(false);
             cfg.touch_healthy();
             let _ = cfg.save();
-            state.set_config(cfg);
+            state.set_config(cfg.clone());
+            // I13 · R6：装完就把每天的自动备份挂上（默认开）。
+            //
+            // 放在这里而不是只放在「启动器下次起来时对一遍」（lib.rs 的开机自查）：
+            // 刚装完的那一天晚上 00:00 就该有第一份备份，而用户完全可能
+            // 装完就把启动器关了、几天不开。装不上不算安装失败 ——
+            // 设置页与运行面板会如实显示定时任务的真实状态。
+            if cfg.backup.enabled {
+                match crate::schedule::sync(|t| crate::linfo!("装完挂定时备份：{t}")) {
+                    Ok(st) => crate::linfo!(
+                        "装完挂定时备份：{} · 每天 {} · 系统里装上了 {}",
+                        st.mech,
+                        st.time,
+                        st.installed
+                    ),
+                    Err(e) => crate::lwarn!("装完挂定时备份没成（不影响安装）：{}", e.msg),
+                }
+            }
             if let Ok(mut g) = state.services.lock() {
                 *g = v.clone();
             }

@@ -22,6 +22,7 @@ import type {
   AssistState,
   AssistSummary,
   BackupMeta,
+  BackupSettings,
   BootState,
   BuiltinRuntimeStatus,
   DataCheck,
@@ -31,7 +32,16 @@ import type {
   StackOpResult,
   StackPlan,
   StorageMetrics,
+  CleanupDone,
+  CleanupPlan,
   DiagSection,
+  MonitorAlerts,
+  RestorePreflight,
+  RestoreReport,
+  ScheduleStatus,
+  UninstallOptions,
+  UninstallPlan,
+  UninstallReport,
   DockerInfo,
   ExportResult,
   FeedbackForm,
@@ -453,16 +463,117 @@ export async function listBackups(): Promise<BackupMeta[]> {
   return call<BackupMeta[]>('list_backups')
 }
 
-/** 手动做一份备份（pg_dump + 配置）。要几秒到几十秒。 */
+/**
+ * 手动做一份备份（`pg_dump -Fc` + 密钥卷 + 配置，做完校验）。要几秒到几十秒。
+ */
 export async function createBackup(): Promise<BackupMeta> {
   if (DEMO) return demo.demoBackups[0]!
   return call<BackupMeta>('create_backup')
 }
 
-/** 把某次备份的数据库灌回去。**破坏性操作**，界面上要二次确认。 */
-export async function restoreBackup(id: string): Promise<string> {
-  if (DEMO) return '演示模式不真的恢复'
-  return call<string>('restore_backup', { id })
+/**
+ * 从一份备份恢复。**破坏性操作**：`confirm` 必须逐字是「恢复数据」，
+ * Rust 那一侧也会再核一次（界面有 bug 也不该把数据覆盖掉）。
+ */
+export async function restoreBackup(id: string, confirm: string): Promise<RestoreReport> {
+  if (DEMO) throw new IpcError('E_NOT_IMPLEMENTED', '演示模式不真的恢复')
+  return call<RestoreReport>('restore_backup', { id, confirm })
+}
+
+// ── I13 · R6 备份与恢复 ───────────────────────────────────────────────────
+
+export async function readBackupSettings(): Promise<BackupSettings> {
+  if (DEMO) return demo.demoBackupSettings
+  return call<BackupSettings>('read_backup_settings')
+}
+
+/** 存设置**并**当场把系统里的定时任务改成一致的样子。 */
+export async function writeBackupSettings(settings: BackupSettings): Promise<BackupSettings> {
+  if (DEMO) return settings
+  return call<BackupSettings>('write_backup_settings', { settings })
+}
+
+/** 定时任务的现状（现查系统，不读配置里的备忘）。 */
+export async function backupScheduleStatus(): Promise<ScheduleStatus> {
+  if (DEMO) return demo.demoSchedule
+  return call<ScheduleStatus>('backup_schedule_status')
+}
+
+export async function restorePreflight(id: string): Promise<RestorePreflight> {
+  if (DEMO) return demo.demoPreflight
+  return call<RestorePreflight>('restore_preflight', { id })
+}
+
+export async function restoreConfirmText(): Promise<string> {
+  if (DEMO) return '恢复数据'
+  return call<string>('restore_confirm_text')
+}
+
+/** 列任意目录里的备份（换电脑迁移：把备份拷过来，指给启动器看）。 */
+export async function backupsInDir(dir: string): Promise<BackupMeta[]> {
+  if (DEMO) return demo.demoBackups
+  return call<BackupMeta[]>('backups_in_dir', { dir })
+}
+
+/** 弹系统目录选择框挑备份目录。取消就返回 null。 */
+export async function pickBackupDir(): Promise<string | null> {
+  if (DEMO) return null
+  return call<string | null>('pick_backup_dir')
+}
+
+/** 备份 / 恢复过程中的一步。 */
+export function onBackupStep(cb: (line: string) => void): Promise<UnlistenFn> {
+  return listen<string>('hunter://backup', (e) => cb(e.payload))
+}
+
+// ── I13 · R4 删除应用 ─────────────────────────────────────────────────────
+
+export async function uninstallPlan(scope: string, deep = false): Promise<UninstallPlan> {
+  if (DEMO) return demo.demoUninstallPlan(scope)
+  return call<UninstallPlan>('uninstall_plan', { scope, deep })
+}
+
+export async function uninstallConfirmText(scope: string): Promise<string> {
+  if (DEMO) return scope === 'app-and-data' ? '删除应用和数据' : '删除应用'
+  return call<string>('uninstall_confirm_text', { scope })
+}
+
+export async function uninstallRun(options: UninstallOptions): Promise<UninstallReport> {
+  if (DEMO) throw new IpcError('E_NOT_IMPLEMENTED', '演示模式不真的删除')
+  return call<UninstallReport>('uninstall_run', { options })
+}
+
+export function onUninstallStep(cb: (line: string) => void): Promise<UnlistenFn> {
+  return listen<string>('hunter://uninstall', (e) => cb(e.payload))
+}
+
+// ── I13 · R7 异常监测与一键清理 ───────────────────────────────────────────
+
+export async function monitorAlerts(): Promise<MonitorAlerts> {
+  // 演示模式下**只有截图那一页**给提醒：别的页要是也顶着一条横幅，
+  // 运行面板那张基准图就和真机上「一切正常」时的样子对不上了
+  if (DEMO) {
+    return demoPage() === 'dashboard-alert'
+      ? demo.demoAlerts
+      : { at: demo.demoAlerts.at, alerts: [], notify: [], reasons: {} }
+  }
+  return call<MonitorAlerts>('monitor_alerts')
+}
+
+export async function cleanupPlan(): Promise<CleanupPlan> {
+  if (DEMO) return demo.demoCleanupPlan
+  return call<CleanupPlan>('cleanup_plan')
+}
+
+export async function cleanupRun(): Promise<CleanupDone> {
+  if (DEMO) throw new IpcError('E_NOT_IMPLEMENTED', '演示模式不真的清理')
+  return call<CleanupDone>('cleanup_run')
+}
+
+/** 规则层判不了的那几条，交给诊断助手（会花 hunter 额度）。 */
+export async function assistResourceAsk(alertId: string): Promise<string> {
+  if (DEMO) throw new IpcError('E_NOT_IMPLEMENTED', '演示模式不问 AI')
+  return call<string>('assist_resource_ask', { alertId })
 }
 
 // ── M4 · 离线包（方案 §9） ──────────────────────────────────────────────

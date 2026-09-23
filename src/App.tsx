@@ -14,6 +14,7 @@ import { Start } from './pages/Start'
 import { Done } from './pages/Done'
 import { Dashboard } from './pages/Dashboard'
 import { TakeoverPanel } from './pages/TakeoverPanel'
+import { BackupPanel } from './pages/BackupPanel'
 import { Settings } from './pages/Settings'
 import { Logs } from './pages/Logs'
 import { Feedback } from './pages/Feedback'
@@ -187,10 +188,11 @@ function Page() {
   }
 }
 
-function Overlay({ which }: { which: 'settings' | 'logs' | 'feedback' | 'update' }) {
+function Overlay({ which }: { which: 'settings' | 'logs' | 'feedback' | 'update' | 'backup' }) {
   const { state } = useStore()
   if (which === 'settings') return <Settings />
   if (which === 'logs') return <Logs />
   if (which === 'update') return <Update />
+  if (which === 'backup') return <BackupPanel />
   return <Feedback errorCode={state.name === 'Error' ? state.code : undefined} />
 }

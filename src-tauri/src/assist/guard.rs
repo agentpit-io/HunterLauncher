@@ -820,6 +820,222 @@ pub fn argv_vm_metrics(argv: &[String]) -> AppResult<()> {
 /// 全部只读、全部不带 `sudo`。加新条目之前先问一句：它会不会写任何东西。
 pub const VM_METRIC_COMMANDS: &[&[&str]] = &[&["free", "-b"], &["df", "-B1", "/var/lib/docker"]];
 
+// ── I13 的三道窄门：定时任务、删本项目的卷、删本项目的镜像 ──────────────
+//
+// 这三件事都要用到上面那张大名单**明确禁止**的东西：
+//
+// | 要做的事 | 大名单为什么禁 | 这道窄门凭什么放 |
+// |---|---|---|
+// | 装 / 卸定时备份任务 | `FORBIDDEN_PATH_HINTS` 里有 `/Library/LaunchAgents` | 只认**我们自己那一个** Label 与那一个文件名，参数逐字写死 |
+// | 删本项目的数据卷（删除应用 ②） | `FORBIDDEN_DOCKER` 里有 `volume rm` | 调用方必须先用 [`own_volume`] 逐个核过 `com.docker.compose.project` 标签 |
+// | 删本项目的旧镜像（R7 一键清理） | `FORBIDDEN_DOCKER` 里有 `image prune` | 只删**按 id 指名**的镜像，而且 id 必须来自本项目的镜像仓库名 |
+//
+// 三道门都**不改大名单**：模型走的永远是 [`argv`]，它照样拒绝这三类命令。
+// 能走窄门的只有启动器自己那几处调用点，参数是代码拼的，模型碰不到。
+
+/// 定时备份任务那道门（I13 · R6 6.3）。
+///
+/// 只认三个程序、每个只认几种形状，**一条 `sudo` 都没有**、
+/// 一条能写系统目录（`/Library/LaunchDaemons`、`/etc/systemd/system`）的都没有。
+pub fn argv_schedule(argv: &[String]) -> AppResult<()> {
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let base = base.trim_end_matches(".exe");
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let label_ok = |s: &str| {
+        s == crate::schedule::LABEL
+            || s.ends_with(&format!("/{}", crate::schedule::LABEL))
+            || s == format!("{}.plist", crate::schedule::LABEL)
+    };
+    let unit_ok = |s: &str| {
+        s == format!("{}.timer", crate::schedule::UNIT)
+            || s == format!("{}.service", crate::schedule::UNIT)
+    };
+    let ok = match base {
+        "launchctl" => match rest.as_slice() {
+            // gui/<uid>/io.agentpit.hunter-backup
+            ["bootout", t] | ["print", t] => label_ok(t),
+            ["bootstrap", dom, plist] => {
+                dom.starts_with("gui/")
+                    && plist.ends_with(&format!("{}.plist", crate::schedule::LABEL))
+                    && !plist.contains("LaunchDaemons")
+            }
+            _ => false,
+        },
+        "systemctl" => match rest.as_slice() {
+            // **第一个参数必须是 `--user`**：没有它就是在动整台机器的 systemd
+            ["--user", "daemon-reload"] => true,
+            ["--user", "enable", "--now", u]
+            | ["--user", "disable", "--now", u]
+            | ["--user", "is-enabled", u]
+            | ["--user", "start", u] => unit_ok(u),
+            ["--user", "list-timers", u, ..] => unit_ok(u),
+            _ => false,
+        },
+        "schtasks" => match rest.as_slice() {
+            ["/Create", "/TN", t, "/XML", _, "/F"] => *t == crate::schedule::TASK,
+            ["/Delete", "/TN", t, "/F"] => *t == crate::schedule::TASK,
+            ["/Query", "/TN", t, "/FO", "LIST"] => *t == crate::schedule::TASK,
+            _ => false,
+        },
+        _ => false,
+    };
+    if ok {
+        return Ok(());
+    }
+    Err(reject_audited(
+        "argv_schedule",
+        format!(
+            "「{}」不在「定时备份任务能跑的那张表」里（那张表逐字写死，没有 sudo、\
+             也碰不到需要管理员权限的系统目录），拒绝。",
+            safe(&argv.join(" "))
+        ),
+    ))
+}
+
+/// 这个**数据卷**是本项目的吗（I13 · R4）。
+///
+/// 和 [`own_container`] 一模一样的道理，只是问的对象换成了卷：
+/// 查 `com.docker.compose.project` 标签，不是 `hunter` 一律拒绝，**查不到也拒绝**。
+///
+/// 这是删除应用那条路上最要紧的一道门 —— 用户机器上完全可能有
+/// `hunter-fresh_hunter_pg_data`、`hunter-community_hunter_pg_data`，
+/// 按名字前缀匹配会把他们的数据一起删掉。
+pub fn own_volume(name: &str) -> AppResult<()> {
+    if name.trim().is_empty() {
+        return Err(reject("没给数据卷名，拒绝。".to_string()));
+    }
+    let bin = crate::runtime::which::docker_bin();
+    let r = crate::proc::run_timeout(
+        &bin,
+        &[
+            "volume",
+            "inspect",
+            "-f",
+            "{{index .Labels \"com.docker.compose.project\"}}",
+            name,
+        ],
+        std::time::Duration::from_secs(20),
+    )?;
+    if !r.ok() {
+        return Err(reject(format!(
+            "查不到数据卷「{}」的 compose 项目标签（{}），拒绝删它。",
+            safe(name),
+            r.err_line()
+        )));
+    }
+    let project = r.stdout.trim();
+    if project != PROJECT {
+        return Err(reject(format!(
+            "数据卷「{}」属于 compose 项目「{}」，不是本次安装的「{PROJECT}」—— \
+             启动器不会删你电脑上别的项目的数据，拒绝。",
+            safe(name),
+            safe(project)
+        )));
+    }
+    Ok(())
+}
+
+/// 删本项目数据卷那道门。**调用方必须先对每一个卷过一遍 [`own_volume`]**，
+/// 并把这件事用 `verified` 传进来 —— 这个参数是代码里的事实，不是模型给的字段。
+pub fn argv_volume_rm(argv: &[String], verified: bool) -> AppResult<()> {
+    if !verified {
+        return Err(reject_audited(
+            "argv_volume_rm",
+            "删数据卷之前必须逐个核过它的 compose 项目标签，这一次没核，拒绝。".to_string(),
+        ));
+    }
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if base.trim_end_matches(".exe") != "docker" {
+        return Err(reject_audited(
+            "argv_volume_rm",
+            format!("删数据卷只能用 docker，收到「{}」，拒绝。", safe(prog)),
+        ));
+    }
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let ["volume", "rm", names @ ..] = rest.as_slice() else {
+        return Err(reject_audited(
+            "argv_volume_rm",
+            format!(
+                "只认「docker volume rm <卷名…>」这一种形状，收到「{}」，拒绝。",
+                safe(&argv.join(" "))
+            ),
+        ));
+    };
+    if names.is_empty() {
+        return Err(reject_audited(
+            "argv_volume_rm",
+            "一个卷名都没给，拒绝 —— 不带参数的删除是最危险的那一种。".to_string(),
+        ));
+    }
+    // `-f` / `--force` 不给过：强删会连「还被容器用着」这层保护一起绕开
+    if names.iter().any(|n| n.starts_with('-')) {
+        return Err(reject_audited(
+            "argv_volume_rm",
+            format!(
+                "删数据卷的命令里不允许出现任何开关（收到「{}」），拒绝。",
+                safe(&names.join(" "))
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// 删本项目镜像那道门（R7 的「只清本项目旧镜像」、R4 的「顺带删镜像」）。
+///
+/// 只认 `docker image rm <引用或 id…>`，**不认 `prune`**：
+/// `image prune -a` 会把这台机器上所有没在用的镜像删掉，包括用户别的项目的。
+pub fn argv_image_rm(argv: &[String], verified: bool) -> AppResult<()> {
+    if !verified {
+        return Err(reject_audited(
+            "argv_image_rm",
+            "删镜像之前必须先确认每一个都是本项目的，这一次没确认，拒绝。".to_string(),
+        ));
+    }
+    let Some(prog) = argv.first() else {
+        return Err(reject("空命令，拒绝。".to_string()));
+    };
+    let base = Path::new(prog)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if base.trim_end_matches(".exe") != "docker" {
+        return Err(reject_audited(
+            "argv_image_rm",
+            format!("删镜像只能用 docker，收到「{}」，拒绝。", safe(prog)),
+        ));
+    }
+    let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    let ["image", "rm", refs @ ..] = rest.as_slice() else {
+        return Err(reject_audited(
+            "argv_image_rm",
+            format!(
+                "只认「docker image rm <镜像…>」这一种形状（`prune` 会删到别人的镜像），\
+                 收到「{}」，拒绝。",
+                safe(&argv.join(" "))
+            ),
+        ));
+    };
+    if refs.is_empty() || refs.iter().any(|r| r.starts_with('-')) {
+        return Err(reject_audited(
+            "argv_image_rm",
+            "删镜像的命令里不允许出现开关，也不允许一个镜像都不指名，拒绝。".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 const VM_TMP_RESOLV: &str = "/tmp/hunter-resolv.conf";
 const VM_TMP_UNIT: &str = "/tmp/hunter-dns.service";
 
@@ -2123,5 +2339,180 @@ mod tests {
             "{}",
             e.msg
         );
+    }
+
+    // ── I13 · 三道新窄门 ────────────────────────────────────────────────
+
+    #[test]
+    fn 定时任务_只认我们自己那一个任务() {
+        // 这几条会写审计日志（reject_audited）——
+        // 不拿自己的临时工作目录，会和别的测试**同时**往同一个追加文件里写，
+        // 写出来的那一行是两条交错在一起的碎片（I9 那条教训的第二次现形）
+        let _g = crate::paths::test_home("guard-schedule-ok");
+        let label = crate::schedule::LABEL;
+        let unit = crate::schedule::UNIT;
+        let task = crate::schedule::TASK;
+        // 放行的那几条
+        argv_schedule(&a(&[
+            "/bin/launchctl",
+            "bootout",
+            &format!("gui/501/{label}"),
+        ]))
+        .unwrap();
+        argv_schedule(&a(&[
+            "/bin/launchctl",
+            "bootstrap",
+            "gui/501",
+            &format!("/Users/u/Library/LaunchAgents/{label}.plist"),
+        ]))
+        .unwrap();
+        argv_schedule(&a(&["/usr/bin/systemctl", "--user", "daemon-reload"])).unwrap();
+        argv_schedule(&a(&[
+            "/usr/bin/systemctl",
+            "--user",
+            "enable",
+            "--now",
+            &format!("{unit}.timer"),
+        ]))
+        .unwrap();
+        argv_schedule(&a(&["schtasks.exe", "/Delete", "/TN", task, "/F"])).unwrap();
+    }
+
+    #[test]
+    fn 定时任务_别人的任务与系统级目录一律拒() {
+        let _g = crate::paths::test_home("guard-schedule-bad");
+        let unit = crate::schedule::UNIT;
+        let bad: Vec<Vec<String>> = vec![
+            // 别人的 LaunchAgent
+            a(&["/bin/launchctl", "bootout", "gui/501/com.apple.Dock.agent"]),
+            // 系统级（要 root）
+            a(&[
+                "/bin/launchctl",
+                "bootstrap",
+                "system",
+                "/Library/LaunchDaemons/io.agentpit.hunter-backup.plist",
+            ]),
+            // 少了 --user：那是在动整台机器的 systemd
+            a(&[
+                "/usr/bin/systemctl",
+                "enable",
+                "--now",
+                &format!("{unit}.timer"),
+            ]),
+            // 别人的单元
+            a(&[
+                "/usr/bin/systemctl",
+                "--user",
+                "disable",
+                "--now",
+                "docker.service",
+            ]),
+            // 重启整台机器的服务
+            a(&[
+                "/usr/bin/systemctl",
+                "--user",
+                "restart",
+                &format!("{unit}.timer"),
+            ]),
+            // 别的任务名
+            a(&[
+                "schtasks.exe",
+                "/Delete",
+                "/TN",
+                "OneDrive Standalone Update",
+                "/F",
+            ]),
+            // 表外的程序
+            a(&["/bin/sh", "-c", "launchctl bootout everything"]),
+            a(&["/usr/bin/crontab", "-e"]),
+        ];
+        for v in bad {
+            let e = argv_schedule(&v).expect_err(&format!("这一条必须被拒：{v:?}"));
+            assert!(e.msg.contains("拒绝"), "{}", e.msg);
+        }
+    }
+
+    #[test]
+    fn 删数据卷_没核过标签一律拒() {
+        let _g = crate::paths::test_home("guard-vol-unverified");
+        let v = a(&["/usr/bin/docker", "volume", "rm", "hunter_hunter_pg_data"]);
+        let e = argv_volume_rm(&v, false).expect_err("没核标签不能删");
+        assert!(e.msg.contains("标签"), "{}", e.msg);
+        // 核过了才放行
+        argv_volume_rm(&v, true).unwrap();
+    }
+
+    #[test]
+    fn 删数据卷_只认那一种形状() {
+        let _g = crate::paths::test_home("guard-vol-shape");
+        let bad: Vec<Vec<String>> = vec![
+            // prune 会删到别人的卷
+            a(&["/usr/bin/docker", "volume", "prune", "-f"]),
+            // 不带卷名
+            a(&["/usr/bin/docker", "volume", "rm"]),
+            // 带开关（-f 会绕开「还被容器用着」这层保护）
+            a(&[
+                "/usr/bin/docker",
+                "volume",
+                "rm",
+                "-f",
+                "hunter_hunter_pg_data",
+            ]),
+            // 不是 docker
+            a(&["/bin/rm", "-rf", "/var/lib/docker/volumes"]),
+            // down -v 那条路更不行
+            a(&["/usr/bin/docker", "compose", "down", "-v"]),
+        ];
+        for v in bad {
+            let e = argv_volume_rm(&v, true).expect_err(&format!("这一条必须被拒：{v:?}"));
+            assert!(e.msg.contains("拒绝"), "{}", e.msg);
+        }
+    }
+
+    #[test]
+    fn 删镜像_不认_prune_只认指名道姓() {
+        let _g = crate::paths::test_home("guard-img-shape");
+        argv_image_rm(
+            &a(&[
+                "/usr/bin/docker",
+                "image",
+                "rm",
+                "ghcr.io/agentpit-io/hunter-community-api:1.1.0",
+            ]),
+            true,
+        )
+        .unwrap();
+        for v in [
+            a(&["/usr/bin/docker", "image", "prune", "-a"]),
+            a(&["/usr/bin/docker", "system", "prune", "-a"]),
+            a(&["/usr/bin/docker", "image", "rm"]),
+            a(&["/usr/bin/docker", "image", "rm", "-f", "abc"]),
+        ] {
+            let e = argv_image_rm(&v, true).expect_err(&format!("这一条必须被拒：{v:?}"));
+            assert!(e.msg.contains("拒绝"), "{}", e.msg);
+        }
+        // 没确认过归属的一律拒
+        assert!(argv_image_rm(&a(&["/usr/bin/docker", "image", "rm", "x"]), false).is_err());
+    }
+
+    /// **大名单一个字都没放松**：模型走的那道门照样拒绝这三类命令。
+    #[test]
+    fn 三道窄门没有把大名单撬开() {
+        let _g = crate::paths::test_home("guard-bigtable");
+        for v in [
+            a(&["/usr/bin/docker", "volume", "rm", "hunter_hunter_pg_data"]),
+            a(&["/usr/bin/docker", "image", "prune", "-a"]),
+            a(&["/usr/bin/docker", "volume", "prune"]),
+        ] {
+            assert!(argv(&v).is_err(), "通用那道门必须照旧拒绝它：{v:?}");
+        }
+        // LaunchAgents 那条路径提示也还在
+        let e = argv(&a(&[
+            "/usr/bin/cp",
+            "x.plist",
+            "/Users/u/Library/LaunchAgents/evil.plist",
+        ]))
+        .expect_err("通用门不许碰 LaunchAgents");
+        assert!(e.msg.contains("LaunchAgents"), "{}", e.msg);
     }
 }
