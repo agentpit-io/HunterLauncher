@@ -706,11 +706,17 @@ mod tests {
         assert!(plist_path().starts_with(&home), "{:?}", plist_path());
         assert!(timer_path().starts_with(&home), "{:?}", timer_path());
         assert!(service_path().starts_with(&home), "{:?}", service_path());
+        // 按**路径分量**比，不按字符串比：Windows 上分隔符是反斜杠，
+        // `contains("Library/LaunchAgents")` 在那儿永远为假（I13 的 CI 上红过一次）。
+        // 这条断言在三个平台上都该成立 —— `plist_path()` 是平台无关地拼出来的
+        let comps: Vec<String> = plist_path()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        assert!(comps.contains(&"LaunchAgents".to_string()), "{comps:?}");
         assert!(
-            plist_path()
-                .to_string_lossy()
-                .contains("Library/LaunchAgents"),
-            "用户级是 LaunchAgents，不是 LaunchDaemons"
+            !comps.contains(&"LaunchDaemons".to_string()),
+            "用户级是 LaunchAgents，不是 LaunchDaemons：{comps:?}"
         );
     }
 }

@@ -617,8 +617,13 @@ mod tests {
     /// 对诊断来说是错的，而送给模型的前提一错，后面的推理全白做。
     #[test]
     fn 被自己占着的端口不许报成空闲() {
-        // 用一个几乎不可能真被占的端口，让绑定探测那一路的结果是确定的
-        const P: u16 = 59_123;
+        // 用一个几乎不可能真被占的端口，让绑定探测那一路的结果是确定的。
+        //
+        // **必须避开 49152–65535**：那是 Windows 的动态端口范围
+        // （`netsh int ipv4 show dynamicport tcp`），CI 的 windows runner 上
+        // 随便一条出站连接都可能正用着其中一个。I13 的 CI 上 59125 就这么中过一次
+        // （`没人听就是空闲` 判成了 Other）。29xxx 不在任何平台的动态范围里
+        const P: u16 = 29_123;
         let sv = Survey {
             published: parse_ps(&format!(
                 "hunter-web-1\tghcr.io/agentpit-io/hunter-community-web:1.2.0\thunter\t127.0.0.1:{P}->3000/tcp\n"
@@ -651,7 +656,7 @@ mod tests {
     /// 别人占着的时候三档要落在「被其他程序占用」，而且 `usable()` 为假。
     #[test]
     fn 被别人占着时既不空闲也不可用() {
-        const P: u16 = 59_124;
+        const P: u16 = 29_124;
         let sv = Survey {
             published: parse_ps(&format!(
                 "hunter-fresh-api-1\tghcr.io/agentpit-io/hunter-community-api:1.2.0\thunter-fresh\t0.0.0.0:{P}->8000/tcp\n"
@@ -666,9 +671,11 @@ mod tests {
     }
 
     /// 没人听的时候仍然是「空闲」——三档里的第一档不能被这次改动弄丢。
+    ///
+    /// 端口同样避开 49152–65535（Windows 的动态端口范围），理由见上面那条。
     #[test]
     fn 没人听就是空闲() {
-        const P: u16 = 59_125;
+        const P: u16 = 29_125;
         let sv = Survey::empty();
         let v = sv.verdict(P, &[crate::config::PROJECT]);
         assert_eq!(v.kind(), Kind::Free);
