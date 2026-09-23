@@ -437,7 +437,9 @@ fn note_healthy() {
     if let Err(e) = cfg.save() {
         crate::lwarn!("刷新 last_healthy_at 没写成：{}", e.msg);
     } else if adopted {
-        crate::linfo!("复查看到 Hunter 已在正常运行，已把它记为已安装（adopted_from_running=true）");
+        crate::linfo!(
+            "复查看到 Hunter 已在正常运行，已把它记为已安装（adopted_from_running=true）"
+        );
     }
 }
 

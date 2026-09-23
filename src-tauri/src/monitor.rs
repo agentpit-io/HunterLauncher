@@ -432,8 +432,11 @@ pub fn services() -> ServiceMetrics {
             oom_killed: v.oom_killed,
         });
     }
-    out.services
-        .sort_by_key(|s| crate::selfcheck::EXPECTED.iter().position(|e| *e == s.service));
+    out.services.sort_by_key(|s| {
+        crate::selfcheck::EXPECTED
+            .iter()
+            .position(|e| *e == s.service)
+    });
     out
 }
 
@@ -560,7 +563,8 @@ mod tests {
 
     #[test]
     fn free_b_解析出总量与已用() {
-        let out = "               total        used        free      shared  buff/cache   available\n\
+        let out =
+            "               total        used        free      shared  buff/cache   available\n\
                    Mem:     4102369280  2214592512  1073741824      12288   814034944  1789569024\n\
                    Swap:             0           0           0\n";
         assert_eq!(parse_free(out), Some((4_102_369_280, 2_214_592_512)));
@@ -603,8 +607,14 @@ mod tests {
     fn 卷大小按十进制_容器内存按二进制() {
         // docker 自己就是两套：system df 用 go-units 的 kB=1000，stats 用 MiB=1024。
         // 我们照它的来，界面上的数字才和用户敲命令看到的一致
-        assert_eq!(crate::compose::parse_human_size("312.4MB"), Some(312_400_000));
-        assert_eq!(crate::compose::parse_human_size("4.003GB"), Some(4_003_000_000));
+        assert_eq!(
+            crate::compose::parse_human_size("312.4MB"),
+            Some(312_400_000)
+        );
+        assert_eq!(
+            crate::compose::parse_human_size("4.003GB"),
+            Some(4_003_000_000)
+        );
         assert_eq!(crate::compose::parse_human_size("0B"), Some(0));
         assert_eq!(crate::compose::parse_human_size("看不懂"), None);
         assert_eq!(parse_binary_size("1MiB"), Some(1_048_576));

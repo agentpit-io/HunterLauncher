@@ -1844,8 +1844,8 @@ pub fn parse_volumes(stdout: &str) -> Vec<VolumeInfo> {
                     .map(str::to_string)
             });
             let label_missing = declared.is_none();
-            let short = declared
-                .unwrap_or_else(|| name.strip_prefix(&prefix).unwrap_or(name).to_string());
+            let short =
+                declared.unwrap_or_else(|| name.strip_prefix(&prefix).unwrap_or(name).to_string());
             Some(VolumeInfo {
                 name: name.to_string(),
                 short,
@@ -2104,7 +2104,11 @@ mod tests {
             .filter(|(i, _)| *i > 0 && args[i - 1] == "--project-name")
             .map(|(_, a)| a)
             .collect();
-        assert_eq!(p, vec![&PROJECT.to_string()], "必须带 --project-name：{args:?}");
+        assert_eq!(
+            p,
+            vec![&PROJECT.to_string()],
+            "必须带 --project-name：{args:?}"
+        );
     }
 
     #[test]

@@ -1593,15 +1593,21 @@ fn cmd_boot_state() -> AppResult<()> {
             ""
         }
     );
-    println!("  记录     启动器 {}，装于 {}，上次正常运行 {}",
+    println!(
+        "  记录     启动器 {}，装于 {}，上次正常运行 {}",
         blank_dash(&cfg.install.launcher_version),
         blank_dash(&cfg.install.at),
-        blank_dash(&cfg.install.last_healthy_at));
+        blank_dash(&cfg.install.last_healthy_at)
+    );
     println!("\n  逐条证据：");
     for l in &rv.lines {
         println!("    · {l}");
     }
-    println!("\n  用时 {} 毫秒（含复查 {} 毫秒）", t0.elapsed().as_millis(), rv.elapsed_ms);
+    println!(
+        "\n  用时 {} 毫秒（含复查 {} 毫秒）",
+        t0.elapsed().as_millis(),
+        rv.elapsed_ms
+    );
     Ok(())
 }
 
@@ -1621,14 +1627,31 @@ fn cmd_monitor() -> AppResult<()> {
     title("Hunter 启动器 · 资源监控");
     let h = crate::monitor::host();
     println!("  [这台电脑]（sysinfo）");
-    println!("    CPU        {}{}",
+    println!(
+        "    CPU        {}{}",
         opt_pct(h.cpu_pct),
-        h.cpu_cores.map(|c| format!("（{c} 核）")).unwrap_or_default());
-    println!("    内存       {}", opt_pair(h.mem_used_bytes, h.mem_total_bytes));
-    println!("    内存压力   {}", h.mem_pressure.clone().unwrap_or_else(|| why(&h.reasons, "memPressure")));
-    println!("    系统盘     {}{}",
+        h.cpu_cores
+            .map(|c| format!("（{c} 核）"))
+            .unwrap_or_default()
+    );
+    println!(
+        "    内存       {}",
+        opt_pair(h.mem_used_bytes, h.mem_total_bytes)
+    );
+    println!(
+        "    内存压力   {}",
+        h.mem_pressure
+            .clone()
+            .unwrap_or_else(|| why(&h.reasons, "memPressure"))
+    );
+    println!(
+        "    系统盘     {}{}",
         opt_pair(h.disk_free_bytes, h.disk_total_bytes),
-        h.disk_mount.as_deref().map(|m| format!("（{m}，前一个数是剩余）")).unwrap_or_default());
+        h.disk_mount
+            .as_deref()
+            .map(|m| format!("（{m}，前一个数是剩余）"))
+            .unwrap_or_default()
+    );
     for (k, v) in &h.reasons {
         println!("    ! {k}：{v}");
     }
@@ -1638,9 +1661,19 @@ fn cmd_monitor() -> AppResult<()> {
     if !r.applicable {
         println!("    不适用：{}", r.reason);
     } else {
-        println!("    分配       {} 核 · {}", r.cpus.map(|c| c.to_string()).unwrap_or_else(|| "—".into()), opt_bytes(r.mem_total_bytes));
-        println!("    内存已用   {}", opt_pair(r.mem_used_bytes, r.mem_total_bytes));
-        println!("    磁盘已用   {}", opt_pair(r.disk_used_bytes, r.disk_total_bytes));
+        println!(
+            "    分配       {} 核 · {}",
+            r.cpus.map(|c| c.to_string()).unwrap_or_else(|| "—".into()),
+            opt_bytes(r.mem_total_bytes)
+        );
+        println!(
+            "    内存已用   {}",
+            opt_pair(r.mem_used_bytes, r.mem_total_bytes)
+        );
+        println!(
+            "    磁盘已用   {}",
+            opt_pair(r.disk_used_bytes, r.disk_total_bytes)
+        );
         for (k, v) in &r.reasons {
             println!("    ! {k}：{v}");
         }
@@ -1657,8 +1690,14 @@ fn cmd_monitor() -> AppResult<()> {
             u.service,
             opt_pct(u.cpu_pct),
             opt_bytes(u.mem_bytes),
-            u.restart_count.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
-            if u.oom_killed == Some(true) { "  ← 被系统按内存不足杀掉过" } else { "" }
+            u.restart_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            if u.oom_killed == Some(true) {
+                "  ← 被系统按内存不足杀掉过"
+            } else {
+                ""
+            }
         );
     }
 
@@ -1668,7 +1707,12 @@ fn cmd_monitor() -> AppResult<()> {
         println!("    {:<34} {}", v.short, opt_bytes(v.size_bytes));
     }
     println!("    {:<34} {}", "合计", opt_bytes(st.volumes_total_bytes));
-    println!("    {:<34} {}（六个里查到 {}）", "镜像", opt_bytes(st.images_bytes), st.images_found);
+    println!(
+        "    {:<34} {}（六个里查到 {}）",
+        "镜像",
+        opt_bytes(st.images_bytes),
+        st.images_found
+    );
     for (k, v) in &st.reasons {
         println!("    ! {k}：{v}");
     }
@@ -1716,7 +1760,14 @@ fn cmd_data_check(deep: bool) -> AppResult<()> {
     };
     println!("  结论     {}", c.decision.cn());
     println!("  一句话   {}", c.headline);
-    println!("  拦不拦   {}", if c.decision.blocks_install() { "拦 —— 这一档不许往下装" } else { "不拦" });
+    println!(
+        "  拦不拦   {}",
+        if c.decision.blocks_install() {
+            "拦 —— 这一档不许往下装"
+        } else {
+            "不拦"
+        }
+    );
     println!(
         "  数据库   {} · 密钥卷 {} · JWT_SECRET {}",
         yesno(c.has_db),
@@ -1724,12 +1775,17 @@ fn cmd_data_check(deep: bool) -> AppResult<()> {
         yesno(c.has_jwt_secret)
     );
     if let Some(v) = &c.pg_version {
-        println!("  PG 版本  数据卷里 {v} → 目标镜像 {}", c.target_pg_version.clone().unwrap_or_else(|| "—".into()));
+        println!(
+            "  PG 版本  数据卷里 {v} → 目标镜像 {}",
+            c.target_pg_version.clone().unwrap_or_else(|| "—".into())
+        );
     }
     if c.deep {
         println!(
             "  深查     {} 张表 · 最近写入 {} · 已应用到 {} → 目标 {}",
-            c.table_count.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+            c.table_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
             c.last_write.clone().unwrap_or_else(|| "—".into()),
             c.migration_max.clone().unwrap_or_else(|| "—".into()),
             c.target_migration_max.clone().unwrap_or_else(|| "—".into()),
@@ -2398,7 +2454,10 @@ mod tests {
     fn monitor_的字节格式与界面同一套单位_si() {
         // 测试机上 free -b 实测的那一组：8319729664 / 4474494976
         assert_eq!(opt_bytes(Some(8_319_729_664)), "8.3 GB");
-        assert_eq!(opt_pair(Some(4_474_494_976), Some(8_319_729_664)), "4.5 GB / 8.3 GB");
+        assert_eq!(
+            opt_pair(Some(4_474_494_976), Some(8_319_729_664)),
+            "4.5 GB / 8.3 GB"
+        );
         // docker system df -v 打的就是 SI，拿它的原值回来必须还原成同一个数
         assert_eq!(opt_bytes(Some(51_130_000)), "51.1 MB");
         assert_eq!(opt_bytes(None), "—");

@@ -818,10 +818,7 @@ pub fn argv_vm_metrics(argv: &[String]) -> AppResult<()> {
 /// 采资源指标时**允许在虚拟机里跑的全部命令**（I12 · R2）。
 ///
 /// 全部只读、全部不带 `sudo`。加新条目之前先问一句：它会不会写任何东西。
-pub const VM_METRIC_COMMANDS: &[&[&str]] = &[
-    &["free", "-b"],
-    &["df", "-B1", "/var/lib/docker"],
-];
+pub const VM_METRIC_COMMANDS: &[&[&str]] = &[&["free", "-b"], &["df", "-B1", "/var/lib/docker"]];
 
 const VM_TMP_RESOLV: &str = "/tmp/hunter-resolv.conf";
 const VM_TMP_UNIT: &str = "/tmp/hunter-dns.service";

@@ -270,9 +270,8 @@ fn run(deep: bool) -> DataCheck {
                     // 迁移编号比目标镜像高 = 降级
                     c.target_migration_max = target_migration_max();
                     if let (Some(have), Some(want)) = (&c.migration_max, &c.target_migration_max) {
-                        c.lines.push(format!(
-                            "已应用到 {have}；这次要装的镜像里最大的是 {want}"
-                        ));
+                        c.lines
+                            .push(format!("已应用到 {have}；这次要装的镜像里最大的是 {want}"));
                         if mig_num(have) > mig_num(want) {
                             c.decision = Decision::Downgrade;
                         }
@@ -353,7 +352,14 @@ fn read_pg_version(volume: &str) -> Result<String, String> {
     let r = proc::run_timeout(
         &bin,
         &[
-            "run", "--rm", "-v", &mount, "--entrypoint", "cat", &image, "/data/PG_VERSION",
+            "run",
+            "--rm",
+            "-v",
+            &mount,
+            "--entrypoint",
+            "cat",
+            &image,
+            "/data/PG_VERSION",
         ],
         SHORT,
     )
@@ -384,7 +390,10 @@ fn target_pg_major() -> Option<String> {
     let img = helper_image();
     let tag = img.rsplit(':').next()?;
     let major = tag.split('-').next()?;
-    major.chars().all(|c| c.is_ascii_digit()).then(|| major.to_string())
+    major
+        .chars()
+        .all(|c| c.is_ascii_digit())
+        .then(|| major.to_string())
 }
 
 fn major(v: &str) -> u32 {
@@ -397,7 +406,11 @@ fn major(v: &str) -> u32 {
 
 /// `0022_schema_migrations.sql` → 22。认不出来就是 0。
 pub fn mig_num(s: &str) -> u32 {
-    let head: String = s.trim().chars().take_while(|c| c.is_ascii_digit()).collect();
+    let head: String = s
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     head.parse().unwrap_or(0)
 }
 
@@ -504,7 +517,10 @@ fn wait_ready(bin: &str, user: &str, db: &str) -> AppResult<()> {
     }
     Err(AppError::new(
         Code::StartTimeout,
-        format!("一次性 postgres 在 {} 秒内没起来：{last}", PG_WAIT.as_secs()),
+        format!(
+            "一次性 postgres 在 {} 秒内没起来：{last}",
+            PG_WAIT.as_secs()
+        ),
     ))
 }
 
