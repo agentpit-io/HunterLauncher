@@ -1,0 +1,41 @@
+
+[1m== 场景 R3+①：0.1.11 生成的老覆盖文件（没有重启策略）→ 启动器补写，但不动容器 ==[0m
+补写前 restart 行数                     0
+窗口                                       2097155
+补写后 restart 行数                     7
+✓ 六个容器的创建时间一字不差（补写只改文件）
+2026-09-23 15:10:45 [info] 开机自查覆盖文件：这一份是 0.1.12 之前生成的，没有重启策略 —— 已经补写好（只改了文件，一个容器都没动；下次启动时生效）
+2026-09-23 15:40:57 [info] 开机自查覆盖文件：这一份是 0.1.12 之前生成的，没有重启策略 —— 已经补写好（只改了文件，一个容器都没动；下次启动时生效）
+2026-09-23 15:58:17 [info] 开机自查覆盖文件：这一份是 0.1.12 之前生成的，没有重启策略 —— 已经补写好（只改了文件，一个容器都没动；下次启动时生效）
+--- 补写之后的覆盖文件 ---
+# ~/.hunter/app/docker-compose.launcher.yml
+# 由 Hunter 启动器生成 · 请勿手改（改了下次启动会被覆盖）
+# 作用：1) 把**所有**发布端口收回 127.0.0.1（总控规则红线 4 · I7 起连 web 也收进来）
+#       2) 落实端口冲突改写后的值
+#       3) 用国内镜像源时改写 postgres / redis 的镜像地址
+#       4) 六个服务一律 restart: unless-stopped —— 电脑或运行环境重启后容器自己回来
+#
+# `!override` 标签是必须的：compose 默认对 ports 做**追加**合并，不加这个标签会变成
+# 「既监听 0.0.0.0 又监听 127.0.0.1」，红线 4 就白写了（M0 §3.4 已实测验证）。
+services:
+  # web 也只绑本机：免费版不提供局域网访问（付费版功能）
+  web:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3101:3000"]
+  api:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:8101:8000"]
+  opencode:
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:3922:3901"]
+  llm-shim:
+    restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:5443:5432"]
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports: !override ["127.0.0.1:6480:6379"]
+[现场恢复] 6/6 健康（等了 5 秒）

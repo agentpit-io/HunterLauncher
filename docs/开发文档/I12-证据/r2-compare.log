@@ -1,0 +1,60 @@
+
+[1m== 场景 R2：三层资源与命令行对照 ==[0m
+--- 启动器给的 ---
+
+Hunter 启动器 · 资源监控
+──────────────────────────────────
+  [这台电脑]（sysinfo）
+    CPU        55.0%（2 核）
+    内存       3.1 GB / 8.3 GB
+    内存压力   正常（PSI avg10 0.0%）
+    系统盘     76.8 GB / 207 GB（/，前一个数是剩余）
+
+  [Hunter 运行环境]（limactl shell colima-hunter）
+    不适用：内置运行时的虚拟机没在跑
+
+  [Hunter 各服务]（docker stats --no-stream + docker inspect）
+    web           0.0%      136 MB  重启 0
+    api           0.2%      103 MB  重启 0
+    opencode      1.4%      238 MB  重启 0
+    llm-shim     16.7%     13.7 MB  重启 0
+    postgres      0.0%     22.9 MB  重启 0
+    redis         6.4%      3.7 MB  重启 0
+
+  [数据卷与镜像]（docker volume ls + docker system df -v + docker image inspect）
+    hunter_opencode_data               538 KB
+    hunter_packages                    0 B
+    hunter_pg_data                     50.8 MB
+    hunter_redis_data                  89 B
+    hunter_secrets                     156 B
+    hunter_user_skills                 0 B
+    合计                                 51.3 MB
+    镜像                                 3.7 GB（六个里查到 6）
+
+--- 命令行实测（同一时刻）---
+CPU（top 两次采样）                    %Cpu(s): 56.3 us, 22.2 sy,  0.0 ni, 19.0 id,  0.0 wa,  0.0 hi,  1.6 si,  0.8 st 
+内存（free -b）                          已用 3159478272 / 总 8319729664
+系统盘（df -B1 $HOME）                  剩 76836319232 / 总 206900281344（挂在 /）
+内存压力（PSI some）                   avg10=0.00 avg60=0.09 avg300=0.29
+--- docker stats ---
+hunter-opencode-1	1.53%	226.8MiB / 7.748GiB
+hunter-web-1	0.00%	129.3MiB / 7.748GiB
+hunter-api-1	0.23%	98.63MiB / 7.748GiB
+hunter-postgres-1	6.54%	21.84MiB / 7.748GiB
+hunter-redis-1	0.80%	3.527MiB / 7.748GiB
+hunter-llm-shim-1	0.03%	12.94MiB / 7.748GiB
+--- 卷（docker system df -v，只筛本项目）---
+  hunter_hunter_secrets              156B
+  hunter_hunter_redis_data           89B
+  hunter_hunter_pg_data              50.8MB
+  hunter_hunter_opencode_data        537.7kB
+  hunter_hunter_packages             0B
+  hunter_hunter_user_skills          0B
+--- 镜像 ---
+  ghcr.io/agentpit-io/hunter-community-web:1.2.0 1682459972
+  ghcr.io/agentpit-io/hunter-community-api:1.2.0 897713264
+  ghcr.io/agentpit-io/hunter-community-opencode:1.2.0 618608066
+  ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0 74153859
+  postgres:16-alpine 419072015
+  redis:7-alpine 57300241
+[现场恢复] 6/6 健康（等了 5 秒）

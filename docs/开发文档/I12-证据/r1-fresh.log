@@ -1,0 +1,23 @@
+
+[1m== 场景 R1⑤：什么都没有 → 欢迎页（在一个空的 HUNTER_HOME 里跑，不动真环境） ==[0m
+──────────────────────────────────
+  现状     这台机器上还没有装过 Hunter
+  服务     0 / 6 就绪，网页这一次没应答
+  数据卷   本项目名下还有 6 个
+  该进哪   「检测到上次的数据」
+  安装标记 进来时 done=false，现在 done=false
+  记录     启动器 0.1.12，装于 —，上次正常运行 —
+
+  逐条证据：
+    · compose 项目名 hunter 归属检查：这台机器上已经有一套 Hunter 在用 compose 项目名「hunter」，它的工作目录是 /home/support/.hunter（容器 hunter-opencode-1）。现在这个工作目录是 /tmp/tmp.NEuj6fSh5f。继续下去会把那一套的配置和端口一起顶掉，所以先停在这里。
+
+要紧的一点：**数据卷是跟着项目名 `hunter` 走的，不是跟着工作目录走的**。数据库的口令在 /home/support/.hunter/app/.env 里，卷当初就是用它初始化的 —— 新建一个空工作目录会现生成一把新口令，api 连不上已有的库（实测报 `password authentication failed for user "hunter"`）。
+
+想接着用那一套（推荐）：把工作目录改回去 —— 环境变量 HUNTER_HOME=/home/support/.hunter，或者干脆不设这个变量。
+想把工作目录挪到现在这个位置：**整个目录搬过来**，别新建空的 —— HUNTER_HOME=/home/support/.hunter hunter-launcher --down，然后 mv /home/support/.hunter /tmp/tmp.NEuj6fSh5f。
+想从零开始（**会丢掉已有数据**）：先 HUNTER_HOME=/home/support/.hunter hunter-launcher --down，再 docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=hunter)。
+
+（`up -d` 与 `down` 都不会删数据卷，被顶掉的是配置与端口。）
+
+  用时 204 毫秒（含复查 152 毫秒）
+[现场恢复] 6/6 健康（等了 5 秒）

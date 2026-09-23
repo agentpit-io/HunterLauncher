@@ -1,0 +1,36 @@
+== 场景 R3+①验证：重启 docker 守护进程（Linux 上最接近「虚拟机重启」的现场） ==
+（2026-09-23 15:14 上海时间，测试机 34.133.8.3。用的是 22:19 那一版 0.1.12 二进制；
+  这个场景全程只用 docker 与 systemctl，不经过启动器，所以后来重编不影响结论。）
+
+--- 重启前 ---
+hunter-opencode-1	Up About a minute (healthy)
+hunter-web-1	Up 2 minutes (healthy)
+hunter-api-1	Up 2 minutes (healthy)
+hunter-postgres-1	Up 2 minutes (healthy)
+hunter-redis-1	Up 2 minutes (healthy)
+hunter-llm-shim-1	Up 2 minutes (healthy)
+hunter-web-1 的重启策略                 unless-stopped
+hunter-llm-shim-1 的重启策略            unless-stopped
+hunter-postgres-1 的重启策略            unless-stopped
+
+$ sudo systemctl restart docker      # 然后 sleep 25，中间没有人做任何操作
+
+--- 重启后（没有人做任何操作）---
+hunter-opencode-1	Up About a minute (health: starting)
+hunter-web-1	Up About a minute (health: starting)
+hunter-api-1	Up About a minute (health: starting)
+hunter-postgres-1	Up About a minute (healthy)
+hunter-redis-1	Up About a minute (healthy)
+hunter-llm-shim-1	Up About a minute (health: starting)
+自己回来的容器数                     6 / 6
+
+--- 再等到全部 healthy ---
+hunter 健康 6/6（等了 30 秒）
+
+--- 同一台机器上别的项目（一起被 docker 重启带下去的）也都自己回来了 ---
+第 1 次：unhealthy=2 starting=1
+第 2 次：unhealthy=1 starting=1
+第 3 次：unhealthy=0 starting=1
+第 6 次：unhealthy=1 starting=0
+第 7 次：unhealthy=0 starting=0
+最终 23 个容器（hunter 6 · hunter-community 6 · hca-* 11）全部 healthy
