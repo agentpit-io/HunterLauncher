@@ -1683,19 +1683,21 @@ fn opt_pct(v: Option<f32>) -> String {
     v.map(|x| format!("{x:.1}%")).unwrap_or_else(|| "—".into())
 }
 
+/// `--monitor` 的字节格式**必须**和界面上那三张卡一致。
+///
+/// 这里踩过一次：原来用的是 `assist::probe::human_bytes`，它按 1024 进位却写成
+/// `GB`；而界面走的是 `src/lib/format.ts` 的 `bytes()`，按 1000 进位。同一个
+/// 原始字节数，命令行印 `7.7 GB`、界面印 `8.32 GB` —— 而 `--monitor` 存在的
+/// 唯一理由就是拿去和界面、和 `free -b` / `df -B1` / `docker system df` 对照。
+/// 对不上的对照工具比没有还糟。所以这里钉死用 SI 的那一个（`flow::human_bytes`）。
 fn opt_bytes(v: Option<u64>) -> String {
-    v.map(crate::assist::probe::human_bytes)
-        .unwrap_or_else(|| "—".into())
+    v.map(human_bytes).unwrap_or_else(|| "—".into())
 }
 
 fn opt_pair(a: Option<u64>, b: Option<u64>) -> String {
     match (a, b) {
-        (Some(x), Some(y)) => format!(
-            "{} / {}",
-            crate::assist::probe::human_bytes(x),
-            crate::assist::probe::human_bytes(y)
-        ),
-        (Some(x), None) => crate::assist::probe::human_bytes(x),
+        (Some(x), Some(y)) => format!("{} / {}", human_bytes(x), human_bytes(y)),
+        (Some(x), None) => human_bytes(x),
         _ => "—".to_string(),
     }
 }
@@ -2381,5 +2383,24 @@ mod tests {
         assert_eq!(z.action.as_deref(), Some("review"));
         assert_eq!(z.review.as_deref(), Some("install_runtime"));
         assert_eq!(z.review_why.as_deref(), Some("因为"));
+    }
+
+    /// I12 · R2：`--monitor` 的字节格式必须和界面上那三张卡逐字一致。
+    ///
+    /// 界面走 `src/lib/format.ts` 的 `bytes()`（SI，1 kB = 1000 B），
+    /// 所以 `--monitor` 也只能走 SI 的那一个。这条测试钉的是**进位基数**：
+    /// 一旦有人把 `opt_bytes` 换回 `assist::probe::human_bytes`（1024 进位
+    /// 却写 GB），下面第一条就会变成 "7.7 GB"。
+    ///
+    /// 小数位命令行是 1 位、界面是 2 位（`8.3 GB` / `8.32 GB`）—— 这一条不钉，
+    /// 差的只是精度，不是单位；对照时不会把人带到另一个数量级去。
+    #[test]
+    fn monitor_的字节格式与界面同一套单位_si() {
+        // 测试机上 free -b 实测的那一组：8319729664 / 4474494976
+        assert_eq!(opt_bytes(Some(8_319_729_664)), "8.3 GB");
+        assert_eq!(opt_pair(Some(4_474_494_976), Some(8_319_729_664)), "4.5 GB / 8.3 GB");
+        // docker system df -v 打的就是 SI，拿它的原值回来必须还原成同一个数
+        assert_eq!(opt_bytes(Some(51_130_000)), "51.1 MB");
+        assert_eq!(opt_bytes(None), "—");
     }
 }
