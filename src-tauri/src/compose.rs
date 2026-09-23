@@ -1772,10 +1772,383 @@ pub fn is_up() -> bool {
         .unwrap_or(false)
 }
 
+// ── 本项目的数据卷（I12 · R5 / R2）────────────────────────────────────────
+
+/// 一个数据卷的现状。**名字与挂载点都来自 docker 自己**，不是我们拼出来的。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeInfo {
+    /// docker 里的完整卷名（例如 `hunter_pg_data`）
+    pub name: String,
+    /// compose 文件里声明的卷名（例如 `hunter_pg_data`）。
+    ///
+    /// 来自 docker 的标签 `com.docker.compose.volume` —— **不是按名字前缀切出来的**。
+    /// 实测（测试机 2026-09-23）：compose 项目 `hunter` 里，compose 文件声明的卷叫
+    /// `hunter_pg_data`，docker 里的完整名是 `hunter_hunter_pg_data`（项目名 + 声明名）。
+    /// 方案 1.3 节那张表写的是 `pg_data`，与实际差一层 —— 以实测为准（总控规则）。
+    /// 标签读不到时退回按项目名前缀切一次，并在 `label_missing` 里说明
+    pub short: String,
+    /// 这一条的 `short` 是不是猜出来的（标签没读到）
+    pub label_missing: bool,
+    /// 卷在运行时里的挂载点。内置运行时下这是**虚拟机里**的路径，宿主机上看不到
+    pub mountpoint: String,
+    /// 占多少字节。`docker system df -v` 给不出来就是 `None`（显示「—」，不猜）
+    pub size_bytes: Option<u64>,
+}
+
+/// 列出 compose 项目 `hunter` 名下的全部数据卷。
+///
+/// 判据是 docker 自己打的标签 `com.docker.compose.project=hunter` ——
+/// **不按名字前缀猜**：用户另外装的 `hunter-fresh`、`hunter-community` 前缀也以 hunter 开头，
+/// 按前缀匹配会把别人的卷算到我们头上（R4 删除应用时那就是一场事故）。
+pub fn volumes_of_project() -> AppResult<Vec<VolumeInfo>> {
+    let bin = which::docker_bin();
+    let filter = format!("label=com.docker.compose.project={PROJECT}");
+    let r = proc::run_timeout(
+        &bin,
+        &[
+            "volume",
+            "ls",
+            "--filter",
+            &filter,
+            "--format",
+            "{{.Name}}\t{{.Mountpoint}}\t{{.Labels}}",
+        ],
+        Duration::from_secs(30),
+    )?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::Unknown,
+            format!("docker volume ls 失败：{}", r.err_line()),
+        ));
+    }
+    Ok(parse_volumes(&r.stdout))
+}
+
+/// `docker volume ls --format '{{.Name}}\t{{.Mountpoint}}\t{{.Labels}}'` 的输出。
+pub fn parse_volumes(stdout: &str) -> Vec<VolumeInfo> {
+    let prefix = format!("{PROJECT}_");
+    let mut v: Vec<VolumeInfo> = stdout
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.trim_end().splitn(3, '\t');
+            let name = f.next().unwrap_or("").trim();
+            if name.is_empty() {
+                return None;
+            }
+            let mount = f.next().unwrap_or("").trim().to_string();
+            let labels = f.next().unwrap_or("");
+            let declared = labels.split(',').find_map(|kv| {
+                kv.trim()
+                    .strip_prefix("com.docker.compose.volume=")
+                    .map(str::to_string)
+            });
+            let label_missing = declared.is_none();
+            let short =
+                declared.unwrap_or_else(|| name.strip_prefix(&prefix).unwrap_or(name).to_string());
+            Some(VolumeInfo {
+                name: name.to_string(),
+                short,
+                label_missing,
+                mountpoint: mount,
+                size_bytes: None,
+            })
+        })
+        .collect();
+    v.sort_by(|a, b| a.short.cmp(&b.short));
+    v
+}
+
+/// compose 里声明的那几个卷，按「丢了会怎样」分档（方案 1.3 节，名字按实测修正）。
+///
+/// 这张表**只用来给人话说明**（界面上「这一个是数据库」之类），
+/// 判断卷在不在一律以 docker 的标签为准。
+pub const VOLUME_NOTES: &[(&str, &str)] = &[
+    ("hunter_pg_data", "数据库：账号、配置、自选股、历史分析"),
+    ("hunter_secrets", "密钥卷：数据库里加密的配置靠它才解得开"),
+    ("hunter_opencode_data", "对话引擎的会话记录"),
+    ("hunter_user_skills", "你自己建的技能"),
+    ("hunter_packages", "依赖缓存（可再生）"),
+    ("hunter_redis_data", "缓存（可再生）"),
+];
+
+/// 数据库那个卷在 compose 里声明的名字。R5 与 R4 都按它找。
+pub const VOL_DB: &str = "hunter_pg_data";
+/// 密钥卷。**必须和数据库成对**处理（方案第六节第 2 条）。
+pub const VOL_SECRETS: &str = "hunter_secrets";
+
+/// 本项目的卷一共占多少（`docker system df -v`）。
+///
+/// 只统计**本项目的**卷：`docker system df` 那一行「Local Volumes」是全机器的总数，
+/// 拿它当 Hunter 的占用就是编数字（红线 1）。
+/// 拿不到就整体返回 `None` —— 界面显示「—」+ 原因。
+pub fn volume_sizes() -> AppResult<BTreeMap<String, u64>> {
+    let bin = which::docker_bin();
+    let r = proc::run_timeout(
+        &bin,
+        &["system", "df", "-v", "--format", "{{json .Volumes}}"],
+        Duration::from_secs(60),
+    )?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::Unknown,
+            format!("docker system df -v 失败：{}", r.err_line()),
+        ));
+    }
+    Ok(parse_volume_sizes(&r.stdout))
+}
+
+/// 解析 `docker system df -v --format '{{json .Volumes}}'`。
+///
+/// 每个元素形如 `{"Name":"hunter_pg_data","Size":"312.4MB","Links":1}`。
+/// **`Size` 是给人看的字符串**，docker 没有给字节数的格式化选项，所以这里得自己还原。
+pub fn parse_volume_sizes(stdout: &str) -> BTreeMap<String, u64> {
+    let mut m = BTreeMap::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(arr) = v.as_array() else { continue };
+        for it in arr {
+            let (Some(name), Some(size)) = (
+                it.get("Name").and_then(|x| x.as_str()),
+                it.get("Size").and_then(|x| x.as_str()),
+            ) else {
+                continue;
+            };
+            if let Some(b) = parse_human_size(size) {
+                m.insert(name.to_string(), b);
+            }
+        }
+    }
+    m
+}
+
+/// `312.4MB` / `4.003GB` / `0B` → 字节。认不出来就是 `None`（**不猜**）。
+///
+/// docker 用的是 go-units 的十进制单位（kB = 1000），不是 1024 —— 照它的来，
+/// 否则我们印出来的数字和用户敲 `docker system df` 看到的对不上。
+pub fn parse_human_size(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let pos = s.find(|c: char| c.is_ascii_alphabetic())?;
+    let (num, unit) = s.split_at(pos);
+    let n: f64 = num.trim().parse().ok()?;
+    let mult: f64 = match unit.trim().to_ascii_lowercase().as_str() {
+        "b" => 1.0,
+        "kb" => 1e3,
+        "mb" => 1e6,
+        "gb" => 1e9,
+        "tb" => 1e12,
+        _ => return None,
+    };
+    Some((n * mult) as u64)
+}
+
+/// 本项目**镜像**一共占多少字节（`docker image ls` 按 compose 标签筛）。
+///
+/// compose 不给镜像打项目标签，所以这里按 `.env` / compose 里那六个镜像引用去查 ——
+/// 查不到的就不计入，并把「查到了几个」一起给出去，界面好说清楚这个数是哪来的。
+pub fn image_disk_usage(refs: &[String]) -> (Option<u64>, usize) {
+    if refs.is_empty() {
+        return (None, 0);
+    }
+    let bin = which::docker_bin();
+    let mut total = 0u64;
+    let mut hit = 0usize;
+    // 同一个镜像可能被多个服务引用（这里不会），按 ID 去重才不会重复计
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for r in refs {
+        let Ok(out) = proc::run_timeout(
+            &bin,
+            &["image", "inspect", r, "--format", "{{.Id}}\t{{.Size}}"],
+            Duration::from_secs(20),
+        ) else {
+            continue;
+        };
+        if !out.ok() {
+            continue;
+        }
+        let line = out.stdout.trim();
+        let mut f = line.split('\t');
+        let (Some(id), Some(size)) = (f.next(), f.next()) else {
+            continue;
+        };
+        hit += 1;
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        if let Ok(b) = size.trim().parse::<u64>() {
+            total += b;
+        }
+    }
+    if hit == 0 {
+        (None, 0)
+    } else {
+        (Some(total), hit)
+    }
+}
+
+/// 每个容器的重启次数与「是不是被 OOM 杀过」（R2 的服务层）。
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerVitals {
+    pub restart_count: Option<u32>,
+    pub oom_killed: Option<bool>,
+    /// 容器是什么时候起来的（RFC3339 原样给出，前端只显示不解析）
+    pub started_at: Option<String>,
+}
+
+/// `docker inspect` 本项目的一个服务容器，取重启次数与 OOM 标志。
+pub fn vitals_of(container: &str) -> Option<ContainerVitals> {
+    let bin = which::docker_bin();
+    let out = proc::run_timeout(
+        &bin,
+        &[
+            "inspect",
+            container,
+            "--format",
+            "{{.RestartCount}}\t{{.State.OOMKilled}}\t{{.State.StartedAt}}",
+        ],
+        Duration::from_secs(20),
+    )
+    .ok()?;
+    if !out.ok() {
+        return None;
+    }
+    let line = out.stdout.trim();
+    let f: Vec<&str> = line.split('\t').collect();
+    if f.len() < 3 {
+        return None;
+    }
+    Some(ContainerVitals {
+        restart_count: f[0].parse().ok(),
+        oom_killed: match f[1] {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        started_at: (!f[2].is_empty() && f[2] != "<no value>").then(|| f[2].to_string()),
+    })
+}
+
+/// 本项目**六个服务的容器名**（`docker compose ps` 报的那一份）。
+pub fn container_names() -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    let bin = which::docker_bin();
+    let filter = format!("label=com.docker.compose.project={PROJECT}");
+    let Ok(r) = proc::run_timeout(
+        &bin,
+        &[
+            "ps",
+            "-a",
+            "--filter",
+            &filter,
+            "--format",
+            "{{.Label \"com.docker.compose.service\"}}\t{{.Names}}",
+        ],
+        Duration::from_secs(20),
+    ) else {
+        return m;
+    };
+    if !r.ok() {
+        return m;
+    }
+    for l in r.stdout.lines() {
+        let mut f = l.trim().splitn(2, '\t');
+        let (Some(svc), Some(name)) = (f.next(), f.next()) else {
+            continue;
+        };
+        if !svc.is_empty() && !name.is_empty() {
+            m.insert(svc.to_string(), name.to_string());
+        }
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config;
+
+    // ── I12 · R3：compose 调用必带覆盖文件 ──────────────────────────────
+    //
+    // 2026-09-22 22:01 的事故（I11 · U5）：本地 Claude 手工跑了一条漏掉覆盖文件的
+    // `docker compose -p hunter up -d`，五个端口在局域网里可达了约 50 分钟。
+    // I11 兜住了「手工敲」那一路（`.env` 里写 `COMPOSE_FILE`）；这几条钉住
+    // **启动器自己**那一路：不管哪个函数、哪个子命令，命令行里一定有两份 `-f`。
+
+    /// 这条命令行里两份 compose 文件都在，而且覆盖文件排在基础文件**后面**。
+    fn 断言带着覆盖文件(args: &[String]) {
+        let base = paths::compose_file().to_string_lossy().into_owned();
+        let overlay = paths::override_file().to_string_lossy().into_owned();
+        let f: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i > 0 && args[i - 1] == "-f")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(f.len(), 2, "必须正好两份 -f：{args:?}");
+        assert_eq!(f[0], &base, "第一份必须是基础 compose：{args:?}");
+        assert_eq!(
+            f[1], &overlay,
+            "第二份必须是覆盖文件，而且排在后面（排前面 !override 就覆盖不到）：{args:?}"
+        );
+        // 项目名也一起钉住：漏了它 compose 会按目录名猜一个，那就是另一套
+        let p: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i > 0 && args[i - 1] == "--project-name")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(
+            p,
+            vec![&PROJECT.to_string()],
+            "必须带 --project-name：{args:?}"
+        );
+    }
+
+    #[test]
+    fn 每一个_compose_子命令都带着覆盖文件() {
+        // 这一份清单覆盖启动器会发出的全部 compose 子命令。
+        // 加新命令时如果没走 `compose::run` / `compose::argv`，这条测试是发现不了的 ——
+        // 所以 `full_args` 是唯一的出口，别在别处自己拼 docker compose
+        for extra in [
+            vec!["up", "-d", "--remove-orphans"],
+            vec!["up", "-d", "--no-recreate", "opencode"],
+            vec!["up", "-d", "--force-recreate", "postgres", "redis"],
+            vec!["stop"],
+            vec!["start"],
+            vec!["restart"],
+            vec!["restart", "api"],
+            vec!["down", "--remove-orphans"],
+            vec!["ps", "--all", "--format", "json"],
+            vec!["logs", "--no-color", "--tail", "40"],
+            vec!["config"],
+            vec!["--progress", "json", "pull"],
+        ] {
+            let (_, args) = argv(&extra);
+            断言带着覆盖文件(&args);
+            // 子命令本身也得原样在后面
+            let tail: Vec<String> = args[args.len() - extra.len()..].to_vec();
+            assert_eq!(tail, extra, "子命令被改动了：{args:?}");
+        }
+    }
+
+    #[test]
+    fn 覆盖文件的路径就是磁盘上那一份() {
+        // 别把覆盖文件写成别的名字：`.env` 里的 `COMPOSE_FILE`（I11 · U5）与这里
+        // 必须指同一个文件，否则手工敲和启动器自己跑的会是两套配置
+        let (_, args) = argv(&["ps"]);
+        assert!(
+            args.iter()
+                .any(|a| a.ends_with("docker-compose.launcher.yml")),
+            "{args:?}"
+        );
+    }
 
     fn specs() -> Vec<ImageSpec> {
         config::images("ghcr.io/agentpit-io", "docker.io/library", "1.2.0")
@@ -1791,6 +2164,43 @@ mod tests {
             ("postgres".to_string(), 115_990_528),
             ("redis".to_string(), 16_148_070),
         ])
+    }
+
+    #[test]
+    fn 数据卷的短名来自_docker_的标签而不是按前缀猜() {
+        // 实测（测试机 2026-09-23）：compose 项目 `hunter` 里，声明名是 `hunter_pg_data`，
+        // docker 里的完整名是 `hunter_hunter_pg_data`。按前缀切一次得到的正是声明名，
+        // 但**标签才是真值** —— 方案 1.3 节写的 `pg_data` 与实际差一层
+        let out = "hunter_hunter_pg_data\t/var/lib/docker/volumes/hunter_hunter_pg_data/_data\tcom.docker.compose.project=hunter,com.docker.compose.volume=hunter_pg_data\n\
+                   hunter_hunter_secrets\t/var/lib/docker/volumes/hunter_hunter_secrets/_data\tcom.docker.compose.project=hunter,com.docker.compose.volume=hunter_secrets\n";
+        let v = parse_volumes(out);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].name, "hunter_hunter_pg_data");
+        assert_eq!(v[0].short, VOL_DB);
+        assert!(!v[0].label_missing);
+        assert_eq!(v[1].short, VOL_SECRETS);
+    }
+
+    #[test]
+    fn 没有标签时退回按前缀切_并且说清是猜的() {
+        let out = "hunter_hunter_pg_data\t/var/lib/docker/volumes/x/_data\t\n";
+        let v = parse_volumes(out);
+        assert_eq!(v[0].short, "hunter_pg_data");
+        assert!(v[0].label_missing, "标签没读到就要说清楚这一条是猜的");
+    }
+
+    #[test]
+    fn 卷大小按_docker_的十进制单位还原() {
+        let out = r#"[{"Name":"hunter_hunter_pg_data","Size":"51.05MB","Links":"1"},{"Name":"hunter_hunter_secrets","Size":"0B","Links":"1"}]"#;
+        let m = parse_volume_sizes(out);
+        assert_eq!(m.get("hunter_hunter_pg_data"), Some(&51_050_000));
+        assert_eq!(m.get("hunter_hunter_secrets"), Some(&0));
+    }
+
+    #[test]
+    fn 卷大小认不出来就不进表_不猜() {
+        let out = r#"[{"Name":"hunter_hunter_pg_data","Size":"N/A"}]"#;
+        assert!(parse_volume_sizes(out).is_empty());
     }
 
     #[test]

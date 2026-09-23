@@ -1,0 +1,13 @@
+
+[1m== 场景 R1⑥：真界面 —— 打开启动器不闪欢迎页，直接到运行面板 ==[0m
+开之前 install.done                       done = false
+窗口                                       2097155
+截图 /tmp/i12-shots/01-开机第一帧.png
+截图 /tmp/i12-shots/02-六秒后.png
+开之后 install.done                       done = true
+adopted_from_running                         adopted_from_running = true
+2026-09-23 15:53:38 [info] 复查看到 Hunter 已在正常运行，已把它记为已安装（adopted_from_running=true）
+2026-09-23 15:53:38 [info] 开机判定：Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200），而配置里 install.done 还是 false —— 已补写为已安装（adopted_from_running=true）
+2026-09-23 15:54:15 [info] 复查看到 Hunter 已在正常运行，已把它记为已安装（adopted_from_running=true）
+2026-09-23 15:54:15 [info] 开机判定：Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200），而配置里 install.done 还是 false —— 已补写为已安装（adopted_from_running=true）
+[现场恢复] 6/6 健康（等了 5 秒）

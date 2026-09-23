@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { TitleBar } from './components/TitleBar'
 import { Modal } from './components/Modal'
 import { Button } from './components/Button'
+import { Booting } from './pages/Booting'
+import { DataFound } from './pages/DataFound'
 import { Welcome } from './pages/Welcome'
 import { Docker } from './pages/Docker'
 import { Key } from './pages/Key'
@@ -157,6 +159,11 @@ function Page() {
   // 用户可能是在上一次运行里做的选择。
   const takeover = useAsync(() => ipc.takeoverState(), [])
   switch (pageOf(state)) {
+    // I12 · R1：开机第一屏。不超过 1 秒，查完由 StoreProvider 跳走
+    case 'booting':
+      return <Booting />
+    case 'data-found':
+      return <DataFound />
     case 'welcome':
       return <Welcome />
     case 'docker':

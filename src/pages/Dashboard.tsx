@@ -6,12 +6,13 @@ import { Card, CardHead } from '../components/Card'
 import { EnvList } from '../components/EnvList'
 import { LogBox } from '../components/LogBox'
 import { ProgressBar } from '../components/ProgressBar'
+import { ResourcePanel } from '../components/ResourcePanel'
 import { ServiceTile } from '../components/ServiceTile'
 import { StatCard } from '../components/StatCard'
 import { StatusDot } from '../components/StatusDot'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
-import type { LauncherUpdate } from '../lib/types'
+import type { LauncherUpdate, StackOpResult, StackPlan } from '../lib/types'
 import { duration, percent, shanghaiStamp, thousands } from '../lib/format'
 import { useStore } from '../state/context'
 
@@ -43,6 +44,13 @@ export function Dashboard() {
   const [launcherUpdate, setLauncherUpdate] = useState<LauncherUpdate | null>(null)
   // I7：一键把网页端口收回本机。只有升级上来的老机器会用到
   const [tightening, setTightening] = useState(false)
+  // I12 · R3：停止 / 启动 / 重启
+  const [dialog, setDialog] = useState<'stop' | 'restart' | null>(null)
+  const [alsoRuntime, setAlsoRuntime] = useState(true)
+  const [pickedService, setPickedService] = useState('')
+  const [opSteps, setOpSteps] = useState<string[]>([])
+  const [opResult, setOpResult] = useState<StackOpResult | null>(null)
+  const [plan, setPlan] = useState<StackPlan | null>(null)
   const d = rt.data
 
   async function onTighten() {
@@ -73,27 +81,56 @@ export function Dashboard() {
     void ipc.onLauncherUpdate(setLauncherUpdate).then((f) => {
       un2 = f
     })
+    // I12 · R3：操作过程中后端每做完一件事推一条，直播给用户看
+    let un3: (() => void) | undefined
+    void ipc.onStackStep((line) => setOpSteps((v) => [...v, line])).then((f) => {
+      un3 = f
+    })
     const timer = window.setInterval(() => rt.reload(), 10_000)
     return () => {
       un?.()
       un2?.()
+      un3?.()
       window.clearInterval(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /** 停止 / 重启都是真的去动容器，做完再刷新一次面板。 */
-  async function act(action: 'stop' | 'restart') {
+  /**
+   * 停止 / 启动 / 重启（I12 · R3）。
+   *
+   * 和 0.1.11 的 `stackAction` 比多了三件事：停止可以顺带停掉运行环境、
+   * 启动会先把运行环境弄好、重启可以只重启一个服务。
+   * 过程里后端每做完一件事就推一条 `hunter://stack`，这里直播出来 ——
+   * 按钮置灰的那几十秒不该是一片空白。
+   */
+  async function act(action: 'stop' | 'start' | 'restart', opts: { alsoRuntime?: boolean; service?: string } = {}) {
     setBusy(action)
     setNote(null)
+    setOpSteps([])
+    setOpResult(null)
+    setDialog(null)
     try {
-      setNote(await ipc.stackAction(action))
+      const r = await ipc.stackOp(action, opts)
+      setOpResult(r)
+      setNote(r.headline)
       send(action === 'stop' ? { type: 'STOP' } : { type: 'START' })
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(null)
       rt.reload()
+    }
+  }
+
+  /** 打开「停止」对话框之前先问后端：这台机器要不要显示「顺便停运行环境」。 */
+  async function openStop() {
+    setDialog('stop')
+    try {
+      setPlan(await ipc.stackPlan())
+    } catch {
+      // 问不到就当没有那一档 —— 界面上不出现一个不知道会做什么的勾选
+      setPlan(null)
     }
   }
 
@@ -248,8 +285,12 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* I12 · R2：三层资源。放在统计卡之前 —— 用户打开面板最先想知道的是
+          「它现在占了我多少东西」，而不是额度还剩多少 */}
+      <ResourcePanel />
+
       {/* 四张统计卡 */}
-      <div className="mt-[30px] grid shrink-0 grid-cols-4 gap-gap">
+      <div className="mt-[18px] grid shrink-0 grid-cols-4 gap-gap">
         <StatCard
           label={t.dashboard.cardQuota}
           value={
@@ -345,6 +386,9 @@ export function Dashboard() {
                 { label: t.dashboard.envRegistry, value: envOf(d, 'registry'), reason: t.app.noDataReason },
                 { label: t.dashboard.envAutostart, value: boolLabel(envOf(d, 'autostart'), t.common.yes, t.common.no) },
                 { label: t.dashboard.envTelemetry, value: boolLabel(envOf(d, 'telemetry'), t.common.yes, t.common.no) },
+                // I12 · R1：启动器记住的那条安装记录。摆出来才看得见它对不对
+                { label: t.dashboard.envInstalledAt, value: envOf(d, 'installedAt'), reason: t.dashboard.envInstalledAtNone },
+                { label: t.dashboard.envLastHealthy, value: envOf(d, 'lastHealthy'), reason: t.dashboard.envLastHealthyNone },
               ]}
             />
           </div>
@@ -359,11 +403,51 @@ export function Dashboard() {
             </button>
           )}
           {note && <div className="mt-[12px] text-sm leading-[1.5] text-amber-text">{note}</div>}
+          {/* I12 · R3：操作进行中把刚做过的事直播出来 —— 按钮置灰的那几十秒
+              不该是一片空白（后端每做完一件事推一条 hunter://stack） */}
+          {(opSteps.length > 0 || opResult) && (
+            <div className="mt-[12px] rounded-md border border-line bg-window px-3 py-2" data-testid="stack-steps">
+              <div className="text-xs text-muted">{t.stackOp.steps}</div>
+              <ul className="mt-[6px] flex flex-col gap-[4px]">
+                {(opResult?.steps ?? opSteps).map((l, i) => (
+                  <li key={`${i}-${l}`} className="text-xs leading-[1.45] text-body">
+                    · {l}
+                  </li>
+                ))}
+              </ul>
+              {opResult && (
+                <div className="tnum mt-[6px] text-xs text-muted">
+                  {t.stackOp.doneIn(opResult.elapsedMs)} · {opResult.ready} / {opResult.total}
+                </div>
+              )}
+            </div>
+          )}
           <div className="mt-auto flex flex-wrap gap-[10px] pt-4">
-            <Button size="sm" disabled={busy !== null} onClick={() => void act('stop')}>
-              {busy === 'stop' ? t.common.working : t.common.stop}
-            </Button>
-            <Button size="sm" disabled={busy !== null} onClick={() => void act('restart')}>
+            {/* 已经停了的时候主按钮是「启动」——「停止」在那儿没有意义 */}
+            {running ? (
+              <Button size="sm" data-testid="stack-stop" disabled={busy !== null} onClick={() => void openStop()}>
+                {busy === 'stop' ? t.common.working : t.common.stop}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="primary"
+                data-testid="stack-start"
+                disabled={busy !== null}
+                onClick={() => void act('start')}
+              >
+                {busy === 'start' ? t.common.working : t.common.start}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              data-testid="stack-restart"
+              disabled={busy !== null}
+              onClick={() => {
+                setPickedService('')
+                setDialog('restart')
+              }}
+            >
               {busy === 'restart' ? t.common.working : t.common.restart}
             </Button>
             <Button size="sm" onClick={() => setOverlay('logs')}>
@@ -378,6 +462,98 @@ export function Dashboard() {
           </div>
         </Card>
       </div>
+
+      {/* I12 · R3：停止前问一句「顺便停运行环境吗」。
+          只有内置运行时、而且它现在在跑的机器才有这一问（stack_plan 说了算）。
+          默认勾上 —— 用户点「停止」想要的就是「把它占的资源放掉」 */}
+      {dialog === 'stop' && (
+        <Modal
+          testId="stop-dialog"
+          title={t.stackOp.stopTitle}
+          onClose={() => setDialog(null)}
+          footer={
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setDialog(null)}>
+                {t.common.cancel}
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                data-testid="stop-confirm"
+                onClick={() => void act('stop', { alsoRuntime: (plan?.builtinRunning ?? false) && alsoRuntime })}
+              >
+                {t.stackOp.stopConfirm}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm leading-[1.6] text-body">{t.stackOp.stopBody}</p>
+          {plan?.builtinRunning && (
+            <label className="mt-[14px] flex cursor-pointer items-start gap-2.5" data-testid="stop-also-runtime">
+              <input
+                type="checkbox"
+                className="mt-[3px] size-[14px] accent-amber"
+                checked={alsoRuntime}
+                onChange={(e) => setAlsoRuntime(e.target.checked)}
+              />
+              <span>
+                <span className="text-sm text-ink">{t.stackOp.stopAlsoRuntime(plan.builtinMemGb)}</span>
+                <span className="mt-[4px] block text-xs leading-[1.5] text-muted">
+                  {t.stackOp.stopAlsoRuntimeHint}
+                </span>
+              </span>
+            </label>
+          )}
+        </Modal>
+      )}
+
+      {/* I12 · R3：重启。可以只重启一个服务 —— 一个服务卡住时，
+          把六个一起推倒重来既慢又可能把别的弄坏 */}
+      {dialog === 'restart' && (
+        <Modal
+          testId="restart-dialog"
+          title={t.common.restart}
+          onClose={() => setDialog(null)}
+          footer={
+            <>
+              <Button size="sm" variant="ghost" onClick={() => setDialog(null)}>
+                {t.common.cancel}
+              </Button>
+              <Button size="sm" data-testid="restart-all" onClick={() => void act('restart')}>
+                {t.stackOp.restartAll}
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                data-testid="restart-one"
+                disabled={!pickedService}
+                onClick={() => void act('restart', { service: pickedService })}
+              >
+                {t.stackOp.restartOne}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm leading-[1.6] text-body">{t.stackOp.pickService}</p>
+          <div className="mt-[14px] flex flex-wrap gap-[8px]">
+            {services.map((sv) => (
+              <button
+                key={sv.service}
+                type="button"
+                data-testid={`pick-${sv.service}`}
+                onClick={() => setPickedService(sv.service)}
+                className={`rounded-sm border px-3 py-1.5 text-sm transition-colors ${
+                  pickedService === sv.service
+                    ? 'border-amber/60 bg-amber-soft text-amber-text'
+                    : 'border-line-strong bg-card text-body hover:border-amber/40'
+                }`}
+              >
+                {sv.service}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
 
       {showMissing && d && (
         <Modal

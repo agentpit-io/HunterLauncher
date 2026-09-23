@@ -20,7 +20,9 @@ import type {
   BackupMeta,
   BootState,
   BuiltinRuntimeStatus,
+  DataCheck,
   DiagSection,
+  HostMetrics,
   AssistState,
   DockerInfo,
   ImagePull,
@@ -33,9 +35,14 @@ import type {
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
+  RuntimeMetrics,
   RuntimeStatus,
   SelfCheckReview,
+  ServiceMetrics,
   ServiceStatus,
+  StackOpResult,
+  StackPlan,
+  StorageMetrics,
   TakeoverCandidate,
   TakeoverState,
   TelemetryView,
@@ -50,7 +57,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.11'
+export const DEMO_LAUNCHER_VERSION = '0.1.12'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -149,6 +156,15 @@ export const demoBootState: BootState = {
   locale: 'zh-CN',
   hunterTag: '1.2.0',
   workDir: '~/.hunter',
+  route: 'welcome',
+  posture: 'absent',
+  headline: '这台机器上还没有装过 Hunter',
+  adopted: false,
+  launcherVersion: DEMO_LAUNCHER_VERSION,
+  installedAt: '',
+  lastHealthyAt: '',
+  volumeCount: 0,
+  elapsedMs: 264,
 }
 
 export const demoOwnKeyCheck: OwnKeyCheck = {
@@ -1112,5 +1128,126 @@ export function demoSelfCheck(page: string | null): SelfCheckReview {
     headline: 'Hunter 在跑，但 opencode 还没就绪',
     lines: ['opencode · running · 不健康', 'GET http://127.0.0.1:3100/ → HTTP 200'],
     elapsedMs: 388,
+  }
+}
+
+
+// ── I12 · 资源监控 / 启停 / 已有数据的演示值 ─────────────────────────────
+//
+// 这一组**只**在 VITE_DEMO=1 的开发构建里存在（截图脚本用），发布包里被摇掉。
+// 数字都取得像真的，但界面右上角有「演示数据」角标，不会被误当成实测值（红线 1）。
+
+export const demoHost: HostMetrics = {
+  cpuPct: 18.4,
+  cpuCores: 10,
+  memUsedBytes: 12_025_908_838,
+  memTotalBytes: 17_179_869_184,
+  memPressure: '正常',
+  memPressureLevel: 'ok',
+  diskFreeBytes: 239_483_392_000,
+  diskTotalBytes: 994_662_584_320,
+  diskMount: '/System/Volumes/Data',
+  diskLevel: 'ok',
+  reasons: {},
+}
+
+export const demoRuntimeMetrics: RuntimeMetrics = {
+  applicable: true,
+  reason: '',
+  cpus: 4,
+  memTotalBytes: 4_294_967_296,
+  memUsedBytes: 2_254_857_830,
+  memLevel: 'ok',
+  diskUsedBytes: 8_482_488_320,
+  diskTotalBytes: 64_424_509_440,
+  diskLevel: 'ok',
+  reasons: {},
+}
+
+export const demoServiceMetrics: ServiceMetrics = {
+  reason: '',
+  services: [
+    { service: 'web', cpuPct: 1.2, memBytes: 141_557_760, memLimitBytes: 4_294_967_296, restartCount: 0, oomKilled: false },
+    { service: 'api', cpuPct: 0.5, memBytes: 126_877_696, memLimitBytes: 4_294_967_296, restartCount: 0, oomKilled: false },
+    { service: 'opencode', cpuPct: 8.9, memBytes: 272_629_760, memLimitBytes: 4_294_967_296, restartCount: 1, oomKilled: false },
+    { service: 'llm-shim', cpuPct: 0.1, memBytes: 31_457_280, memLimitBytes: 4_294_967_296, restartCount: 0, oomKilled: false },
+    { service: 'postgres', cpuPct: 0.3, memBytes: 48_234_496, memLimitBytes: 4_294_967_296, restartCount: 0, oomKilled: false },
+    { service: 'redis', cpuPct: 0.2, memBytes: 9_961_472, memLimitBytes: 4_294_967_296, restartCount: 0, oomKilled: false },
+  ],
+}
+
+const DEMO_VOLUMES = [
+  { name: 'hunter_hunter_pg_data', short: 'hunter_pg_data', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_pg_data/_data', sizeBytes: 327_000_000 },
+  { name: 'hunter_hunter_secrets', short: 'hunter_secrets', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_secrets/_data', sizeBytes: 12_000 },
+  { name: 'hunter_hunter_opencode_data', short: 'hunter_opencode_data', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_opencode_data/_data', sizeBytes: 41_000_000 },
+  { name: 'hunter_hunter_user_skills', short: 'hunter_user_skills', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_user_skills/_data', sizeBytes: 0 },
+  { name: 'hunter_hunter_packages', short: 'hunter_packages', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_packages/_data', sizeBytes: 11_000_000 },
+  { name: 'hunter_hunter_redis_data', short: 'hunter_redis_data', labelMissing: false, mountpoint: '/var/lib/docker/volumes/hunter_hunter_redis_data/_data', sizeBytes: 1_100_000 },
+]
+
+export const demoStorage: StorageMetrics = {
+  volumes: DEMO_VOLUMES,
+  volumesTotalBytes: 380_112_000,
+  dbBytes: 327_000_000,
+  imagesBytes: 4_003_000_000,
+  imagesFound: 6,
+  reasons: {},
+}
+
+export const demoDataCheck: DataCheck = {
+  decision: 'reuse',
+  volumes: DEMO_VOLUMES,
+  hasDb: true,
+  hasSecrets: true,
+  hasJwtSecret: true,
+  pgVersion: '16',
+  targetPgVersion: '16',
+  migrationMax: null,
+  targetMigrationMax: null,
+  tableCount: null,
+  lastWrite: null,
+  backups: 2,
+  deep: false,
+  deepSkipped: null,
+  headline: '检测到你以前的数据，将直接沿用，不会重建数据库、也不会重新生成密钥。',
+  lines: [
+    '数据卷 hunter_hunter_pg_data · hunter_pg_data · 数据库：账号、配置、自选股、历史分析',
+    '数据卷 hunter_hunter_secrets · hunter_secrets · 密钥卷：数据库里加密的配置靠它才解得开',
+    '~/.hunter/app/.env 里的 JWT_SECRET：在（重装会原样沿用，登录不会失效）',
+    '数据卷里的 PostgreSQL 大版本：16',
+  ],
+  elapsedMs: 1841,
+}
+
+export const demoDataCheckDeep: DataCheck = {
+  ...demoDataCheck,
+  deep: true,
+  tableCount: 61,
+  lastWrite: '2026-09-22 20:22',
+  migrationMax: '0022_schema_migrations.sql',
+  targetMigrationMax: '0022_schema_migrations.sql',
+  headline: '检测到你以前的数据（61 张表，最近更新于 2026-09-22 20:22），将直接沿用，不会重建数据库、也不会重新生成密钥。',
+  elapsedMs: 14_203,
+}
+
+export const demoStackPlan: StackPlan = {
+  builtinRunning: true,
+  builtinMemGb: 4,
+  services: ['web', 'api', 'opencode', 'llm-shim', 'postgres', 'redis'],
+}
+
+export function demoStackOp(action: 'stop' | 'start' | 'restart'): StackOpResult {
+  const steps =
+    action === 'stop'
+      ? ['六个服务已经停下来（容器、数据卷、配置全都留着）', '内置运行时的虚拟机已停（用时 6 秒，释放约 4 GB 内存）']
+      : action === 'start'
+        ? ['运行环境（虚拟机）没在跑，先把它起起来', '内置运行时已就绪（profile hunter，用时 21 秒）', '六个容器已经起来，正在等它们变健康', '6 / 6 健康']
+        : ['六个服务都重启过了']
+  return {
+    headline: action === 'stop' ? '这台机器上的 Hunter 已经停下来' : 'Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）',
+    steps,
+    ready: action === 'stop' ? 0 : 6,
+    total: 6,
+    elapsedMs: action === 'start' ? 34_120 : 7_410,
   }
 }

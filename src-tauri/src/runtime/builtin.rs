@@ -1041,6 +1041,61 @@ pub fn start(p: &mut Progress) -> AppResult<String> {
     ))
 }
 
+/// 停虚拟机（I12 · R3）。
+///
+/// 用户在运行面板上点「停止」时，如果这台机器跑的是内置运行时，那台虚拟机
+/// **还占着分配给它的内存**（默认 4 GB）。停 compose 只是停容器，虚拟机照样在。
+/// 所以停止那一步会多问一句「顺便把运行环境也停了？」，默认勾上。
+///
+/// 命令是 `colima stop --profile hunter`，走的还是那两道守卫：
+/// [`crate::assist::guard::argv`]（动作表）与 `proc::isolation_guard`
+/// （`COLIMA_HOME` 必须落在 `~/.hunter/runtime`）。
+/// **不删任何东西** —— 虚拟机磁盘、数据卷、下好的组件一个都不动，下次 `start` 原样回来。
+pub fn stop() -> AppResult<String> {
+    if !is_running() {
+        return Ok("内置运行时的虚拟机本来就没在跑。".to_string());
+    }
+    let c = colima_bin().ok_or_else(|| {
+        AppError::new(
+            Code::NotImplemented,
+            "内置运行时还没装（找不到 colima）。".to_string(),
+        )
+    })?;
+    let prog = c.to_string_lossy().into_owned();
+    let args = ["stop", "--profile", PROFILE];
+    let argv: Vec<String> = std::iter::once(prog.clone())
+        .chain(args.iter().map(|s| (*s).to_string()))
+        .collect();
+    crate::assist::guard::argv(&argv)?;
+    let pairs = env_pairs();
+    let env: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let t = Instant::now();
+    let r = crate::proc::run_timeout_env(&prog, &args, STOP_TIMEOUT, &env)?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::Unknown,
+            format!(
+                "虚拟机没停下来（colima stop 退出码 {:?}）：{}",
+                r.status,
+                r.err_line()
+            ),
+        ));
+    }
+    super::env::invalidate();
+    super::which::invalidate();
+    let (_, mem, _) = vm_params();
+    Ok(format!(
+        "内置运行时的虚拟机已停（用时 {} 秒，释放约 {mem} GB 内存）",
+        t.elapsed().as_secs()
+    ))
+}
+
+/// 停虚拟机给多久。起得慢、停得快，但 vz 偶尔要等一会儿磁盘刷完。
+const STOP_TIMEOUT: Duration = Duration::from_secs(120);
+
 // ── 修残骸（I9 的 P0-1） ─────────────────────────────────────────────────
 
 /// 这个 profile 的虚拟机目录（`$COLIMA_HOME/<profile>`）。

@@ -1,0 +1,34 @@
+
+[1m== 场景 R5③：构造「数据比镜像新」 ==[0m
+现在最大的迁移                        9999_from_the_future.sql
+
+Hunter 启动器 · 检测已有数据（深查：会起一个用完就删的 postgres）
+────────────────────────────────────────────────────────────────────────────────────
+  结论     你的数据比要装的这一版新，不能直接装回去
+  一句话   你的数据已经跑到 9999_from_the_future.sql，而这次要装的这一版只到 0022_schema_migrations.sql —— 装回去会对不上，先升级镜像或者从备份恢复。
+  拦不拦   拦 —— 这一档不许往下装
+  数据库   在 · 密钥卷 在 · JWT_SECRET 在
+  PG 版本  数据卷里 16 → 目标镜像 16
+  深查     61 张表 · 最近写入 2026-09-22 22:15 · 已应用到 9999_from_the_future.sql → 目标 0022_schema_migrations.sql
+
+  逐条证据：
+    · 数据卷 hunter_hunter_opencode_data · hunter_opencode_data · 对话引擎的会话记录
+    · 数据卷 hunter_hunter_packages · hunter_packages · 依赖缓存（可再生）
+    · 数据卷 hunter_hunter_pg_data · hunter_pg_data · 数据库：账号、配置、自选股、历史分析
+    · 数据卷 hunter_hunter_redis_data · hunter_redis_data · 缓存（可再生）
+    · 数据卷 hunter_hunter_secrets · hunter_secrets · 密钥卷：数据库里加密的配置靠它才解得开
+    · 数据卷 hunter_hunter_user_skills · hunter_user_skills · 你自己建的技能
+    · <用户目录>/.hunter/app/.env 里的 JWT_SECRET：在（重装会原样沿用，登录不会失效）
+    · 数据卷里的 PostgreSQL 大版本：16
+    · 这次要装的 postgres 镜像是 16 系
+    · 直接问正在跑的 hunter-postgres-1，没有起新容器
+    · public schema 下有 61 张表
+    · 已应用的最大迁移：9999_from_the_future.sql
+    · 最近一次写入：2026-09-22 22:15
+    · 已应用到 9999_from_the_future.sql；这次要装的镜像里最大的是 0022_schema_migrations.sql
+
+  用时 3225 毫秒
+
+[1m== 恢复：把那条假迁移删掉 ==[0m
+恢复后最大的迁移                     0022_schema_migrations.sql
+[现场恢复] 6/6 健康（等了 5 秒）

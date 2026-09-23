@@ -17,6 +17,9 @@ import {
 /** 从 Idle 一路走到指定状态的事件序列，测试里反复用。 */
 const HAPPY_PATH: Event[] = [
   { type: 'BOOT' },
+  // I12 · R1：BOOT 先落到「正在检查 Hunter 状态」，后端说「什么都没有」才去欢迎页。
+  // 加这一步正是这一轮要的效果 —— 装好的机器再也看不到欢迎页闪一下
+  { type: 'BOOT_FRESH' },
   { type: 'ACCEPT_TERMS' },
   // I5：欢迎 → 输入 key → 一次授权 → 选模型 → 自动安装 → 完成
   { type: 'KEY_SUBMIT' },
@@ -30,6 +33,7 @@ const HAPPY_PATH: Event[] = [
  *  只有自动安装撞上 Docker 问题、用户从错误页点「重试」时才会到那一页。 */
 const TO_DOCKER: Event[] = [
   { type: 'BOOT' },
+  { type: 'BOOT_FRESH' },
   { type: 'ACCEPT_TERMS' },
   { type: 'KEY_SUBMIT' },
   { type: 'KEY_VALID' },
@@ -44,6 +48,8 @@ function at(n: number): State {
 
 const ALL_STATES: State[] = [
   { name: 'Idle' },
+  { name: 'Booting' },
+  { name: 'DataFound' },
   { name: 'Welcome' },
   { name: 'CheckDocker' },
   { name: 'InstallDockerGuide' },
@@ -65,6 +71,9 @@ const ALL_STATES: State[] = [
 const ALL_EVENTS: Event[] = [
   { type: 'BOOT' },
   { type: 'RESUME_READY' },
+  { type: 'BOOT_FRESH' },
+  { type: 'BOOT_DATA_FOUND' },
+  { type: 'DATA_CONTINUE' },
   { type: 'ACCEPT_TERMS' },
   { type: 'DOCKER_MISSING' },
   { type: 'DOCKER_FOUND' },
@@ -97,6 +106,8 @@ describe('主路径', () => {
   it('从 Idle 一路走到 Ready', () => {
     const names = HAPPY_PATH.map((_, i) => at(i + 1).name)
     expect(names).toEqual([
+      // I12 · R1：开机先进「正在检查」，查完才决定去哪
+      'Booting',
       'Welcome',
       'NeedKey',
       'ValidateKey',
@@ -137,6 +148,7 @@ describe('I5 · 一次授权与自动安装', () => {
   it('key 验过之后先做一次授权', () => {
     const validating = run(INITIAL_STATE, [
       { type: 'BOOT' },
+      { type: 'BOOT_FRESH' },
       { type: 'ACCEPT_TERMS' },
       { type: 'KEY_SUBMIT' },
     ])
@@ -195,7 +207,7 @@ describe('I5 · 一次授权与自动安装', () => {
 
 describe('key 校验分支', () => {
   it('校验不过退回 NeedKey', () => {
-    const validating = at(3)
+    const validating = at(4)
     expect(validating.name).toBe('ValidateKey')
     expect(transition(validating, { type: 'KEY_INVALID' }).name).toBe('NeedKey')
   })
@@ -203,7 +215,7 @@ describe('key 校验分支', () => {
 
 describe('错误与重试', () => {
   it('拉取失败进 Error(E_PULL_FAILED)，重试回到自动安装', () => {
-    const auto = at(5)
+    const auto = at(6)
     expect(auto.name).toBe('AutoInstalling')
     const err = transition(auto, { type: 'AUTO_FAILED', code: 'E_PULL_FAILED', detail: '源不可达' })
     expect(err).toEqual({
@@ -255,7 +267,7 @@ describe('错误与重试', () => {
 
 describe('运行期', () => {
   it('Ready 可以停止、重新启动', () => {
-    const ready = at(7)
+    const ready = at(8)
     expect(ready.name).toBe('Ready')
     const stopped = transition(ready, { type: 'STOP' })
     expect(stopped.name).toBe('Stopped')
@@ -263,7 +275,7 @@ describe('运行期', () => {
   })
 
   it('升级成功回 Ready，失败进 Error(E_UPDATE_FAILED)', () => {
-    const up = transition(at(7), { type: 'UPGRADE' })
+    const up = transition(at(8), { type: 'UPGRADE' })
     expect(up.name).toBe('Upgrading')
     expect(transition(up, { type: 'UPGRADE_OK' }).name).toBe('Ready')
     const failed = transition(up, { type: 'UPGRADE_FAILED', detail: '健康检查未通过' })
@@ -433,16 +445,66 @@ describe('第二次打开启动器（M2 新增）', () => {
     expect(transition(INITIAL_STATE, { type: 'RESUME_READY' })).toEqual({ name: 'Ready' })
   })
 
-  it('boot_state 是异步回来的，那时候通常已经在 Welcome 了，也要能跳', () => {
-    const welcome = transition(INITIAL_STATE, { type: 'BOOT' })
+  it('boot_state 是异步回来的，那时候通常还停在「正在检查」，也要能跳', () => {
+    const booting = transition(INITIAL_STATE, { type: 'BOOT' })
+    expect(booting.name).toBe('Booting')
+    expect(transition(booting, { type: 'RESUME_READY' })).toEqual({ name: 'Ready' })
+    // 万一慢了一拍、已经落到欢迎页，照样得能跳
+    const welcome = transition(booting, { type: 'BOOT_FRESH' })
     expect(welcome.name).toBe('Welcome')
     expect(transition(welcome, { type: 'RESUME_READY' })).toEqual({ name: 'Ready' })
   })
 
   it('已经走进向导之后不再理会这个事件（免得把用户从半路拽走）', () => {
-    const inWizard = run(INITIAL_STATE, [{ type: 'BOOT' }, { type: 'ACCEPT_TERMS' }])
+    const inWizard = run(INITIAL_STATE, [
+      { type: 'BOOT' },
+      { type: 'BOOT_FRESH' },
+      { type: 'ACCEPT_TERMS' },
+    ])
     expect(inWizard.name).toBe('NeedKey')
     expect(transition(inWizard, { type: 'RESUME_READY' })).toEqual(inWizard)
+  })
+})
+
+/**
+ * **I12 · R1：打开启动器先查一次现状，不闪欢迎页。**
+ *
+ * 2026-09-22 23:10 用户 Mac 上的现场：6/6 健康跑着，重开启动器看到的是欢迎页。
+ * 一半的原因在 Rust 侧（`install.done` 只在安装流程自己走完时写，已经改了），
+ * 另一半在这里 —— `Idle` 直接渲染欢迎页，`boot_state` 还在路上。
+ */
+describe('I12 · R1 开机判定', () => {
+  it('BOOT 落到「正在检查」，而不是欢迎页', () => {
+    expect(transition(INITIAL_STATE, { type: 'BOOT' })).toEqual({ name: 'Booting' })
+    expect(pageOf({ name: 'Booting' })).toBe('booting')
+    // `Idle` 那一帧也不能是欢迎页 —— 它是窗口刚出来、reducer 还没跑的那一瞬
+    expect(pageOf({ name: 'Idle' })).toBe('booting')
+  })
+
+  it('三条路各自到位', () => {
+    const booting = transition(INITIAL_STATE, { type: 'BOOT' })
+    expect(transition(booting, { type: 'RESUME_READY' }).name).toBe('Ready')
+    expect(transition(booting, { type: 'BOOT_DATA_FOUND' }).name).toBe('DataFound')
+    expect(transition(booting, { type: 'BOOT_FRESH' }).name).toBe('Welcome')
+  })
+
+  it('「检测到上次的数据」那一页只通向继续安装，不会自己跳走', () => {
+    const found: State = { name: 'DataFound' }
+    expect(pageOf(found)).toBe('data-found')
+    expect(transition(found, { type: 'DATA_CONTINUE' }).name).toBe('Welcome')
+    // 这一页上没有别的出口：随便来个事件都原地不动
+    expect(transition(found, { type: 'KEY_SUBMIT' })).toEqual(found)
+    expect(transition(found, { type: 'AUTO_DONE' })).toEqual(found)
+  })
+
+  it('「正在检查」和「检测到上次的数据」都不算向导（没有步骤条）', () => {
+    expect(isWizard({ name: 'Booting' })).toBe(false)
+    expect(isWizard({ name: 'DataFound' })).toBe(false)
+    expect(stepOf({ name: 'Booting' })).toBeNull()
+  })
+
+  it('复查说「其实已经在跑」时，从「正在检查」也能直接去运行面板', () => {
+    expect(transition({ name: 'Booting' }, { type: 'ALREADY_RUNNING' }).name).toBe('Ready')
   })
 })
 

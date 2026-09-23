@@ -83,6 +83,16 @@ pub enum Code {
     /// 「key 好好的但这一刻问不出来」和「key 是坏的」必须分得开 ——
     /// 网关哪天把限流扩到别的路径上，这里不该显示成「key 无效」。
     RateLimited,
+    /// **这台机器上的数据比要装的这一版新**（I12 · R5）。
+    ///
+    /// 判据有两条，命中任意一条就算：数据卷里的 PostgreSQL 大版本高于目标镜像；
+    /// 或者 `schema_migrations` 里已应用的最大迁移编号高于目标 api 镜像里的最大编号
+    /// （上游用的是自己的 `schema_migrations`，不是方案里写的 Alembic，测试机实查确认）。
+    ///
+    /// 为什么要单独一个码、而且要**停下来**：这两种情况硬装下去都会真的弄坏数据，
+    /// 而且没法撤销。其余任何一档（缺密钥卷、只有备份、全新）都不阻拦安装 ——
+    /// 只有这一档值得用「装不了」去换「数据还在」。
+    DataDowngrade,
     NotImplemented,
     Unknown,
 }
@@ -109,6 +119,7 @@ impl Code {
             Code::ConfigWrite => "E_CONFIG_WRITE",
             Code::ProjectConflict => "E_PROJECT_CONFLICT",
             Code::RateLimited => "E_RATE_LIMITED",
+            Code::DataDowngrade => "E_DATA_DOWNGRADE",
             Code::NotImplemented => "E_NOT_IMPLEMENTED",
             Code::Unknown => "E_UNKNOWN",
         }
@@ -136,6 +147,7 @@ impl Code {
             Code::ConfigWrite => "写配置失败",
             Code::ProjectConflict => "另一个工作目录正占着 hunter 这个项目名",
             Code::RateLimited => "请求太频繁，网关暂时挡了一下",
+            Code::DataDowngrade => "你的数据比要装的这一版新",
             Code::NotImplemented => "这个功能还没实现",
             Code::Unknown => "出了点意外",
         }
@@ -175,6 +187,7 @@ impl Code {
         Code::ComposeFetch,
         Code::ConfigWrite,
         Code::ProjectConflict,
+        Code::DataDowngrade,
         Code::NotImplemented,
         Code::Unknown,
     ];

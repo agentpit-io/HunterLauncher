@@ -389,6 +389,10 @@ fn finish_full(
         ),
     };
 
+    if posture == Posture::Healthy {
+        note_healthy();
+    }
+
     Review {
         posture,
         services,
@@ -404,6 +408,38 @@ fn finish_full(
         headline,
         lines,
         elapsed_ms: t0.elapsed().as_millis() as u64,
+    }
+}
+
+/// 「刚才确实看到 6/6 健康」→ 刷 `[install] last_healthy_at`（I12 · R1 第 3 条）。
+///
+/// **带节流**：错误页上的复查是 20 秒一次，运行面板还会更频繁 ——
+/// 每次都往 `launcher.toml` 里写一遍纯粹是在磨用户的盘。
+/// 一分钟最多写一次；进程刚起来时先写一次（`None`），那一次最有价值。
+fn note_healthy() {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    const EVERY: Duration = Duration::from_secs(60);
+
+    let Ok(mut g) = LAST.lock() else { return };
+    if g.is_some_and(|t| t.elapsed() < EVERY) {
+        return;
+    }
+    *g = Some(Instant::now());
+    drop(g);
+
+    let mut cfg = LauncherConfig::load();
+    // 现状是健康的 → 这台机器上装过，这件事没有可争的（R1）
+    let adopted = !cfg.install.done;
+    cfg.mark_installed(adopted);
+    cfg.touch_healthy();
+    if let Err(e) = cfg.save() {
+        crate::lwarn!("刷新 last_healthy_at 没写成：{}", e.msg);
+    } else if adopted {
+        crate::linfo!(
+            "复查看到 Hunter 已在正常运行，已把它记为已安装（adopted_from_running=true）"
+        );
     }
 }
 

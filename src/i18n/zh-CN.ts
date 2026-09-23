@@ -50,6 +50,86 @@ const zhCN = {
     reveal: '在文件管理器里打开',
     seconds: (n: number) => `${n} 秒`,
     minuteSecond: (m: number, s: number) => `${m} 分 ${s} 秒`,
+    // I12：「这个数字是刚刚真的量出来的」那个角标，和错误页上的 nowBadge 是同一个词
+    measured: '实测',
+    evidence: '看逐条证据',
+  },
+  // I12 · R1：打开启动器的第一屏。**不超过 1 秒**，查完就跳
+  booting: {
+    title: '正在检查 Hunter 状态',
+    body: '先看一眼这台电脑上 Hunter 现在到底在不在跑，再决定给你看哪一页。这一步只看不改。',
+  },
+  // I12 · R5：本项目的容器没了，但上一次的数据卷还在
+  dataFound: {
+    title: '检测到上次的数据',
+    intro:
+      '这台电脑上 Hunter 的容器已经不在了，但你上次的数据还留着。继续安装会直接沿用它们 —— 不重建数据库、不重新生成密钥，登录也不会失效。',
+    summary: '结论',
+    volumes: '留下来的数据',
+    continue: '继续安装（沿用这些数据）',
+    dig: '看看里面有什么',
+    digging: '正在看…（十几秒）',
+    noVolumes: '没有找到本项目的数据卷',
+    jwt: '登录用的密钥（JWT_SECRET）',
+    jwtKept: '还在，重装会原样沿用，你不会掉登录',
+    jwtGone: '不在了，重装后需要重新登录',
+    secrets: '密钥卷（加密配置靠它解开）',
+    secretsGone: '不在了',
+    pgVersion: '数据库版本',
+    backups: (n: number) => `备份目录里还有 ${n} 份备份`,
+    deepLine: (tables: number | null, write: string | null, mig: string | null) =>
+      [
+        tables === null ? null : `${tables} 张表`,
+        write === null ? null : `最近更新于 ${write}`,
+        mig === null ? null : `已应用到 ${mig}`,
+      ]
+        .filter(Boolean)
+        .join(' · ') || '这一次没问出更细的内容',
+  },
+  // I12 · R2：运行面板上半部的三层资源
+  monitor: {
+    host: '这台电脑',
+    hostSource: '系统接口',
+    cpu: 'CPU',
+    cores: (n: number) => `${n} 核`,
+    mem: '内存',
+    pressure: '内存压力',
+    systemDisk: '系统盘',
+    freeOf: (free: string, total: string) => `剩 ${free} / ${total}`,
+    runtime: 'Hunter 运行环境',
+    runtimeSource: '虚拟机内实测',
+    runtimeNa: '这台电脑用的是你自己的 Docker，没有 Hunter 专用的虚拟机这一层。',
+    vmSpec: '分配',
+    vmSpecValue: (cpus: number, mem: string) => `${cpus} 核 · ${mem}`,
+    vmMem: '内存已用',
+    vmDisk: '磁盘已用',
+    data: '数据',
+    dataSource: 'docker 实测',
+    db: '数据库',
+    volumes: '数据卷合计',
+    volumeCount: (n: number) => `（${n} 个）`,
+    images: '镜像',
+    imagesFound: (n: number) => `（查到 ${n} / 6）`,
+    services: '服务',
+    restartTip: (n: number, oom: boolean) =>
+      oom ? `重启 ${n} 次 · 被系统按内存不足杀掉过` : `重启 ${n} 次`,
+  },
+  // I12 · R3：停止 / 启动 / 重启
+  stackOp: {
+    stopTitle: '停止 Hunter',
+    stopBody: '六个服务会停下来。容器、数据库、你的全部数据都留着，随时可以再启动。',
+    stopAlsoRuntime: (gb: number) => `顺便把 Hunter 的运行环境也停了（释放约 ${gb} GB 内存）`,
+    stopAlsoRuntimeHint:
+      'Hunter 跑在一台只服务它的虚拟机里。只停服务的话，那台虚拟机还占着内存。数据在虚拟机的磁盘里，停机不会丢。',
+    stopConfirm: '停止',
+    startTitle: '启动 Hunter',
+    startBody: '运行环境没起的话会先把它起起来，再等六个服务变健康。',
+    restartOne: '只重启一个服务',
+    restartAll: '全部重启',
+    pickService: '选一个服务',
+    working: '正在处理…',
+    steps: '刚才做了这些',
+    doneIn: (ms: number) => `用时 ${(ms / 1000).toFixed(1)} 秒`,
   },
   steps: {
     welcome: { title: '欢迎', sub: '语言与协议' },
@@ -358,6 +438,10 @@ const zhCN = {
     envDocker: 'Docker',
     envRegistry: '镜像源',
     envAutostart: '自动启动',
+    envInstalledAt: '安装于',
+    envInstalledAtNone: '启动器里还没有安装记录',
+    envLastHealthy: '上次正常运行',
+    envLastHealthyNone: '还没有见过这一套 6/6 健康',
     envTelemetry: '匿名遥测',
     updateBadge: (tag: string) => `有新版本 ${tag}`,
     times: '次',
@@ -674,6 +758,10 @@ const zhCN = {
       E_PROJECT_CONFLICT: {
         title: '另一个工作目录正占着 hunter 这个项目名',
         hint: '这台机器上已经有一套 Hunter 在跑。继续下去会把它的配置和端口顶掉，所以停在这里。下面写明了那一套在哪个目录，以及怎么切回去或者把它停掉。',
+      },
+      E_DATA_DOWNGRADE: {
+        title: '你的数据比要装的这一版新',
+        hint: '这台电脑上留着的 Hunter 数据，是用比现在要装的这一版更新的 Hunter 写出来的。硬装下去会把它弄坏，而且没法撤销，所以停在这里 —— 一个字节都还没动。两条路：把要装的版本换回当时那一版；或者从备份恢复。下面写明了两边分别是什么版本。',
       },
       E_NOT_IMPLEMENTED: { title: '这一部分还没实现', hint: '这个功能在后面的里程碑里补。' },
       E_UNKNOWN: { title: '未知错误', hint: '这是个没有被分类的错误，请把诊断包一起发过来。' },

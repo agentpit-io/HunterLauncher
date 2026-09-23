@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react'
 import type { Event, State } from './machine'
 import type { Dict, Locale } from '../i18n'
+import type { BootState } from '../lib/types'
 
 /** 叠在状态机之上的「抽屉页」：设置 / 日志 / 反馈 / 更新。关掉就回到状态机决定的页面。 */
 export type Overlay = 'settings' | 'logs' | 'feedback' | 'update' | null
@@ -22,6 +23,14 @@ export interface Store {
    */
   notice: string | null
   setNotice: (n: string | null) => void
+  /**
+   * 开机那一次复查的结果（I12 · R1）。
+   *
+   * 「正在检查 Hunter 状态」那一页与运行面板都读它 —— 判定在 Rust 侧做完了，
+   * 前端不重新判一遍（两处各判一次必然会出现两个不一样的结论）。
+   * 演示模式下是 null。
+   */
+  boot: BootState | null
 }
 
 export const StoreCtx = createContext<Store | null>(null)

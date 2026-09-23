@@ -1,0 +1,25 @@
+
+[1m== 场景 R1②：六个容器停掉 → 仍然进运行面板，不回向导 ==[0m
+容器现状                                 0 个在跑 / 6 个存在
+
+Hunter 启动器 · 开机判定
+──────────────────────────────────
+  现状     Hunter 在跑，但 web、api、opencode、llm-shim、postgres、redis 还没就绪、网页打不开
+  服务     0 / 6 就绪，网页这一次没应答
+  该进哪   运行面板
+  安装标记 进来时 done=true，现在 done=true
+  记录     启动器 0.1.12，装于 2026-09-23 15:28:31，上次正常运行 2026-09-23 15:28:31
+
+  逐条证据：
+    · web · exited · 未启动
+    · api · exited · 未启动
+    · opencode · exited · 未启动
+    · llm-shim · exited · 未启动
+    · postgres · exited · 未启动
+    · redis · exited · 未启动
+    · GET http://127.0.0.1:3101/ → 请求 127.0.0.1:3101 失败：io: Connection refused (os error 111)
+
+  用时 658 毫秒（含复查 657 毫秒）
+
+[1m== 恢复 ==[0m
+[现场恢复] 6/6 健康（等了 20 秒）

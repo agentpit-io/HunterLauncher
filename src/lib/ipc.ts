@@ -24,6 +24,13 @@ import type {
   BackupMeta,
   BootState,
   BuiltinRuntimeStatus,
+  DataCheck,
+  HostMetrics,
+  RuntimeMetrics,
+  ServiceMetrics,
+  StackOpResult,
+  StackPlan,
+  StorageMetrics,
   DiagSection,
   DockerInfo,
   ExportResult,
@@ -210,6 +217,77 @@ export async function runtimeStatus(): Promise<RuntimeStatus> {
 export async function stackAction(action: 'stop' | 'start' | 'restart' | 'down'): Promise<string> {
   if (DEMO) return '演示模式不真的操作容器'
   return call<string>('stack_action', { action })
+}
+
+// ── 停止 / 启动 / 重启（I12 · R3）─────────────────────────────────────────
+
+/** 按按钮**之前**问一句：这台机器要不要显示「顺便停运行环境」那个勾选。 */
+export async function stackPlan(): Promise<StackPlan> {
+  if (DEMO) return demo.demoStackPlan
+  return call<StackPlan>('stack_plan')
+}
+
+/**
+ * 停止 / 启动 / 重启。
+ *
+ * - `alsoRuntime`：停止时顺带停掉内置运行时的虚拟机（释放内存）；
+ * - `service`：只重启这一个服务（不给就是六个一起）。
+ */
+export async function stackOp(
+  action: 'stop' | 'start' | 'restart',
+  opts: { alsoRuntime?: boolean; service?: string } = {},
+): Promise<StackOpResult> {
+  if (DEMO) return demo.demoStackOp(action)
+  return call<StackOpResult>('stack_op', {
+    action,
+    alsoRuntime: opts.alsoRuntime ?? false,
+    service: opts.service ?? null,
+  })
+}
+
+/** 操作过程中的一步（后端每做完一件事推一条）。 */
+export function onStackStep(cb: (line: string) => void): Promise<UnlistenFn> {
+  return listen<string>('hunter://stack', (e) => cb(e.payload))
+}
+
+// ── 资源监控（I12 · R2）───────────────────────────────────────────────────
+//
+// 四条各自独立，因为**刷新频率不一样**（方案 R2 的表）：
+// 这台电脑 5 秒、运行环境 30 秒、各服务 10 秒、数据卷与镜像 5 分钟。
+// 合成一条命令的话最慢的那一层会把最快的那一层拖住。
+
+export async function monitorHost(): Promise<HostMetrics> {
+  if (DEMO) return demo.demoHost
+  return call<HostMetrics>('monitor_host')
+}
+
+export async function monitorRuntime(): Promise<RuntimeMetrics> {
+  if (DEMO) return demo.demoRuntimeMetrics
+  return call<RuntimeMetrics>('monitor_runtime')
+}
+
+export async function monitorServices(): Promise<ServiceMetrics> {
+  if (DEMO) return demo.demoServiceMetrics
+  return call<ServiceMetrics>('monitor_services')
+}
+
+export async function monitorStorage(): Promise<StorageMetrics> {
+  if (DEMO) return demo.demoStorage
+  return call<StorageMetrics>('monitor_storage')
+}
+
+// ── 重装前检测已有数据（I12 · R5）─────────────────────────────────────────
+
+/** 浅查：不起任何容器，一个字节都不写。 */
+export async function dataCheck(): Promise<DataCheck> {
+  if (DEMO) return demo.demoDataCheck
+  return call<DataCheck>('data_check')
+}
+
+/** 深查：起一个用完就删的 postgres，把表数与迁移版本问出来（十几秒）。 */
+export async function dataCheckDeep(): Promise<DataCheck> {
+  if (DEMO) return demo.demoDataCheckDeep
+  return call<DataCheck>('data_check_deep')
 }
 
 export async function composeLogs(service?: string, tail = 200): Promise<string[]> {

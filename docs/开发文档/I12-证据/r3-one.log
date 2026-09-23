@@ -1,0 +1,12 @@
+
+[1m== 场景 R3：只重启一个服务 —— 别的五个容器一个都不动 ==[0m
+ Container hunter-opencode-1 Restarting 
+ Container hunter-opencode-1 Started 
+✓ 六个容器的 ID 与创建时间一字不差（restart 只换进程，不换容器）
+hunter-opencode-1	Up 8 seconds (health: starting)
+hunter-web-1	Up About a minute (healthy)
+hunter-api-1	Up About a minute (healthy)
+hunter-postgres-1	Up 2 minutes (healthy)
+hunter-redis-1	Up 2 minutes (healthy)
+hunter-llm-shim-1	Up 2 minutes (healthy)
+[现场恢复] 6/6 健康（等了 10 秒）

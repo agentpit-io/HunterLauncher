@@ -167,28 +167,158 @@ pub fn reveal_path(app: tauri::AppHandle, path: String) -> Result<()> {
         .map_err(|e| format!("E_UNKNOWN: {e}"))
 }
 
-/// 启动时问一次：装过没有、栈起着没有。决定直接进运行面板还是走向导。
+/// 打开启动器时该进哪一页（I12 · R1 的五行表）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BootRoute {
+    /// 全新安装 —— 欢迎页
+    Welcome,
+    /// 直接进运行面板（健康 / 已停止 / 部分不正常都走这里）
+    Dashboard,
+    /// 本项目不在了，但上一次的数据卷还在 —— 先给用户看一眼（R5）
+    DataFound,
+}
+
+/// 启动时问一次：装过没有、现在什么样、该进哪一页。
+///
+/// # 从「只看标记」改成「标记 + 现状」（I12 · R1）
+///
+/// 0.1.11 及之前这里只看 `install.done`：
+///
+/// ```text
+/// installed = cfg.install.done && .env 存在
+/// ```
+///
+/// 2026-09-22 23:10 用户 Mac 上的现场把这个判据打穿了 —— 六个容器 6/6 健康跑着、
+/// web 127.0.0.1:3100 返回 200，而 `launcher.toml` 里 `done = false`：
+/// 那次安装在启动器看来是失败的（`E_START_TIMEOUT`），最后是在**外部**修好的，
+/// 没有人回来把标记补上。于是重开启动器，用户看到的是「欢迎使用 Hunter 启动器」。
+///
+/// 现在的判据是**现状优先**，标记只在现状看不出什么时才起作用：
+///
+/// | 现状（[`crate::selfcheck::review`]，只读） | 进哪 | 顺手做什么 |
+/// |---|---|---|
+/// | 6/6 健康 | 运行面板 | `done=false` 就**补写**，并记 `adopted_from_running=true` |
+/// | 容器都在但停着 / 有的不正常 | 运行面板 | 同上（装过是事实，只是没跑好） |
+/// | 只装了一半 | 运行面板 | 面板上会显示缺哪几个；**不回向导** |
+/// | 本项目没有容器，但数据卷还在 | 「检测到上次的数据」 | — |
+/// | 什么都没有 | 欢迎页 | — |
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootState {
+    /// 还留着给老前端用：`route != Welcome` 即为真
     pub installed: bool,
     pub running: bool,
     pub locale: String,
     pub hunter_tag: String,
     pub work_dir: String,
+    /// 该进哪一页
+    pub route: BootRoute,
+    /// 复查的结论（界面上「现在是什么情况」直接用它）
+    pub posture: crate::selfcheck::Posture,
+    /// 一句人话，来自复查的实测结果
+    pub headline: String,
+    /// 这一次有没有补写安装标记（补写了就在过程流 / 面板上说一句）
+    pub adopted: bool,
+    /// 配置里记着的那几项（面板上「上次正常运行」那一行）
+    pub launcher_version: String,
+    pub installed_at: String,
+    pub last_healthy_at: String,
+    /// 本项目名下还剩几个数据卷（`route == DataFound` 时界面要说）
+    pub volume_count: usize,
+    /// 这一次判定花了多久（毫秒）。界面上那句「正在检查 Hunter 状态」用它对账
+    pub elapsed_ms: u64,
+}
+
+/// R1 那张五行表，**做成纯函数**。
+///
+/// 拆出来的理由和 `runtime::effective::decide` 一样：判定本身不该需要一台
+/// 处在那个状态的机器才能测。开发机与测试机上 Hunter 一直好好跑着，
+/// 「什么都没有」「只剩数据卷」这两行在真机上根本造不出来 —— 而它们正是
+/// 2026-09-22 那次现场最需要钉死的两行。
+pub fn route_of(posture: crate::selfcheck::Posture, volumes: usize) -> BootRoute {
+    use crate::selfcheck::Posture;
+    match posture {
+        // 六个容器都在（跑着、停着、有的不正常都算）→ 这台机器上装过，事实清楚。
+        // **不管 install.done 写的是什么** —— 那正是 0.1.9 那次判错的地方
+        Posture::Healthy | Posture::Partial => BootRoute::Dashboard,
+        // 只装了一半：容器有一部分。**也算装过** ——
+        // 回向导只会让用户再装一遍，面板上说清缺哪几个才是对的
+        Posture::Incomplete => BootRoute::Dashboard,
+        // 一个容器都没有。这时候才轮到「上一次的数据卷还在吗」
+        Posture::Absent if volumes > 0 => BootRoute::DataFound,
+        Posture::Absent => BootRoute::Welcome,
+    }
 }
 
 #[tauri::command]
 pub async fn boot_state(app: tauri::AppHandle) -> Result<BootState> {
     blocking(move || {
+        let t0 = std::time::Instant::now();
         let st = state(&app);
-        let cfg = st.config();
+        let mut cfg = st.config();
+
+        // 每次启动都把「现在跑的是哪一版启动器」记下来（R1 第 3 条）。
+        // 老配置里的 `[launcher] version` 在 `LauncherConfig::load` 里已经迁移过来了
+        let mut dirty = cfg.stamp_launcher_version();
+
+        // 只读地问一句现在到底怎么样。浅查（不起一次性容器）—— 这是开机第一屏，
+        // 方案第三节要求「不超过 1 秒」，深查动辄十几秒
+        let rv = crate::selfcheck::review(false);
+
+        // 没有容器时才需要问一句「数据卷还在吗」（那一步要起一个 docker 子进程）
+        let volumes = if rv.posture == crate::selfcheck::Posture::Absent {
+            crate::compose::volumes_of_project()
+                .map(|v| v.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let route = route_of(rv.posture, volumes);
+        let adopted = route == BootRoute::Dashboard && !cfg.install.done;
+        if route == BootRoute::Dashboard {
+            cfg.mark_installed(adopted);
+            dirty = true;
+            // 「上一次好好的是什么时候」—— 只有真的 6/6 健康才刷，
+            // 不健康的时候刷它就是在记一个假时间（红线 1）
+            if rv.posture == crate::selfcheck::Posture::Healthy {
+                cfg.touch_healthy();
+            }
+        }
+        let volume_count = if route == BootRoute::DataFound {
+            volumes
+        } else {
+            0
+        };
+
+        cfg.save_if(dirty);
+        st.set_config(cfg.clone());
+
+        if adopted {
+            crate::linfo!(
+                "开机判定：{}，而配置里 install.done 还是 false —— 已补写为已安装（adopted_from_running=true）",
+                rv.headline
+            );
+        } else {
+            crate::linfo!("开机判定：{}（{} 毫秒）", rv.headline, rv.elapsed_ms);
+        }
+
         Ok(BootState {
-            installed: cfg.install.done && crate::paths::env_file().exists(),
-            running: compose::is_up(),
+            installed: route != BootRoute::Welcome,
+            running: rv.posture == crate::selfcheck::Posture::Healthy
+                || rv.services.iter().any(|s| s.state == "running"),
             locale: cfg.launcher.locale.clone(),
             hunter_tag: cfg.hunter.tag.clone(),
             work_dir: crate::paths::root().to_string_lossy().into_owned(),
+            route,
+            posture: rv.posture,
+            headline: rv.headline.clone(),
+            adopted,
+            launcher_version: cfg.install.launcher_version.clone(),
+            installed_at: cfg.install.at.clone(),
+            last_healthy_at: cfg.install.last_healthy_at.clone(),
+            volume_count,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
         })
     })
     .await
@@ -473,6 +603,259 @@ pub async fn stack_action(action: String) -> Result<String> {
         Ok(r)
     })
     .await
+}
+
+// ── 资源监控（I12 · R2）──────────────────────────────────────────────────
+
+/// 这台电脑。5 秒一次（窗口看得见的时候）。
+#[tauri::command]
+pub async fn monitor_host() -> Result<crate::monitor::HostMetrics> {
+    blocking(move || Ok(crate::monitor::host())).await
+}
+
+/// Hunter 运行环境（内置运行时的虚拟机）。30 秒一次。
+#[tauri::command]
+pub async fn monitor_runtime() -> Result<crate::monitor::RuntimeMetrics> {
+    blocking(move || Ok(crate::monitor::runtime())).await
+}
+
+/// Hunter 各服务。10 秒一次。
+#[tauri::command]
+pub async fn monitor_services() -> Result<crate::monitor::ServiceMetrics> {
+    blocking(move || Ok(crate::monitor::services())).await
+}
+
+/// 数据卷与镜像。5 分钟一次（`docker system df -v` 要遍历所有卷，慢）。
+#[tauri::command]
+pub async fn monitor_storage() -> Result<crate::monitor::StorageMetrics> {
+    blocking(move || Ok(crate::monitor::storage())).await
+}
+
+// ── 重装前检测已有数据（I12 · R5）───────────────────────────────────────
+
+/// 浅查（不起任何容器，**一个字节都不写**）。开机判定与「检测到上次的数据」那一页用它。
+#[tauri::command]
+pub async fn data_check() -> Result<crate::datacheck::DataCheck> {
+    blocking(move || Ok(crate::datacheck::probe())).await
+}
+
+/// 深查（会起一个 `--rm` 的一次性 postgres 问表数与迁移版本）。
+/// 用户在那一页上点「看看里面有什么」时才做 —— 十几秒，不能放在开机第一屏。
+#[tauri::command]
+pub async fn data_check_deep() -> Result<crate::datacheck::DataCheck> {
+    blocking(move || Ok(crate::datacheck::probe_deep())).await
+}
+
+// ── 停止 / 启动 / 重启（I12 · R3）────────────────────────────────────────
+
+/// 操作过程中的一步。界面上按顺序显示，**每一条都是刚刚真的做过的事**。
+pub const EV_STACK: &str = "hunter://stack";
+
+/// 界面在按下按钮**之前**要知道的事：这台机器上要不要问「顺便停运行环境吗」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackPlan {
+    /// 这台机器跑的是内置运行时，而且它现在在跑 —— 停止那一步才需要多问一句
+    pub builtin_running: bool,
+    /// 停掉它大约释放多少内存（GB）。**来自我们自己启动虚拟机时定的参数**，不是估的
+    pub builtin_mem_gb: u32,
+    /// 六个服务现在各是什么状态（单服务重启的下拉框用它）
+    pub services: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn stack_plan() -> Result<StackPlan> {
+    blocking(move || {
+        let builtin_running = crate::runtime::builtin::is_running()
+            && crate::runtime::effective::builtin_is_effective();
+        let (_, mem, _) = crate::runtime::builtin::vm_params();
+        let services = compose::ps()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.service)
+            .collect();
+        Ok(StackPlan {
+            builtin_running,
+            builtin_mem_gb: mem,
+            services,
+        })
+    })
+    .await
+}
+
+/// 一次停止 / 启动 / 重启的结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackOpResult {
+    /// 一句人话的结论
+    pub headline: String,
+    /// 逐条做过的事（和事件流里推过去的是同一批）
+    pub steps: Vec<String>,
+    /// 做完之后六个服务里有几个就绪
+    pub ready: usize,
+    pub total: usize,
+    pub elapsed_ms: u64,
+}
+
+/// 停止 / 启动 / 重启（I12 · R3）。
+///
+/// 和老的 [`stack_action`] 的区别是三件事：
+///
+/// 1. **停止时可以顺带停掉内置运行时的虚拟机** —— 不停的话那 4 GB 内存还占着，
+///    用户点了「停止」却发现内存没降下来，只会以为启动器在骗人；
+/// 2. **启动时运行环境没起就先起它**（含 I10 的 DNS 检查）——
+///    0.1.9 之前这一步会直接 `compose up`，虚拟机没起时报一句看不懂的 docker 错误；
+/// 3. **单个服务可以单独重启**，不必把六个一起推倒。
+///
+/// 三条路都只碰 compose 项目 `hunter`，compose 调用一律经 [`crate::compose::run`]
+/// （它永远带两份 `-f`，见 `compose::full_args`）。
+#[tauri::command]
+pub async fn stack_op(
+    app: tauri::AppHandle,
+    action: String,
+    also_runtime: bool,
+    service: Option<String>,
+) -> Result<StackOpResult> {
+    blocking(move || {
+        let t0 = std::time::Instant::now();
+        let mut steps: Vec<String> = Vec::new();
+        let h = app.clone();
+        let mut say = move |line: &str| {
+            crate::linfo!("栈操作：{line}");
+            let _ = h.emit(EV_STACK, line.to_string());
+        };
+
+        macro_rules! step {
+            ($($t:tt)*) => {{
+                let line = format!($($t)*);
+                say(&line);
+                steps.push(line);
+            }};
+        }
+
+        match action.as_str() {
+            "stop" => {
+                compose::stop()?;
+                step!("六个服务已经停下来（容器、数据卷、配置全都留着）");
+                // 记一笔「这是你自己停的」—— 下次打开启动器时 R3+ 的自愈要绕开它
+                config::mark_stopped_by_user(true);
+                if also_runtime {
+                    if crate::runtime::builtin::is_running()
+                        && crate::runtime::effective::builtin_is_effective()
+                    {
+                        match crate::runtime::builtin::stop() {
+                            Ok(t) => step!("{t}"),
+                            // 停不掉运行环境不该让整次操作算失败 —— 容器已经停了，
+                            // 那是用户真正要的结果。如实说一句就好
+                            Err(e) => step!("运行环境没停下来（容器已经停了）：{}", e.msg),
+                        }
+                    } else {
+                        step!("这台机器用的不是内置运行时，没有要停的虚拟机");
+                    }
+                }
+            }
+            "start" => {
+                config::mark_stopped_by_user(false);
+                ensure_runtime_up(&mut steps, &mut say)?;
+                compose::up()?;
+                step!("六个容器已经起来，正在等它们变健康");
+                let cfg = LauncherConfig::load();
+                match compose::wait_healthy(cfg.hunter.start_timeout(), |_| {}) {
+                    Ok(v) => {
+                        let ready = v.iter().filter(|s| compose::service_ready(s)).count();
+                        step!("{ready} / {} 健康", v.len());
+                    }
+                    Err(e) => {
+                        step!("等健康超时了：{}", e.msg);
+                        return Err(e);
+                    }
+                }
+            }
+            "restart" => match service.as_deref().filter(|s| !s.is_empty()) {
+                Some(svc) => {
+                    if !crate::selfcheck::EXPECTED.contains(&svc) {
+                        return Err(AppError::new(
+                            Code::Unknown,
+                            format!("「{svc}」不是这一套里的服务，不重启它"),
+                        ));
+                    }
+                    compose::restart_services(&[svc])?;
+                    step!("{svc} 已经重启（容器没换，端口映射与数据卷都没动）");
+                }
+                None => {
+                    compose::restart()?;
+                    step!("六个服务都重启过了");
+                }
+            },
+            other => {
+                return Err(AppError::new(
+                    Code::Unknown,
+                    format!("不认识的操作：{other}"),
+                ))
+            }
+        }
+
+        // 做完之后回头看一眼现状。**结论来自复查，不是来自「我们刚才发了什么命令」**
+        let rv = crate::selfcheck::review(false);
+        Ok(StackOpResult {
+            headline: rv.headline.clone(),
+            steps,
+            ready: rv.ready,
+            total: rv.total,
+            elapsed_ms: t0.elapsed().as_millis() as u64,
+        })
+    })
+    .await
+}
+
+/// 启动之前先把运行环境弄好（R3 的「启动」那一行）。
+///
+/// 只对**内置运行时**做事：用户自己的 OrbStack / Docker Desktop 该不该起
+/// 是他自己的事，启动器不去替他开别的程序（这一条 I9 起就是这样）。
+fn ensure_runtime_up(
+    steps: &mut Vec<String>,
+    say: &mut impl FnMut(&str),
+) -> crate::err::AppResult<()> {
+    let eff = crate::runtime::effective::current();
+    if eff.running {
+        return Ok(());
+    }
+    if !eff.builtin_down() {
+        // 内置运行时不是这台机器的主角，而 docker 又不通 —— 这是另一个问题，
+        // 交给它自己的错误路径去说，别在这里装作能修
+        return Ok(());
+    }
+    let mut line = |t: &str| {
+        say(t);
+        steps.push(t.to_string());
+    };
+    line("运行环境（虚拟机）没在跑，先把它起起来");
+    let mut s = |t: &str| {
+        crate::linfo!("启动运行环境：{t}");
+    };
+    let mut nb = |_: u64, _: u64| {};
+    let no_cancel = || false;
+    let mut pr = crate::runtime::builtin::Progress {
+        say: &mut s,
+        bytes: &mut nb,
+        cancel: &no_cancel,
+    };
+    let started = crate::runtime::builtin::start(&mut pr)?;
+    line(&started);
+
+    // I10：虚拟机起来了不等于它有 DNS。这一步在 0.1.9 的现场上是决定性的
+    let mut s2 = |t: &str| crate::linfo!("检查虚拟机 DNS：{t}");
+    let mut pr2 = crate::runtime::builtin::Progress {
+        say: &mut s2,
+        bytes: &mut nb,
+        cancel: &no_cancel,
+    };
+    match crate::runtime::vmdns::ensure(&mut pr2) {
+        Ok(d) if d.healthy() => line(&format!("虚拟机的 DNS 没问题（{}）", d.one_line())),
+        Ok(d) => line(&format!("虚拟机的 DNS 还是不行：{}", d.one_line())),
+        Err(e) => line(&format!("没查成虚拟机的 DNS：{}", e.msg)),
+    }
+    Ok(())
 }
 
 /// 一键把网页端口收回本机（I7 · 用户 2026-09-21 19:05 的决定第三点）。
@@ -1320,6 +1703,8 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow> {
 #[cfg(test)]
 mod tests {
     use super::url_allowed;
+    use super::{route_of, BootRoute};
+    use crate::selfcheck::Posture;
 
     #[test]
     fn https_一律放行() {
@@ -1369,6 +1754,44 @@ mod tests {
         assert!(!url_allowed("javascript:alert(1)"));
         assert!(!url_allowed("/usr/bin/xcalc"));
         assert!(!url_allowed(""));
+    }
+
+    /// **R1 的五行表，一行一条**（方案第二节 R1）。
+    ///
+    /// 这张表的要害是最后一列：`install.done` 写的是什么**都不影响**前三行 ——
+    /// 2026-09-22 23:10 用户 Mac 上正是「6/6 健康 + done=false」，
+    /// 而 0.1.11 把它判成了「没装过」，于是从欢迎页开始。
+    #[test]
+    fn r1_五行表_逐行钉死() {
+        // ① 本项目 6/6 健康 → 运行面板
+        assert_eq!(route_of(Posture::Healthy, 0), BootRoute::Dashboard);
+        assert_eq!(route_of(Posture::Healthy, 6), BootRoute::Dashboard);
+        // ② 本项目存在但已停止 / ③ 部分不健康 → 运行面板（两种都落在 Partial）
+        assert_eq!(route_of(Posture::Partial, 0), BootRoute::Dashboard);
+        assert_eq!(route_of(Posture::Partial, 6), BootRoute::Dashboard);
+        // 只装了一半也算装过 —— 不回向导
+        assert_eq!(route_of(Posture::Incomplete, 0), BootRoute::Dashboard);
+        assert_eq!(route_of(Posture::Incomplete, 6), BootRoute::Dashboard);
+        // ④ 本项目不存在，但数据卷还在 → 「检测到上次的数据」
+        assert_eq!(route_of(Posture::Absent, 6), BootRoute::DataFound);
+        assert_eq!(route_of(Posture::Absent, 1), BootRoute::DataFound);
+        // ⑤ 什么都没有 → 欢迎页
+        assert_eq!(route_of(Posture::Absent, 0), BootRoute::Welcome);
+    }
+
+    /// 「补写安装标记」只在**该进运行面板**而且标记确实是假的时候发生。
+    #[test]
+    fn 只有进运行面板那几行才补写安装标记() {
+        for (posture, vols) in [
+            (Posture::Healthy, 0),
+            (Posture::Partial, 0),
+            (Posture::Incomplete, 0),
+        ] {
+            assert_eq!(route_of(posture, vols), BootRoute::Dashboard);
+        }
+        // 只剩数据卷 / 全新这两行绝不补写 —— 那两台机器上确实没有装好的 Hunter
+        assert_ne!(route_of(Posture::Absent, 3), BootRoute::Dashboard);
+        assert_ne!(route_of(Posture::Absent, 0), BootRoute::Dashboard);
     }
 }
 

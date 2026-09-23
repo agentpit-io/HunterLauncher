@@ -1,0 +1,18 @@
+
+[1m== 场景 R3：停止 → 启动，数据不变 ==[0m
+--- 停止前 ---
+users=2
+stocks=0
+hunter_config=2
+schema_migrations=23
+user_preference=2
+停止后在跑的容器                     0 个
+启动后健康                              6 / 6（等了 55 秒）
+--- 启动后 ---
+users=2
+stocks=0
+hunter_config=2
+schema_migrations=23
+user_preference=2
+✓ 关键表行数前后一字不差
+[现场恢复] 6/6 健康（等了 5 秒）

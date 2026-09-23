@@ -2,12 +2,16 @@ import { useEffect, useMemo, useReducer, useState, type ReactNode } from 'react'
 import { INITIAL_STATE, transition, type State } from './machine'
 import { StoreCtx, type Overlay, type Store } from './context'
 import { dictOf, guessLocale, type Locale } from '../i18n'
+import type { BootState } from '../lib/types'
 import * as ipc from '../lib/ipc'
 import { DEMO, demoPage, demoSeed } from '../lib/ipc'
 
 /** 演示模式下用 __HUNTER_DEMO_PAGE__ 直接打开某一页，给截图脚本用。 */
 const DEMO_STATES: Record<string, State> = {
   welcome: { name: 'Welcome' },
+  // I12：开机那一页（不超过 1 秒，但截图要留档）与「检测到上次的数据」那一页
+  booting: { name: 'Booting' },
+  'data-found': { name: 'DataFound' },
   docker: { name: 'CheckDaemon' },
   'docker-missing': { name: 'InstallDockerGuide' },
   key: { name: 'NeedKey' },
@@ -77,14 +81,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [overlay, setOverlay] = useState<Overlay>(initialOverlay)
   // 「刚才其实已经好了」那句话，跨页带一下（I11 · U1）
   const [notice, setNotice] = useState<string | null>(null)
+  // 开机那一次复查的结果（I12 · R1）。「正在检查」页与「检测到上次的数据」页都读它
+  const [boot, setBoot] = useState<BootState | null>(null)
 
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
 
   /**
-   * 第二次打开启动器时直接进运行面板，不重走向导。
-   * 判据来自 Rust 的 boot_state：`launcher.toml` 里 install.done 为真、`.env` 还在。
+   * **打开启动器先查一次现状，查完再决定进哪一页**（I12 · R1）。
+   *
+   * 0.1.11 及之前这里只看 `install.done`，而且界面在等结果的那一小会儿
+   * 已经把欢迎页画出来了 —— 用户 Mac 上 6/6 健康跑着，重开启动器看到的
+   * 却是「欢迎使用 Hunter 启动器」。现在改成：
+   *
+   *   Idle →（BOOT）→ Booting「正在检查 Hunter 状态」→ 按后端给的 route 跳
+   *
+   * 三条路对应后端 `BootRoute` 的三个值，判据在 Rust 侧（现状优先，见 `boot_state`）。
    * 演示模式不做这一步（截图脚本要能定到任意一页）。
    */
   useEffect(() => {
@@ -93,12 +106,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     void ipc
       .bootState()
       .then((b) => {
-        if (!alive || !b.installed) return
+        if (!alive) return
         setLocale(b.locale === 'en' ? 'en' : 'zh-CN')
-        send({ type: 'RESUME_READY' })
+        setBoot(b)
+        if (b.route === 'dashboard') {
+          // 这一次替用户补写了安装标记 → 面板上要说一句刚才发生了什么
+          if (b.adopted) setNotice(b.headline)
+          send({ type: 'RESUME_READY' })
+        } else if (b.route === 'data-found') {
+          send({ type: 'BOOT_DATA_FOUND' })
+        } else {
+          send({ type: 'BOOT_FRESH' })
+        }
       })
       .catch(() => {
-        /* 读不到就老老实实走向导 */
+        // 查不出来就老老实实走向导 —— 但**不能卡在「正在检查」那一页上**
+        if (alive) send({ type: 'BOOT_FRESH' })
       })
     return () => {
       alive = false
@@ -125,8 +148,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       demo: DEMO,
       notice,
       setNotice,
+      boot,
     }),
-    [state, locale, overlay, notice],
+    [state, locale, overlay, notice, boot],
   )
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>

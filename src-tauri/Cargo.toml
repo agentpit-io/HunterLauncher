@@ -1,6 +1,6 @@
 [package]
 name = "hunter-launcher"
-version = "0.1.11"
+version = "0.1.12"
 description = "Hunter 启动器 · 把 hunter-community 的部署变成「下载 → 填一把 key → 等几分钟」"
 authors = ["agentpit.io"]
 edition = "2021"
@@ -40,6 +40,11 @@ rpassword = "7"
 socket2 = "0.6"
 # 离线包导入要选文件（方案 §9）。系统原生的文件选择框，比让用户手抄路径靠谱
 tauri-plugin-dialog = "2"
+# 三平台统一的宿主机指标（I12 · R2）。CPU 占用、内存、磁盘在三个系统上是三套 API
+# （macOS 的 host_statistics / Linux 的 /proc / Windows 的 GlobalMemoryStatusEx），
+# 自己写等于把三套平台代码搬进来。Linux 上它只拖 libc + memchr 两个依赖。
+# 关掉用不上的特性（网络、进程、组件温度、用户列表），只留 system + disk
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 # headless 下自己验 updater 清单与安装包的签名（见 selfupdate.rs 的「两条路」一节）。
 # 这个 crate 本来就在依赖树里（tauri-plugin-updater 用它），直接依赖不增加体积
 minisign-verify = "0.2"

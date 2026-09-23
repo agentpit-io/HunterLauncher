@@ -795,8 +795,10 @@ pub fn start(
     match r {
         Ok(v) => {
             let mut cfg = state.config();
-            cfg.install.done = true;
-            cfg.install.at = crate::timefmt::now_shanghai();
+            // I12 · R1：`done` 之外还要记全「谁装的、装在哪、上一次好好的是什么时候」。
+            // `adopted = false` —— 这一条是安装流程自己走完写的，不是「检测到它在跑」补的
+            cfg.mark_installed(false);
+            cfg.touch_healthy();
             let _ = cfg.save();
             state.set_config(cfg);
             if let Ok(mut g) = state.services.lock() {
@@ -987,6 +989,29 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
                 "off".into()
             }),
             reason: None,
+        },
+        // I12 · R1：把「启动器记住的那条安装记录」摆到面板上。
+        //
+        // 这不是装饰：2026-09-22 那次现场之所以拖了那么久，正是因为
+        // 「启动器认为装过没有」这件事在界面上**根本看不见**。
+        // 现在它就在这儿 —— 什么时候装的、上一次好好的是什么时候、
+        // 这条记录是安装流程写的还是「检测到它在跑」补的。
+        EnvRow {
+            key: "installedAt".into(),
+            value: (!cfg.install.at.is_empty()).then(|| {
+                if cfg.install.adopted_from_running {
+                    format!("{}（检测到已在运行后补记）", cfg.install.at)
+                } else {
+                    cfg.install.at.clone()
+                }
+            }),
+            reason: Some("launcher.toml 里还没有安装记录".into()),
+        },
+        EnvRow {
+            key: "lastHealthy".into(),
+            value: (!cfg.install.last_healthy_at.is_empty())
+                .then(|| cfg.install.last_healthy_at.clone()),
+            reason: Some("还没有见过这一套 6/6 健康".into()),
         },
     ];
 
