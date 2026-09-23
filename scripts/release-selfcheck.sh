@@ -45,6 +45,22 @@ fi
 eq true "$(jq -r .prerelease "$meta")" "prerelease"
 eq "$TAG" "$(jq -r .tag_name "$meta")" "tag_name"
 
+# 产物清单**另外**取一次，不能用上面那份 release 对象里的 `.assets`。
+# I12 踩到的（0.1.12 发完当场）：`/releases/tags/<tag>` 这个端点会在发布后
+# 相当长一段时间里返回 `"assets": []`，而同一时刻
+# `/releases/<id>/assets` 已经把 12 个产物全列出来、个个 `state=uploaded`、
+# 浏览器地址也真的下得动（实测 .deb 4622798 字节，和 COS 那份一模一样）。
+# 上面那份只用来读 prerelease / tag_name 这类不会变的字段。
+rid=$(jq -r .id "$meta")
+if ! curl -sSfL --max-time 60 "${AUTH[@]}" \
+     -H "Accept: application/vnd.github+json" \
+     "https://api.github.com/repos/$REPO/releases/$rid/assets?per_page=100" \
+     | jq '{assets: .}' > "$WORK/assets.json" 2>"$WORK/err"; then
+  bad "取不到 Release $TAG 的产物清单：$(cat "$WORK/err")"; exit 1
+fi
+meta_rel="$meta"
+meta="$WORK/assets.json"
+
 step "2. 产物清单"
 jq -r '.assets[].name' "$meta" | sort | sed 's/^/     /'
 n=$(jq '.assets | length' "$meta")
