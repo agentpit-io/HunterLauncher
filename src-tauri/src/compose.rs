@@ -2152,6 +2152,12 @@ mod tests {
 
     #[test]
     fn 每一个_compose_子命令都带着覆盖文件() {
+        // 这两条测试要读 `paths::compose_file()`，而它跟着进程级的 `HUNTER_HOME` 走 ——
+        // 不拿这把锁的话，别的文件里拿了锁的测试一并行，这里读到的就是**人家的**根目录
+        // （2026-09-24 CI 上就是这么红的：命令行里是 hunter-unittest-<pid>，
+        // 断言那一侧却成了 hunter-t-kept-key-state-<pid>）。I7、I9 各抓过一轮同样的事。
+        let _h = paths::test_home("compose-argv");
+
         // 这一份清单覆盖启动器会发出的全部 compose 子命令。
         // 加新命令时如果没走 `compose::run` / `compose::argv`，这条测试是发现不了的 ——
         // 所以 `full_args` 是唯一的出口，别在别处自己拼 docker compose
@@ -2179,6 +2185,7 @@ mod tests {
 
     #[test]
     fn 覆盖文件的路径就是磁盘上那一份() {
+        let _h = paths::test_home("compose-overlay-path");
         // 别把覆盖文件写成别的名字：`.env` 里的 `COMPOSE_FILE`（I11 · U5）与这里
         // 必须指同一个文件，否则手工敲和启动器自己跑的会是两套配置
         let (_, args) = argv(&["ps"]);
