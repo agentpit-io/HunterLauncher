@@ -183,14 +183,37 @@ done
 step "6. COS 那份 latest.json"
 if curl -sS --max-time 60 -o "$WORK/cn.json" "$CN_BASE/launcher/latest.json"; then
   eq "$V" "$(jq -r .version "$WORK/cn.json")" "latest.json version"
+  # 每个平台该是哪种后缀（I14 · F1）。
+  #
+  # 0.1.13 时 macOS 的 `--self-update` 下的是 `*_amd64.deb`，
+  # 然后 `dpkg: command not found` —— 启动器那一侧已经改成「按清单取」了，
+  # 所以清单里这一项要是写错了平台，坏的就是那个平台的自更新。这一条盯的就是它。
   for p in linux-x86_64 windows-x86_64 darwin-x86_64 darwin-aarch64; do
+    case "$p" in
+      linux-*)   want='.AppImage' ;;
+      windows-*) want='-setup.exe' ;;
+      darwin-*)  want='.app.tar.gz' ;;
+    esac
     u=$(jq -r --arg p "$p" '.platforms[$p].url // "<缺>"' "$WORK/cn.json")
     case "$u" in
+      "<缺>")       bad "$p 这个平台在 latest.json 里没有（该平台永远收不到更新）"; continue ;;
       "$CN_BASE"/*) ok "$p → COS" ;;
-      "<缺>")       bad "$p 这个平台在 latest.json 里没有（该平台永远收不到更新）" ;;
-      *)            bad "$p 指向的不是 COS：$u" ;;
+      *)            bad "$p 指向的不是 COS：$u"; continue ;;
     esac
+    case "$u" in
+      *"$want") ok "$p → $want" ;;
+      *.deb)    bad "$p 指向的是 .deb —— 那个平台装不了它（0.1.13 的 F1 就是这么炸的）：$u" ;;
+      *)        bad "$p 的后缀不对：期望 $want，实测 $u" ;;
+    esac
+    # 签名段必须真的有东西：空签名等于这条链路根本没法验
+    sg=$(jq -r --arg p "$p" '.platforms[$p].signature // ""' "$WORK/cn.json")
+    [ ${#sg} -gt 64 ] && ok "$p 的签名段在（${#sg} 字符）" || bad "$p 的签名段是空的或太短"
   done
+  # macOS 的两个 target 指的是同一个通用二进制包
+  a=$(jq -r '.platforms["darwin-x86_64"].url // "a"' "$WORK/cn.json")
+  b=$(jq -r '.platforms["darwin-aarch64"].url // "b"' "$WORK/cn.json")
+  [ "$a" = "$b" ] && ok "darwin 两个架构共用 universal 包" \
+                  || bad "darwin 两个架构指向了不同的包：$a / $b"
 else
   bad "COS 的 latest.json 取不到"
 fi

@@ -153,7 +153,7 @@ const zhCN = {
       '把 Hunter 的六个服务端口全部绑在这台电脑上（127.0.0.1），同一网络里的其他设备打不开',
       '只在 Hunter 自己的文件夹 ~/.hunter 里创建和修改文件',
       // I13 · R6：定时任务是启动器装到你账号下的东西，属于「这个程序会做什么」的一部分
-      '在你自己的账号下装一个每天自动备份的定时任务（macOS 用 LaunchAgent、Linux 用 systemd --user、Windows 用任务计划），不需要管理员密码，删除应用时会一并移除',
+      '在你自己的账号下装一个每天自动备份的定时任务（macOS 用 LaunchAgent、Linux 用 systemd --user、Windows 用任务计划），不需要管理员密码，删除应用时会一并移除、重新安装时会自动装回',
       '每天把数据库、密钥卷与配置备份到你指定的文件夹（默认在文稿里，不在 ~/.hunter 内，删除应用不会波及）',
     ],
     neverTitle: 'AI 绝不会做的（写在程序里，AI 想做也做不了）',
@@ -332,6 +332,12 @@ const zhCN = {
     cardModelsUnit: '个',
     advancedHint: '高级用户可在下一步切换为自带模型 key（DeepSeek、Qwen、Claude、OpenAI 等）。',
     applyLink: '还没有 key？免费申请',
+    // I14 · F3：「只删应用」那一档保留了 .env，这里就该直接沿用它
+    keptChecking: '正在看上次保留的 key 还能不能用…',
+    keptTitle: (masked: string) => `沿用上次保留的 key（${masked}）`,
+    keptSub: (path: string) => `它一直留在 ${path} 里 —— 上次「只删除应用，保留数据」没有动它，刚才已经验过，可以直接用。`,
+    keptChange: '换一把别的 key',
+    keptBad: (why: string) => `上次保留的 key 现在用不了：${why}`,
   },
   model: {
     title: '选择模型来源',
@@ -557,7 +563,8 @@ const zhCN = {
     kept: '留下了',
     failures: '没删成的',
     backToWelcome: '回到首页',
-    reinstallHint: '检测到保留下来的数据，重新安装会直接沿用。',
+    reinstallHint: '检测到保留下来的数据，重新安装会直接沿用 —— key 与登录状态都在里面，不用重新填。',
+    scheduleHint: '每天自动备份的定时任务会一并移除；重新安装完成后，会按你的备份设置自动装回。',
   },
   // ── I13 · R7 一键腾空间 ────────────────────────────────────────────────
   cleanup: {

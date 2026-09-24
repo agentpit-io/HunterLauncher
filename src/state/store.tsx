@@ -15,6 +15,9 @@ const DEMO_STATES: Record<string, State> = {
   docker: { name: 'CheckDaemon' },
   'docker-missing': { name: 'InstallDockerGuide' },
   key: { name: 'NeedKey' },
+  // I14 · F3：「只删除应用，保留数据」之后重装时的 key 页 ——
+  // 上面是「沿用上次保留的 key」那张卡片，输入框收起来
+  'key-kept': { name: 'NeedKey' },
   model: { name: 'ChooseModel' },
   consent: { name: 'Consent' },
   auto: { name: 'AutoInstalling' },

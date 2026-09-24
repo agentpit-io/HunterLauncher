@@ -45,6 +45,12 @@ pub enum Op {
     InstallDeb,
     /// Linux：把 docker 后台服务启动起来
     StartDockerService,
+    /// macOS 自更新：`.app` 所在的目录当前账号写不了（被 MDM 管起来、
+    /// 或者装在别人的账号下）时，换包这一步要管理员。
+    ///
+    /// **正常情况下走不到这里** —— `/Applications` 默认是 `drwxrwxr-x root:admin`，
+    /// 管理员账号自己就写得了，所以 macOS 上的自更新通常一个密码框都不弹。
+    ReplaceAppBundle,
 }
 
 impl Op {
@@ -53,6 +59,7 @@ impl Op {
         match self {
             Op::InstallDeb => "安装新版本的启动器",
             Op::StartDockerService => "启动这台机器上的 Docker 后台服务",
+            Op::ReplaceAppBundle => "把启动器换成新版本",
         }
     }
     /// 界面上那句「为什么要密码」。**弹框之前先说清楚。**
@@ -66,6 +73,12 @@ impl Op {
             Op::StartDockerService => {
                 "Linux 上的 Docker 后台服务由系统管理，启动它要管理员权限。\
                  接下来系统会弹出它自己的授权框；密码交给系统，启动器看不到也不会保存。"
+            }
+            Op::ReplaceAppBundle => {
+                "启动器所在的那个文件夹，当前这个账号没有写入权限，\
+                 所以换新版本这一步要管理员。\
+                 接下来系统会弹出它自己的密码框，输一次开机密码就行；\
+                 密码交给系统，启动器看不到也不会保存。"
             }
         }
     }
@@ -403,7 +416,7 @@ mod tests {
 
     #[test]
     fn 提权前那两句人话都在() {
-        for op in [Op::InstallDeb, Op::StartDockerService] {
+        for op in [Op::InstallDeb, Op::StartDockerService, Op::ReplaceAppBundle] {
             assert!(!op.what().is_empty());
             assert!(
                 op.why().contains("密码交给系统，启动器看不到也不会保存"),

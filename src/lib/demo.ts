@@ -28,6 +28,7 @@ import type {
   DockerInfo,
   ImagePull,
   KeyCheckResult,
+  KeptKey,
   LauncherSettings,
   LauncherUpdate,
   MissingEndpoint,
@@ -63,7 +64,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.13'
+export const DEMO_LAUNCHER_VERSION = '0.1.14'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -154,6 +155,25 @@ export const demoKeyCheck: KeyCheckResult = {
   ],
   message: null,
   code: null,
+}
+
+/**
+ * 演示模式下「上次保留的 key」。
+ *
+ * **默认当成没有** —— `key` 那一页的演示要看的是完整的输入流程。
+ * 想看「沿用上次保留的 key」那一档（I14 · F3）用 `__HUNTER_DEMO_PAGE__ = 'key-kept'`，
+ * 那正是「只删除应用，保留数据」之后重新安装时的样子。
+ */
+export function demoKeptKey(page: string | null): KeptKey {
+  if (page !== 'key-kept') {
+    return { present: false, masked: '', path: '<用户目录>/.hunter/app/.env', check: null }
+  }
+  return {
+    present: true,
+    masked: 'hunt_tools_****QMo2',
+    path: '<用户目录>/.hunter/app/.env',
+    check: demoKeyCheck,
+  }
 }
 
 export const demoBootState: BootState = {
@@ -281,6 +301,8 @@ export const demoRuntime: RuntimeStatus = {
   },
   dataSource: 'Hunter 网关',
   dataSourceSub: '平台数据供给已配置 · 自有数据源个数需登录后才能读',
+  // I14 · F4：装完那一步的结论（演示里显示「挂上了」的样子）
+  postInstallNotes: ['已按你的备份设置把每天 00:00 的自动备份重新挂上（macOS 用户级 LaunchAgent）'],
   missing: [
     { id: 'conversations', endpoint: 'GET /api/system/metrics/daily（今日对话数、深度分析次数）' },
     { id: 'morning_brief', endpoint: 'GET /api/system/metrics/daily（晨报开关与推送时间）' },

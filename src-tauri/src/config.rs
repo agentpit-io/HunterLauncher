@@ -1097,6 +1097,28 @@ pub fn read_sticky(path: &Path) -> StickySecrets {
     s
 }
 
+/// `~/.hunter/app/.env` 里**留着的那把 hunter key**（I14 · F3）。
+///
+/// 「只删除应用，保留数据」这一档明确保留了 `.env`，界面上那句话是
+/// 「以后重新安装会直接沿用，登录也不会失效」—— 而 0.1.13 的重装流程
+/// 根本没去读它，`--auto -y` 照样报「标准输入不是终端，没法交互式问 key」。
+/// 承诺了的事就得真做：要 key 之前先来这里看一眼。
+///
+/// **只在格式对得上时才返回**（`hunt_tools_` 开头、一共 43 位）。
+/// 格式都不对的东西不值得拿去问网关，更不该被当成「沿用上次的 key」；
+/// 这一步不联网，真假由调用方去 [`crate::gateway::check_key`] 那里问。
+pub fn kept_hunter_key() -> Option<String> {
+    let k = parse_env_file(&crate::paths::env_file())
+        .get("HUNTER_API_KEY")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    if !crate::gateway::key_shape_ok(&k) {
+        return None;
+    }
+    crate::redact::register_secret(&k);
+    Some(k)
+}
+
 /// 把 `.env` 解析成键值表。`export ` 前缀、注释、空行都能吃。
 pub fn parse_env_file(path: &Path) -> BTreeMap<String, String> {
     match std::fs::read_to_string(path) {
@@ -2541,6 +2563,49 @@ mod tests {
         match old {
             Some(v) => std::env::set_var("HUNTER_HOME", v),
             None => std::env::remove_var("HUNTER_HOME"),
+        }
+    }
+
+    /// I14 · F3：「只删除应用，保留数据」留下来的 `.env` 里那把 key 要读得出来。
+    ///
+    /// 0.1.13 的重装流程根本没去读它，`--auto -y` 照样报
+    /// `E_KEY_INVALID: 标准输入不是终端…用 --key-file` ——
+    /// 而界面上刚刚才承诺过「以后重新安装会直接沿用」。
+    #[test]
+    fn 保留下来的_env_里那把_key_读得出来() {
+        let _h = paths::test_home("kept-key");
+        assert_eq!(kept_hunter_key(), None, "什么都没有时不该编一把出来");
+
+        std::fs::write(
+            paths::env_file(),
+            format!("# 注释\nPOSTGRES_PASSWORD=abc\nHUNTER_API_KEY={FAKE_KEY}\nJWT_SECRET=x\n"),
+        )
+        .unwrap();
+        assert_eq!(kept_hunter_key().as_deref(), Some(FAKE_KEY));
+    }
+
+    /// 格式都不对的东西**不算**「上次保留的 key」——
+    /// 拿它去问网关只会换回一句「格式不对」，而界面上会先说一句
+    /// 「沿用上次保留的 key」，那就是在骗人。
+    #[test]
+    fn 格式不对的不算保留下来的_key() {
+        let _h = paths::test_home("kept-key-bad");
+        for bad in [
+            "",
+            "   ",
+            "sk-0123456789abcdef",
+            "hunt_tools_",
+            // 少一位
+            "hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo",
+            // 前缀不对
+            "hunt_tool_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2",
+        ] {
+            std::fs::write(paths::env_file(), format!("HUNTER_API_KEY={bad}\n")).unwrap();
+            assert_eq!(
+                kept_hunter_key(),
+                None,
+                "这一条不该被当成可沿用的 key：{bad}"
+            );
         }
     }
 }

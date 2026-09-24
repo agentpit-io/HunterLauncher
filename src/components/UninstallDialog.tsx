@@ -228,6 +228,13 @@ export function UninstallDialog({ onClose, onDone }: { onClose: () => void; onDo
           {t.uninstall.willFree(bytes(p.estFreedBytes))} · {t.uninstall.keepBackupDir(p.backupDir)}
         </div>
       )}
+      {/* I14 · F4：定时备份任务会跟着一起被收回 —— 说清楚它什么时候回来。
+          0.1.13 真机验收时用户以为这一步是永久的，重装之后自己去手工装了一遍。 */}
+      {p?.scheduleInstalled && (
+        <div className="mt-[6px] text-xs leading-[1.5] text-muted" data-testid="uninstall-schedule-hint">
+          {t.uninstall.scheduleHint}
+        </div>
+      )}
       {p?.warnings.map((w) => (
         <div key={w} className="mt-[6px] text-xs leading-[1.5] text-amber-text">
           {w}

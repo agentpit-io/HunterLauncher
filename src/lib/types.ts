@@ -243,6 +243,14 @@ export interface KeyCheckResult {
   code: string | null
 }
 
+/** 上次「只删应用」保留下来的那把 key（I14 · F3）。完整的 key 不出 Rust 进程。 */
+export interface KeptKey {
+  present: boolean
+  masked: string
+  path: string
+  check: KeyCheckResult | null
+}
+
 /** 自带 key 模式的真实连通性检查结果。 */
 export interface OwnKeyCheck {
   ok: boolean
@@ -380,6 +388,8 @@ export interface RuntimeStatus {
   dataSource: string | null
   dataSourceSub: string
   missing: MissingEndpoint[]
+  /** 这一次安装收尾时发生的事（I14 · F4：定时备份任务挂没挂上） */
+  postInstallNotes: string[]
 }
 
 export interface LauncherSettings {

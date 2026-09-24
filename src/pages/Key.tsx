@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, ChevronRight, LinkButton } from '../components/Button'
 import { KeyInput } from '../components/KeyInput'
 import { StatCard } from '../components/StatCard'
@@ -7,8 +7,9 @@ import { WizardLayout } from '../components/WizardLayout'
 import { useStore } from '../state/context'
 import * as ipc from '../lib/ipc'
 import { isKeyShape } from '../lib/mask'
+import { keptKeyExhausted, keptKeyMode } from '../lib/keptkey'
 import { thousands } from '../lib/format'
-import type { KeyCheckResult } from '../lib/types'
+import type { KeptKey, KeyCheckResult } from '../lib/types'
 
 const APPLY_URL = 'https://hunter.agentpit.io/dev/api-keys'
 
@@ -27,9 +28,38 @@ export function Key() {
   const [result, setResult] = useState<KeyCheckResult | null>(ipc.demoSeed?.keyCheck ?? null)
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // I14 · F3：上次「只删除应用，保留数据」把 ~/.hunter/app/.env 留下了，
+  // 里面就有一把 key。界面上承诺过「重新安装会直接沿用」——
+  // 那就别再让人把同一把 key 重新输一遍。Rust 侧只回打码后的样子与校验结论。
+  const [kept, setKept] = useState<KeptKey | null>(null)
+  const [keptLoading, setKeptLoading] = useState(true)
+  const [useKept, setUseKept] = useState(false)
+
+  useEffect(() => {
+    let live = true
+    void ipc
+      .keptKey()
+      .then((k) => {
+        if (!live) return
+        setKept(k)
+        // 验得过才自动沿用；验不过就照常让他填，并把原因摆出来（红线 1）
+        if (keptKeyMode(k) === 'reuse') setUseKept(true)
+      })
+      .catch(() => {
+        if (live) setKept(null)
+      })
+      .finally(() => {
+        if (live) setKeptLoading(false)
+      })
+    return () => {
+      live = false
+    }
+  }, [])
 
   const shapeOk = isKeyShape(key)
-  const validated = result?.valid === true
+  // 沿用那条路上，「已验证」的依据是 Rust 刚问过网关的那一次，不是前端猜的
+  const validated = result?.valid === true || (useKept && kept?.check?.valid === true)
+  const keptBad = keptKeyMode(kept) === 'bad'
 
   async function validate() {
     if (!shapeOk) {
@@ -54,8 +84,10 @@ export function Key() {
     }
   }
 
-  const quota = result?.quota ?? null
-  const models = result?.models ?? []
+  // 卡片上的数字：沿用那条路用的是 Rust 刚查回来的那一份，没有就是 null（显示「—」）
+  const shown = useKept ? (kept?.check ?? null) : result
+  const quota = shown?.quota ?? null
+  const models = shown?.models ?? []
 
   return (
     <WizardLayout
@@ -80,6 +112,41 @@ export function Key() {
       }
     >
       <div className="mt-[37px]">
+        {keptLoading && (
+          <div className="mb-[10px] flex items-center gap-2 text-sm leading-none text-muted">
+            <Spinner size={14} />
+            {t.key.keptChecking}
+          </div>
+        )}
+        {useKept && kept && (
+          <div
+            data-testid="key-kept"
+            className="mb-[14px] rounded-md border border-amber/45 bg-amber-soft px-[14px] py-[12px]"
+          >
+            <div className="flex items-center gap-2 text-md leading-none text-amber-text">
+              <CheckCircle size={15} className="text-amber" />
+              {t.key.keptTitle(kept.masked)}
+            </div>
+            <div className="mt-[8px] text-sm leading-[1.5] text-body">{t.key.keptSub(kept.path)}</div>
+            <div className="mt-[8px]">
+              <LinkButton
+                onClick={() => {
+                  setUseKept(false)
+                  setResult(null)
+                  setError(null)
+                }}
+              >
+                {t.key.keptChange}
+              </LinkButton>
+            </div>
+          </div>
+        )}
+        {!useKept && keptBad && kept?.check && (
+          <div data-testid="key-kept-bad" className="mb-[14px] text-sm leading-[1.5] text-amber-text">
+            {t.key.keptBad(kept.check.message ?? t.key.rejected)}
+          </div>
+        )}
+        <div className={useKept ? 'hidden' : undefined}>
         <div className="mb-[10px] text-sm leading-none text-muted">{t.key.label}</div>
         <div className="flex items-center gap-gap">
           <KeyInput
@@ -117,6 +184,13 @@ export function Key() {
         {!error && result?.valid && result.reason === 'exhausted' && result.message && (
           <div data-testid="key-exhausted" className="mt-[10px] text-sm leading-[1.5] text-amber-text">
             {result.message}
+          </div>
+        )}
+        </div>
+        {/* 沿用那把 key 时额度也可能已经用完 —— 同一句提醒照样要说 */}
+        {useKept && keptKeyExhausted(kept) && kept?.check?.message && (
+          <div data-testid="key-exhausted" className="mt-[10px] text-sm leading-[1.5] text-amber-text">
+            {kept.check.message}
           </div>
         )}
       </div>

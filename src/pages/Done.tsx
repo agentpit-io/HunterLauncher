@@ -47,6 +47,14 @@ export function Done() {
 
       <Card className="mt-[26px]">
         <ul className="flex flex-col gap-[11px]">
+          {/* I14 · F4：装完收尾时真发生过的事排在最前面（目前是「定时备份挂没挂上」）。
+              它是**实测结论**，不是固定文案，所以和下面那几条静态提示分开写。 */}
+          {(rt.data?.postInstallNotes ?? []).map((n) => (
+            <li key={n} data-testid="done-post-install" className="flex gap-2.5 text-md leading-[1.5] text-body">
+              <span className="mt-[9px] size-[5px] shrink-0 rounded-full bg-amber" />
+              {n}
+            </li>
+          ))}
           {tips.map((tip) => (
             <li key={tip} className="flex gap-2.5 text-md leading-[1.5] text-body">
               <span className="mt-[9px] size-[5px] shrink-0 rounded-full bg-amber" />
