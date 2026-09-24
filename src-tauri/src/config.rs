@@ -2679,7 +2679,10 @@ mod tests {
                     !masked.contains(&截断[11..]),
                     "打码后不该露出 key 的中段：{masked}"
                 );
-                assert!(masked.contains("hunt_tools_"), "打码后仍要看得出它是什么：{masked}");
+                assert!(
+                    masked.contains("hunt_tools_"),
+                    "打码后仍要看得出它是什么：{masked}"
+                );
             }
             _ => panic!("留着一个形状不对的 key，应当是 BadShape"),
         }
