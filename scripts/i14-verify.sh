@@ -15,6 +15,7 @@
 #                  而且过程流里要有那一句话
 #   f1-assets      自更新的资产选择：真去拉一次 latest.json，逐个平台核后缀
 #   f5-upgrade     Hunter 版本升级（升级前自动备份 → 拉新 tag → up → 健康）
+#   f5-rollback    升级失败自动回滚（拿一个不存在的 tag 去撞第 ⑤ 步 pull）
 #   restore-env    把这台机器恢复成「6/6 健康」的样子（出问题时手动兜底）
 set -uo pipefail
 
@@ -243,6 +244,40 @@ f5-upgrade)
   grep -m1 '^tag' "$TOML" | sed 's/^/    升级后 /'
   wait_healthy && ok "6/6 健康" || bad "没等到 6/6"
   echo "    升级后：$(pg "select count(*) from information_schema.tables where table_schema='public'") 张表"
+  ;;
+
+f5-rollback)
+  say "F5 · 升级失败要自动回滚（拿一个根本不存在的 tag 去撞第 ⑤ 步 pull）"
+  # 这是 `upgrade.rs` 注释里说的那条路：①② 没动过东西，③④ 写了新 compose 与新 .env，
+  # ⑤ pull 拉不到（换源重试 3 次之后放弃）→ 把 .env 与两个 compose 整套写回、up -d 起旧的回来。
+  # 用不存在的 tag 是最接近真实失败原因的造法（镜像源同步滞后、限流、网断）。
+  before_tag=$(grep -m1 '^tag' "$TOML" | cut -d'"' -f2)
+  before_env=$(grep -m1 '^HUNTER_VERSION=' "$APP/.env")
+  before_tables=$(pg "select count(*) from information_schema.tables where table_schema='public'")
+  before_ids=$(docker ps --filter "label=com.docker.compose.project=$P" -q | sort | md5sum)
+  echo "    升级前：tag=$before_tag · $before_env · $before_tables 张表"
+
+  t0=$(date +%s)
+  out="$("$BIN" --upgrade 9.9.9-i14-不存在 -y 2>&1)"; rc=$?
+  echo "$out" | tail -25 | sed 's/^/    /'
+  echo "    退出码 $rc · 用时 $(( $(date +%s) - t0 )) 秒"
+
+  [ "$rc" != 0 ] && ok "如实失败（退出码 $rc），没有谎称升级成功" || bad "拉不到镜像居然报成功"
+  echo "$out" | grep -qE '回滚|已经回到' && ok "输出里说了回滚" || bad "输出里没提回滚"
+
+  after_tag=$(grep -m1 '^tag' "$TOML" | cut -d'"' -f2)
+  [ "$before_tag" = "$after_tag" ] && ok "launcher.toml 的 tag 回到了 $after_tag" \
+                                   || bad "tag 没回来：$before_tag → $after_tag"
+  [ "$before_env" = "$(grep -m1 '^HUNTER_VERSION=' "$APP/.env")" ] \
+    && ok ".env 的 HUNTER_VERSION 回来了" || bad ".env 没回来"
+  wait_healthy && ok "回滚之后 6/6 健康" || bad "回滚之后没等到 6/6"
+  after_tables=$(pg "select count(*) from information_schema.tables where table_schema='public'")
+  [ "$before_tables" = "$after_tables" ] && ok "数据没动（仍然 $after_tables 张表）" \
+                                         || bad "表数变了：$before_tables → $after_tables"
+  [ "$before_ids" = "$(docker ps --filter "label=com.docker.compose.project=$P" -q | sort | md5sum)" ] \
+    && ok "六个容器一个都没重建（容器 ID 全同）" || echo "    （容器 ID 变了 —— 回滚时 up -d 重建过，看上面的过程流）"
+  say "这一次升级前的自动备份"
+  "$BIN" --backups 2>&1 | tail -6 | sed 's/^/    /'
   ;;
 
 restore-env)
