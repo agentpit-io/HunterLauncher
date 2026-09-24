@@ -1,0 +1,51 @@
+
+[1m== F5 · 升级失败自动回滚（目标 1.2.0，第 ⑤ 步 pull 取不到凭据） ==[0m
+    升级前：tag=1.2.1 · HUNTER_VERSION=1.2.1 · 61 张表 · 备份 6 份
+    
+    升级 Hunter v1.2.1 → v1.2.0
+    ──────────────────────────────────────────────────
+      升级 Hunter：v1.2.1 → v1.2.0
+      正在取 v1.2.0 的 docker-compose.yml…
+      已取到（来自 raw.githubusercontent.com，23990 字节）
+      正在备份（数据库 + 配置）…
+      备份放到 <用户目录>/Hunter-backups/hunter-20260924-2334-v1.2.1
+      已备份配置：.env、docker-compose.yml、docker-compose.launcher.yml、launcher.toml
+      正在转储数据库 hunter（用户 hunter）…
+      数据库已转储（144 KB）
+      校验通过 · pg_restore --list 读出 391 条目录项
+      已打包 hunter_secrets（303 B）
+      已打包 hunter_user_skills（87 B）
+      已打包 hunter_opencode_data（15.2 KB）
+      已写入新的 compose 与 .env（HUNTER_VERSION=1.2.0，端口不变）
+      docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）
+      要拉的六个镜像合计约 849 MB（已有的层不会重复下载）
+      正在拉取新版本的镜像…
+        0% 0 B / 849 MB
+      升级失败：Docker 要用本机的凭据助手去取登录信息，但在这个程序看得到的 PATH 上找不到它。这和下载源无关，换源修不好。原话：error getting credentials - err: exec: "docker-credential-i14nonexistent": executable file not found in $PATH, out: ``
+      正在回滚到 v1.2.1…
+      已写回升级前的 .env、docker-compose.yml、docker-compose.launcher.yml
+      已回滚到 v1.2.1，6 个服务重新就绪。 升级前的备份在 /home/support/Hunter-backups/hunter-20260924-2334-v1.2.1。
+    
+    ✗ E_UPDATE_FAILED: 升到 v1.2.0 失败：Docker 要用本机的凭据助手去取登录信息，但在这个程序看得到的 PATH 上找不到它。这和下载源无关，换源修不好。原话：error getting credentials - err: exec: "docker-credential-i14nonexistent": executable file not found in $PATH, out: ``。已回滚到 v1.2.1，6 个服务重新就绪。 升级前的备份在 /home/support/Hunter-backups/hunter-20260924-2334-v1.2.1。
+      日志：/home/support/.hunter/logs/launcher.log
+    退出码 1 · 用时 15 秒
+  [32m✓[0m 如实失败（退出码 1），没有谎称升级成功
+  [32m✓[0m 走到了第 ③ 步（新 compose 写下去了）—— 这一次是真的需要回滚
+  [32m✓[0m 输出里说了回滚
+  [32m✓[0m 动手之前先备份了一次
+  [32m✓[0m launcher.toml 的 tag 回到了 1.2.1
+  [32m✓[0m .env 的 HUNTER_VERSION 回来了
+  [32m✓[0m 覆盖文件逐字节回到了升级前
+  [32m✓[0m 回滚之后 6/6 健康
+  [32m✓[0m 数据没动（仍然 61 张表）
+  [32m✓[0m 六个容器一个都没重建（容器 ID 全同）
+
+[1m== 这一次升级前的自动备份 ==[0m
+      2026-09-24 08:00:28 · v1.2.0 · hunter-20260924-0800-v1.2.0 · 定时备份 · 数据库 144 KB · 校验 通过
+      2026-09-23 21:02:04 · v1.2.0 · hunter-20260923-2102-v1.2.0 · 你手动做的 · 数据库 144 KB · 校验 通过
+      2026-09-22 00:00:00 · v1.2.0 · hunter-20260922-0000-v1.2.0 · 定时备份 · 数据库 1.0 KB · 校验 通过
+      2026-09-03 10:00:00 · v1.1.0 · hunter-20260903-1000-v1.1.0 · 升级前自动备份 · 数据库 1.0 KB · 校验 通过
+      2026-09-02 10:00:00 · v1.1.0 · hunter-20260902-1000-v1.1.0 · 升级前自动备份 · 数据库 1.0 KB · 校验 通过
+      合计占用 901 KB
+    
+    恢复：hunter-launcher --restore <id 或目录> --confirm 恢复数据 -y

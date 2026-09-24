@@ -1,0 +1,42 @@
+
+[1m== F1 · latest.json 里每个平台取到的是不是它自己那个包 ==[0m
+  清单版本 0.1.13
+  OK linux-x86_64 -> hunter-launcher_0.1.13_amd64.AppImage
+  OK windows-x86_64 -> hunter-launcher_0.1.13_x64-setup.exe
+  OK darwin-x86_64 -> hunter-launcher_0.1.13_universal.app.tar.gz
+  OK darwin-aarch64 -> hunter-launcher_0.1.13_universal.app.tar.gz
+
+[1m== 本机（Linux）--check-update 的原话 ==[0m
+    
+    检查更新
+    ────────
+    Hunter 当前 v1.2.0
+      有新版本 v1.2.1
+      发布时间 2026-09-22T03:42:13Z
+    
+      Release Notes 摘要：
+        > 补丁版本,只修内置额度的两个接入问题,无数据库变更、无新环境变量。
+        > 升级:`.env` 里的 `HUNTER_VERSION` 改成 `1.2.1`(没写的不用改),然后
+        > `docker compose pull && docker compose up -d`。
+        
+        **上线前实测**(测试服务器上另起一套不建 `.env` 的实例,浏览器端到端):
+        自带 key(`qwen3.8-max`)+ 已配平台 key → 打开「Hunter key 已配置 · 管理」→ 出现
+        「一键开启内置额度」→ 点击后约 9 秒自动刷新 → 选择器只剩 **Gemini 3.8 Flash** →
+        本地存着的旧模型名被自动纠正为 `hunter-llm/hunter-chat` → 发消息正常回答,
+        网关当日用量同步增加;再次打开弹窗显示「对话也在用内置额度」。全程无 4xx/5xx。
+        
+        
+        ### 🐛 修复 · Fixed
+        
+        - **侧栏填了 Hunter key,对话却还是自己的模型**(2026-09-22 用户实报)。平台 key 与大模型
+          配置本来就是两件事,侧栏「Hunter…
+    
+      完整说明 https://github.com/agentpit-io/hunter-community/releases/tag/v1.2.1
+    
+      升级：hunter-launcher --upgrade 1.2.1
+    
+    启动器当前 v0.1.14
+      安装形式 unknown
+      已经是最新版（清单来自 hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com，里面是 v0.1.13）
+      这种形式（.deb 等）换包要 root，启动器只会把新包下好再给你一条命令
+      Release 页 https://github.com/agentpit-io/HunterLauncher/releases

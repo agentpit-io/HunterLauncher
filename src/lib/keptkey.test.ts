@@ -17,6 +17,7 @@ const kept = (over: Partial<KeptKey> = {}): KeptKey => ({
   masked: 'hunt_tools_****Mo2',
   path: '<用户目录>/.hunter/app/.env',
   check: check(),
+  badShape: false,
   ...over,
 })
 
@@ -47,5 +48,20 @@ describe('I14 · F3 上次保留下来的那把 key', () => {
     expect(keptKeyExhausted(e)).toBe(true)
     // 好的那一把不该触发这句提醒
     expect(keptKeyExhausted(kept())).toBe(false)
+  })
+
+  // I14 收尾时自己撞出来的一档：`.env` 里确实留着 `HUNTER_API_KEY=…`，
+  // 只是它长得不像一把 hunter key（手改过、粘贴时少了一截）。
+  // 0.1.14 的第一版在这里**一个字都不说**，用户看到的就是
+  // 「我明明留着 key，它却让我重新输」—— 和 F3 原来那个坏法是同一个形状
+  it('留着东西但形状不对：沿用不了，但要单独成一档，不能当成「什么都没有」', () => {
+    const shape = kept({ present: false, check: null, badShape: true })
+    expect(keptKeyMode(shape)).toBe('shape')
+    expect(keptKeyExhausted(shape)).toBe(false)
+  })
+
+  it('形状不对这一档要压过 present/check —— 否则会被当成还在加载', () => {
+    // present 为真、check 为空本来会落进 'ask'（还在问 Rust）
+    expect(keptKeyMode(kept({ check: null, badShape: true }))).toBe('shape')
   })
 })

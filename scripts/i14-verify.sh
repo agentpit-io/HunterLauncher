@@ -15,7 +15,9 @@
 #                  而且过程流里要有那一句话
 #   f1-assets      自更新的资产选择：真去拉一次 latest.json，逐个平台核后缀
 #   f5-upgrade     Hunter 版本升级（升级前自动备份 → 拉新 tag → up → 健康）
-#   f5-rollback    升级失败自动回滚（拿一个不存在的 tag 去撞第 ⑤ 步 pull）
+#   f5-nosuch      拿一个根本不存在的 tag 去升级 → 停在第 ① 步，**不许**谎称回滚
+#   f5-rollback    升级失败自动回滚：拿一个「compose 有、镜像没发布」的真 tag
+#                  （默认 1.0.0）撞第 ⑤ 步 pull，整套写回旧的
 #   restore-env    把这台机器恢复成「6/6 健康」的样子（出问题时手动兜底）
 set -uo pipefail
 
@@ -74,9 +76,12 @@ f2-sparse)
   # 再放一点真数据，好让「真写进去的要数出来」也有得比
   dd if=/dev/zero of="$RT/_i14/real.bin" bs=1M count=64 status=none
 
-  apparent=$(find "$RT" -type f -printf '%s\n' | awk '{s+=$1} END{printf "%d", s}')
-  real=$(du -sb "$RT" | cut -f1)
-  echo "    运行环境：表观 $apparent 字节 / du -sb 实占 $real 字节"
+  # `du -sb` 是**表观大小**（-b 等于 --apparent-size），稀疏文件上它和 `ls -l` 一样虚高；
+  # 实占要用 `du -s --block-size=1`（数的就是 st_blocks）。这两个数在这里差三个数量级，
+  # 正好是 F2 那个 15 倍的放大版
+  apparent=$(du -sb "$RT" | cut -f1)
+  real=$(du -s --block-size=1 "$RT" | cut -f1)
+  echo "    运行环境：表观（du -sb）$apparent 字节 / 实占（du -s --block-size=1）$real 字节"
 
   out="$("$BIN" --uninstall-plan 2>&1)"
   echo "$out" | sed 's/^/    /'
@@ -94,7 +99,18 @@ f2-sparse)
   # 2) 两行不能一模一样
   if [ -n "$a" ] && [ "$a" = "$b" ]; then bad "两行还是同一个数：$a"; else ok "两行来自两处：$a vs $b"; fi
   # 3) 「运行环境」那一行要和 du -sb 对得上（差 5% 以内）
-  echo "$b" | grep -q MB && ok "运行环境那一行是 MB 级，和 du -sb 的 $real 字节同量级" || echo "    （人工核对上面两个数）"
+  # 3) 「运行环境」那一行要和实占对得上（差 5% 以内）
+  rt_bytes=$(echo "$b" | awk '{print $1}')
+  python3 - "$rt_bytes" "$real" <<'PY'
+import sys
+# `flow::human_bytes` 按 1000 进位（MB = 1e6），不是 MiB —— 对账要用同一把尺子
+shown = float(sys.argv[1]) * 1e6
+real = float(sys.argv[2])
+d = abs(shown - real) / real
+print("    界面 %.1f MB vs 实占 %.1f MB，差 %.2f%%" % (shown/1e6, real/1e6, d*100))
+sys.exit(0 if d <= 0.05 else 1)
+PY
+  [ $? = 0 ] && ok "运行环境那一行和实占对得上（5% 以内）" || bad "运行环境那一行和实占差太多"
   # 4) 警告不重复
   c="$(echo "$out" | grep -c '删掉运行环境等于把数据一起删掉')"
   [ "$c" -le 1 ] && ok "「不能同时删运行环境」只说了 $c 遍" || bad "又说了 $c 遍"
@@ -105,10 +121,11 @@ f2-sparse)
 
 f2-du)
   say "F2 · 和 du -sb 对账"
-  real=$(du -sb "$HOME_DIR" | cut -f1)
+  real=$(du -s --block-size=1 "$HOME_DIR" | cut -f1)
+  app=$(du -sb "$HOME_DIR" | cut -f1)
   out="$("$BIN" --uninstall-plan 2>&1)"
   echo "$out" | grep -E '^(工作目录|运行环境)' | sed 's/^/    /'
-  echo "    du -sb $HOME_DIR = $real 字节"
+  echo "    实占（du -s --block-size=1）$real 字节 · 表观（du -sb）$app 字节"
   ;;
 
 # ───────────────────────────────────────────── F3 沿用 .env 里那把 key
@@ -219,14 +236,19 @@ m=json.load(sys.stdin)
 want={"linux-x86_64":".AppImage","windows-x86_64":"-setup.exe",
       "darwin-x86_64":".app.tar.gz","darwin-aarch64":".app.tar.gz"}
 bad=0
-print(f"  清单版本 {m[\"version\"]}")
+print("  清单版本 " + m["version"])
 for k,w in want.items():
     p=m.get("platforms",{}).get(k)
-    if not p: print(f"  ✗ {k} 不在清单里"); bad=1; continue
+    if not p:
+        print("  x " + k + " 不在清单里"); bad=1; continue
     url=p["url"]
-    if url.endswith(".deb"): print(f"  ✗ {k} 指向 .deb：{url}"); bad=1
-    elif not url.endswith(w): print(f"  ✗ {k} 后缀不对（要 {w}）：{url}"); bad=1
-    else: print(f"  ✓ {k} → {url.rsplit(\"/\",1)[-1]}")
+    name=url.rsplit("/",1)[-1]
+    if url.endswith(".deb"):
+        print("  x " + k + " 指向 .deb：" + name); bad=1
+    elif not url.endswith(w):
+        print("  x " + k + " 后缀不对（要 " + w + "）：" + name); bad=1
+    else:
+        print("  OK " + k + " -> " + name)
 sys.exit(bad)
 '
   say "本机（Linux）--check-update 的原话"
@@ -246,38 +268,80 @@ f5-upgrade)
   echo "    升级后：$(pg "select count(*) from information_schema.tables where table_schema='public'") 张表"
   ;;
 
+f5-nosuch)
+  say "F5 · 根本不存在的 tag：停在第 ① 步，**不许**谎称回滚"
+  # `upgrade.rs` 文件头写着：①② 还没动任何东西，失败 = 什么都没变，
+  # 这时候说「已回滚」就是在编。所以这一档要断言的恰恰是**没提回滚**。
+  before_tag=$(grep -m1 '^tag' "$TOML" | cut -d'"' -f2)
+  out="$("$BIN" --upgrade 9.9.9-i14-不存在 -y 2>&1)"; rc=$?
+  echo "$out" | tail -12 | sed 's/^/    /'
+  echo "    退出码 $rc"
+  [ "$rc" != 0 ] && ok "如实失败（退出码 $rc）" || bad "不存在的版本居然报成功"
+  echo "$out" | grep -qE '回滚|已经回到' && bad "①② 都没动过东西，不该提回滚" || ok "没有谎称回滚"
+  [ "$before_tag" = "$(grep -m1 '^tag' "$TOML" | cut -d'"' -f2)" ] && ok "tag 原样没动（$before_tag）" || bad "tag 变了"
+  ;;
+
 f5-rollback)
-  say "F5 · 升级失败要自动回滚（拿一个根本不存在的 tag 去撞第 ⑤ 步 pull）"
-  # 这是 `upgrade.rs` 注释里说的那条路：①② 没动过东西，③④ 写了新 compose 与新 .env，
-  # ⑤ pull 拉不到（换源重试 3 次之后放弃）→ 把 .env 与两个 compose 整套写回、up -d 起旧的回来。
-  # 用不存在的 tag 是最接近真实失败原因的造法（镜像源同步滞后、限流、网断）。
+  # 怎么才走得到第 ⑤ 步：
+  #
+  # 先试过两种「拿一个旧 tag 去撞」的造法，**都不成**，因为它们停在第 ① 步：
+  #   · `9.9.9-i14-不存在` —— compose 根本取不到（见 f5-nosuch，那一档单独留着）
+  #   · `1.0.0` / `1.0.1`  —— tag 在 GitHub 上真实存在、compose 也取得到，
+  #     但那一版的 compose 里没有 `hunter-community-web` 这个镜像引用，
+  #     严格校验（`config.rs` 的 `validate_compose`）当场把它拦下来了。
+  # 而 hunter-community **已发布的每一个 tag，四个镜像都在 ghcr 上**
+  #（1.2.0-rc1 / 1.1.0-rc1 / 1.1.0-rc2 逐个 `docker manifest inspect` 核过），
+  # 所以「compose 合格、镜像却拉不到」这个组合在上游根本不存在。
+  #
+  # 于是换成造**拉取本身失败**，而且用的是 I6 在用户 Mac 上真撞过的那个失败：
+  # `DOCKER_CONFIG` 指向一份写着不存在的 credsStore 的配置 → docker 客户端
+  # 连凭据都取不到，`pull` 必然失败。这条失败 `flow::pull` 判定为「与下载源无关」
+  # （`Code::CredHelper`），**不换源、直接返回** —— 正好是第 ⑤ 步的失败。
+  # 这份配置只挂在这一条命令的环境变量上，机器上的 docker 配置一个字节都不动。
+  TAG="${2:-1.2.0}"
+  BADCFG=/tmp/i14-badcfg
+  mkdir -p "$BADCFG"
+  printf '{"credsStore": "i14nonexistent"}\n' > "$BADCFG/config.json"
+  trap 'rm -rf "$BADCFG"' EXIT
+  say "F5 · 升级失败自动回滚（目标 $TAG，第 ⑤ 步 pull 取不到凭据）"
   before_tag=$(grep -m1 '^tag' "$TOML" | cut -d'"' -f2)
   before_env=$(grep -m1 '^HUNTER_VERSION=' "$APP/.env")
   before_tables=$(pg "select count(*) from information_schema.tables where table_schema='public'")
   before_ids=$(docker ps --filter "label=com.docker.compose.project=$P" -q | sort | md5sum)
-  echo "    升级前：tag=$before_tag · $before_env · $before_tables 张表"
+  before_ovl=$(md5sum "$OVL" | cut -d' ' -f1)
+  before_backups=$("$BIN" --backups 2>&1 | grep -c '校验')
+  echo "    升级前：tag=$before_tag · $before_env · $before_tables 张表 · 备份 $before_backups 份"
 
   t0=$(date +%s)
-  out="$("$BIN" --upgrade 9.9.9-i14-不存在 -y 2>&1)"; rc=$?
-  echo "$out" | tail -25 | sed 's/^/    /'
+  out="$(DOCKER_CONFIG="$BADCFG" "$BIN" --upgrade "$TAG" -y 2>&1)"; rc=$?
+  echo "$out" | tail -30 | sed 's/^/    /'
   echo "    退出码 $rc · 用时 $(( $(date +%s) - t0 )) 秒"
 
   [ "$rc" != 0 ] && ok "如实失败（退出码 $rc），没有谎称升级成功" || bad "拉不到镜像居然报成功"
+  echo "$out" | grep -q '已写入新的 compose' && ok "走到了第 ③ 步（新 compose 写下去了）—— 这一次是真的需要回滚" \
+                                            || bad "没走到第 ③ 步，这一档没测到回滚"
   echo "$out" | grep -qE '回滚|已经回到' && ok "输出里说了回滚" || bad "输出里没提回滚"
+  echo "$out" | grep -qE '备份放到|已备份配置' && ok "动手之前先备份了一次" || bad "没看见升级前那次备份"
 
   after_tag=$(grep -m1 '^tag' "$TOML" | cut -d'"' -f2)
   [ "$before_tag" = "$after_tag" ] && ok "launcher.toml 的 tag 回到了 $after_tag" \
                                    || bad "tag 没回来：$before_tag → $after_tag"
   [ "$before_env" = "$(grep -m1 '^HUNTER_VERSION=' "$APP/.env")" ] \
     && ok ".env 的 HUNTER_VERSION 回来了" || bad ".env 没回来"
+  [ "$before_ovl" = "$(md5sum "$OVL" | cut -d' ' -f1)" ] \
+    && ok "覆盖文件逐字节回到了升级前" || bad "覆盖文件没回来"
   wait_healthy && ok "回滚之后 6/6 健康" || bad "回滚之后没等到 6/6"
   after_tables=$(pg "select count(*) from information_schema.tables where table_schema='public'")
   [ "$before_tables" = "$after_tables" ] && ok "数据没动（仍然 $after_tables 张表）" \
                                          || bad "表数变了：$before_tables → $after_tables"
-  [ "$before_ids" = "$(docker ps --filter "label=com.docker.compose.project=$P" -q | sort | md5sum)" ] \
-    && ok "六个容器一个都没重建（容器 ID 全同）" || echo "    （容器 ID 变了 —— 回滚时 up -d 重建过，看上面的过程流）"
+  if [ "$before_ids" = "$(docker ps --filter "label=com.docker.compose.project=$P" -q | sort | md5sum)" ]; then
+    ok "六个容器一个都没重建（容器 ID 全同）"
+  else
+    echo "    （容器 ID 变了 —— 回滚时 up -d 重建过，看上面的过程流）"
+  fi
   say "这一次升级前的自动备份"
-  "$BIN" --backups 2>&1 | tail -6 | sed 's/^/    /'
+  "$BIN" --backups 2>&1 | tail -8 | sed 's/^/    /'
+  rm -rf "$BADCFG"; trap - EXIT
   ;;
 
 restore-env)

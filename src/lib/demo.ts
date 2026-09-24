@@ -162,17 +162,35 @@ export const demoKeyCheck: KeyCheckResult = {
  *
  * **默认当成没有** —— `key` 那一页的演示要看的是完整的输入流程。
  * 想看「沿用上次保留的 key」那一档（I14 · F3）用 `__HUNTER_DEMO_PAGE__ = 'key-kept'`，
- * 那正是「只删除应用，保留数据」之后重新安装时的样子。
+ * 那正是「只删除应用，保留数据」之后重新安装时的样子；
+ * `'key-shape'` 是它旁边那一档 —— 留着的东西不是一把 key 的样子，沿用不了但要说一句。
  */
 export function demoKeptKey(page: string | null): KeptKey {
+  // `.env` 里留着东西、但它不是一把 hunter key 的样子（I14 · F3 收尾补的那一档）
+  if (page === 'key-shape') {
+    return {
+      present: false,
+      masked: 'hunt_tools_****',
+      path: '<用户目录>/.hunter/app/.env',
+      check: null,
+      badShape: true,
+    }
+  }
   if (page !== 'key-kept') {
-    return { present: false, masked: '', path: '<用户目录>/.hunter/app/.env', check: null }
+    return {
+      present: false,
+      masked: '',
+      path: '<用户目录>/.hunter/app/.env',
+      check: null,
+      badShape: false,
+    }
   }
   return {
     present: true,
     masked: 'hunt_tools_****QMo2',
     path: '<用户目录>/.hunter/app/.env',
     check: demoKeyCheck,
+    badShape: false,
   }
 }
 

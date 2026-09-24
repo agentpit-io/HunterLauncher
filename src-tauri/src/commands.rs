@@ -395,6 +395,11 @@ pub struct KeptKey {
     pub path: String,
     /// 拿去问过网关的结果。`present` 为假时是 `None`
     pub check: Option<gateway::KeyCheckResult>,
+    /// `.env` 里确实留着 `HUNTER_API_KEY=…`、但它不是一把 hunter key 的样子。
+    ///
+    /// 这一档 `present` 是假（沿用不了，照常让用户填），但**界面上要说一句**：
+    /// 用户留着东西、启动器却当没看见，是 F3 原来那个坏法的另一个版本。
+    pub bad_shape: bool,
 }
 
 /// 安装向导的 key 页先问一句：上次有没有留下一把能用的 key。
@@ -408,8 +413,20 @@ pub struct KeptKey {
 #[tauri::command]
 pub async fn kept_key(app: tauri::AppHandle) -> Result<KeptKey> {
     blocking(move || {
-        let Some(k) = crate::config::kept_hunter_key() else {
-            return Ok(KeptKey::default());
+        let path = crate::redact::mask_home(&crate::paths::env_file().to_string_lossy());
+        let k = match crate::config::kept_hunter_key_state() {
+            crate::config::KeptKeyState::Absent => return Ok(KeptKey::default()),
+            crate::config::KeptKeyState::BadShape(masked) => {
+                crate::lwarn!("上次保留的 key 形状不对，沿用不了");
+                return Ok(KeptKey {
+                    present: false,
+                    masked,
+                    path,
+                    check: None,
+                    bad_shape: true,
+                });
+            }
+            crate::config::KeptKeyState::Usable(k) => k,
         };
         let r = gateway::check_key(&k, Duration::from_secs(20));
         crate::linfo!("上次保留的 key：valid={} reason={:?}", r.valid, r.reason);
@@ -419,8 +436,9 @@ pub async fn kept_key(app: tauri::AppHandle) -> Result<KeptKey> {
         Ok(KeptKey {
             present: true,
             masked: crate::redact::mask_key(&k),
-            path: crate::redact::mask_home(&crate::paths::env_file().to_string_lossy()),
+            path,
             check: Some(r),
+            bad_shape: false,
         })
     })
     .await

@@ -328,6 +328,7 @@ const en: Dict = {
       `It has been sitting in ${path} all along — “remove the app, keep the data” left it untouched, and it just passed validation.`,
     keptChange: 'Use a different key',
     keptBad: (why: string) => `The key you kept no longer works: ${why}`,
+    keptShape: (masked: string) => `${masked} is kept in the config file, but it does not look like a hunter key (should be 43 characters starting with hunt_tools_), so it cannot be reused. Please enter one below.`,
   },
   model: {
     title: 'Choose a model source',

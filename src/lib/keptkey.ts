@@ -19,6 +19,8 @@ export type KeptKeyMode =
   | 'reuse'
   /** 有一把、但现在用不了：照常让用户填，**并且把原因摆出来** */
   | 'bad'
+  /** `.env` 里留着东西、但它不是一把 hunter key 的样子：照常让用户填，也要说一句 */
+  | 'shape'
 
 /**
  * 注意「额度用完了」**不算**用不了：`reason === 'exhausted'` 时 `valid` 仍然是 true
@@ -27,7 +29,10 @@ export type KeptKeyMode =
  * 0.1.x 里有过一次把这两件事混起来的教训（见 I1 迭代报告用例 6）。
  */
 export function keptKeyMode(k: KeptKey | null | undefined): KeptKeyMode {
-  if (!k || !k.present || !k.check) return 'ask'
+  if (!k) return 'ask'
+  // 形状不对的那一档 present 就是假的 —— 先认它，否则会被下一行当成「什么都没有」
+  if (k.badShape) return 'shape'
+  if (!k.present || !k.check) return 'ask'
   return k.check.valid ? 'reuse' : 'bad'
 }
 

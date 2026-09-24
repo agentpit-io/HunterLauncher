@@ -1108,15 +1108,49 @@ pub fn read_sticky(path: &Path) -> StickySecrets {
 /// 格式都不对的东西不值得拿去问网关，更不该被当成「沿用上次的 key」；
 /// 这一步不联网，真假由调用方去 [`crate::gateway::check_key`] 那里问。
 pub fn kept_hunter_key() -> Option<String> {
-    let k = parse_env_file(&crate::paths::env_file())
+    match kept_hunter_key_state() {
+        KeptKeyState::Usable(k) => Some(k),
+        _ => None,
+    }
+}
+
+/// 上一条的三分法。**「什么都没有」和「有一个但形状不对」不是一回事**：
+///
+/// 前者是干净的现场（第一次装、或者选了「删除应用和全部数据」），一个字都不用说；
+/// 后者是 `.env` 里确实留着 `HUNTER_API_KEY=…`、只是它长得不像一把 hunter key
+/// （手改过、截断了、粘贴时少了一截）。这一档要是也一个字都不说，
+/// 用户看到的就是「我明明留着 key，它却说要我重新输」—— 和 F3 原来那个坏法同一个形状：
+/// **事情做了（读了），只是没说出来（为什么没用上）**。
+pub enum KeptKeyState {
+    /// `.env` 里没有这一项，或者它是空的
+    Absent,
+    /// 有，但形状对不上（不是 `hunt_tools_` 开头的 43 位）。带着打码后的样子，好让界面说得具体
+    BadShape(String),
+    /// 形状对得上，可以拿去问网关
+    Usable(String),
+}
+
+pub fn kept_hunter_key_state() -> KeptKeyState {
+    let Some(k) = parse_env_file(&crate::paths::env_file())
         .get("HUNTER_API_KEY")
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
+        .filter(|s| !s.is_empty())
+    else {
+        return KeptKeyState::Absent;
+    };
     if !crate::gateway::key_shape_ok(&k) {
-        return None;
+        // **这里不能 `register_secret`**（第一版就是这么写的，一跑单测炸了五个）：
+        // 登记表是整个进程共用的，而形状不对的那个值完全可能就是 `hunt_tools_` 本身
+        // （用户把 key 那一截删干净了）。把它登记进去，之后每一行日志里的
+        // `hunt_tools_****` 都会被再替换一次，变成 `hun********` ——
+        // 打码函数自己把自己的输出打成了看不出是什么的东西。
+        //
+        // 不登记也不漏：`redact::mask_shapes` 本来就按前缀整段打掉
+        // `hunt_tools_…`，一把被截断的真 key 照样盖得住。
+        return KeptKeyState::BadShape(crate::redact::mask_key(&k));
     }
     crate::redact::register_secret(&k);
-    Some(k)
+    KeptKeyState::Usable(k)
 }
 
 /// 把 `.env` 解析成键值表。`export ` 前缀、注释、空行都能吃。
@@ -2607,5 +2641,77 @@ mod tests {
                 "这一条不该被当成可沿用的 key：{bad}"
             );
         }
+    }
+
+    /// 「什么都没有」和「有一个但形状不对」要分得开（I14 收尾时自己撞出来的）。
+    ///
+    /// 两者 `kept_hunter_key()` 都回 `None`，可是该对用户说的话完全不一样：
+    /// 前者一个字都不用说，后者不说就成了「我明明留着 key，它却让我重新输」——
+    /// 和 F3 原来那个坏法是同一个形状（**事情做了，只是没说出来**）。
+    #[test]
+    fn 什么都没有和形状不对要分得开() {
+        let _h = paths::test_home("kept-key-state");
+
+        assert!(
+            matches!(kept_hunter_key_state(), KeptKeyState::Absent),
+            ".env 都不存在时是 Absent"
+        );
+
+        std::fs::write(paths::env_file(), "POSTGRES_PASSWORD=abc\n").unwrap();
+        assert!(
+            matches!(kept_hunter_key_state(), KeptKeyState::Absent),
+            "有 .env 但没有 HUNTER_API_KEY 这一项，也是 Absent"
+        );
+
+        std::fs::write(paths::env_file(), "HUNTER_API_KEY=   \n").unwrap();
+        assert!(
+            matches!(kept_hunter_key_state(), KeptKeyState::Absent),
+            "空白值等于没有"
+        );
+
+        // 真实的坏法：粘贴时少了一截
+        let 截断 = &FAKE_KEY[..FAKE_KEY.len() - 3];
+        std::fs::write(paths::env_file(), format!("HUNTER_API_KEY={截断}\n")).unwrap();
+        match kept_hunter_key_state() {
+            KeptKeyState::BadShape(masked) => {
+                // 红线 2：形状不对的也照样打码 —— 它很可能就是一把真 key 被截断了
+                assert!(
+                    !masked.contains(&截断[11..]),
+                    "打码后不该露出 key 的中段：{masked}"
+                );
+                assert!(masked.contains("hunt_tools_"), "打码后仍要看得出它是什么：{masked}");
+            }
+            _ => panic!("留着一个形状不对的 key，应当是 BadShape"),
+        }
+
+        std::fs::write(paths::env_file(), format!("HUNTER_API_KEY={FAKE_KEY}\n")).unwrap();
+        assert!(
+            matches!(kept_hunter_key_state(), KeptKeyState::Usable(k) if k == FAKE_KEY),
+            "格式对得上的才是 Usable"
+        );
+    }
+
+    /// 看一眼形状不对的那个值，**不许把打码函数自己弄坏**。
+    ///
+    /// 第一版在 `BadShape` 那一支里顺手 `register_secret` 了一下，理由是
+    /// 「它可能是一把真 key 被截断了」。可登记表是整个进程共用的，
+    /// 而最常见的坏法恰恰是 `HUNTER_API_KEY=hunt_tools_`（key 正文被删干净）——
+    /// 于是 `hunt_tools_` 这个**前缀本身**进了登记表，此后每一行
+    /// `hunt_tools_****` 都会被再替换一次，变成 `hun********`。
+    /// 一跑单测当场红了五个（`redact` / `err` / `log` / `feedback` 各一）。
+    #[test]
+    fn 看过形状不对的值之后打码函数还是好的() {
+        let _h = paths::test_home("kept-key-no-poison");
+        for bad in ["hunt_tools_", "sk-0123456789abcdef", "hunt_tool_abcdefghij"] {
+            std::fs::write(paths::env_file(), format!("HUNTER_API_KEY={bad}\n")).unwrap();
+            assert!(matches!(kept_hunter_key_state(), KeptKeyState::BadShape(_)));
+        }
+        let line = format!("LLM_API_KEY={FAKE_KEY} 写入 .env");
+        let r = crate::redact::redact(&line);
+        assert!(
+            r.contains("hunt_tools_****"),
+            "登记表被弄脏了，打码结果成了：{r}"
+        );
+        assert!(!r.contains("q6sK"), "{r}");
     }
 }

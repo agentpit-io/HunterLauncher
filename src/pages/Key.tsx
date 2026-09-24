@@ -24,8 +24,12 @@ const APPLY_URL = 'https://hunter.agentpit.io/dev/api-keys'
  */
 export function Key() {
   const { t, send } = useStore()
-  const [key, setKey] = useState(ipc.demoSeed?.key ?? '')
-  const [result, setResult] = useState<KeyCheckResult | null>(ipc.demoSeed?.keyCheck ?? null)
+  // 演示模式下 key 页默认摆「已经填好、已验证」的样子。
+  // 但 `key-shape` 那一页要看的恰恰是**还没填**的状态（留着的东西用不了、请你填一把），
+  // 预填一把验过的 key 会把那句话说的事反过来 —— 所以这一页不 seed
+  const seed = ipc.demoPage() === 'key-shape' ? null : ipc.demoSeed
+  const [key, setKey] = useState(seed?.key ?? '')
+  const [result, setResult] = useState<KeyCheckResult | null>(seed?.keyCheck ?? null)
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // I14 · F3：上次「只删除应用，保留数据」把 ~/.hunter/app/.env 留下了，
@@ -60,6 +64,8 @@ export function Key() {
   // 沿用那条路上，「已验证」的依据是 Rust 刚问过网关的那一次，不是前端猜的
   const validated = result?.valid === true || (useKept && kept?.check?.valid === true)
   const keptBad = keptKeyMode(kept) === 'bad'
+  // 留着东西、但形状不对：沿用不了，但界面上要说一句（I14 · F3 收尾时自己撞出来的）
+  const keptShape = keptKeyMode(kept) === 'shape'
 
   async function validate() {
     if (!shapeOk) {
@@ -144,6 +150,11 @@ export function Key() {
         {!useKept && keptBad && kept?.check && (
           <div data-testid="key-kept-bad" className="mb-[14px] text-sm leading-[1.5] text-amber-text">
             {t.key.keptBad(kept.check.message ?? t.key.rejected)}
+          </div>
+        )}
+        {keptShape && kept && (
+          <div data-testid="key-kept-shape" className="mb-[14px] text-sm leading-[1.5] text-amber-text">
+            {t.key.keptShape(kept.masked)}
           </div>
         )}
         <div className={useKept ? 'hidden' : undefined}>

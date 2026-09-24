@@ -929,18 +929,29 @@ fn read_key(args: &Args) -> AppResult<(String, Option<gateway::KeyCheckResult>)>
     }
     // 上次「只删应用」留下来的那一把（I14 · F3）。先当场验一次：
     // 验得过就用它，验不过就如实说为什么，再往下走该问还是问
-    if let Some(k) = crate::config::kept_hunter_key() {
-        let masked = crate::redact::mask_key(&k);
-        let where_ = crate::redact::mask_home(&paths::env_file().to_string_lossy());
-        let c = gateway::check_key(&k, Duration::from_secs(25));
-        if c.valid {
-            println!("  沿用上次保留的 key（{masked}，来自 {where_}）");
-            return Ok((k, Some(c)));
+    let where_ = crate::redact::mask_home(&paths::env_file().to_string_lossy());
+    match crate::config::kept_hunter_key_state() {
+        crate::config::KeptKeyState::Usable(k) => {
+            let masked = crate::redact::mask_key(&k);
+            let c = gateway::check_key(&k, Duration::from_secs(25));
+            if c.valid {
+                println!("  沿用上次保留的 key（{masked}，来自 {where_}）");
+                return Ok((k, Some(c)));
+            }
+            println!(
+                "  ⚠ {where_} 里留着的 key（{masked}）没通过校验：{}",
+                c.message.clone().unwrap_or_else(|| "网关没给原因".into())
+            );
         }
-        println!(
-            "  ⚠ {where_} 里留着的 key（{masked}）没通过校验：{}",
-            c.message.clone().unwrap_or_else(|| "网关没给原因".into())
-        );
+        // 留着一个、但它长得不像一把 hunter key。这一档也要说 ——
+        // 不说的话用户看到的就是「我明明留着 key，它却说要我重新输」
+        crate::config::KeptKeyState::BadShape(masked) => {
+            println!(
+                "  ⚠ {where_} 里的 HUNTER_API_KEY（{masked}）不是一把 hunter key 的样子\
+                 （应当是 hunt_tools_ 开头的 43 位），没法沿用。"
+            );
+        }
+        crate::config::KeptKeyState::Absent => {}
     }
     if !std::io::stdin().is_terminal() {
         return Err(AppError::new(

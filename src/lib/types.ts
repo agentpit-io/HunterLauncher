@@ -249,6 +249,8 @@ export interface KeptKey {
   masked: string
   path: string
   check: KeyCheckResult | null
+  /** `.env` 里留着 `HUNTER_API_KEY=…`，但它不是一把 hunter key 的样子（沿用不了，但要说一句） */
+  badShape: boolean
 }
 
 /** 自带 key 模式的真实连通性检查结果。 */

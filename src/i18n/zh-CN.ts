@@ -338,6 +338,7 @@ const zhCN = {
     keptSub: (path: string) => `它一直留在 ${path} 里 —— 上次「只删除应用，保留数据」没有动它，刚才已经验过，可以直接用。`,
     keptChange: '换一把别的 key',
     keptBad: (why: string) => `上次保留的 key 现在用不了：${why}`,
+    keptShape: (masked: string) => `${masked} 这一项留在配置里，但它不是一把 hunter key 的样子（应当是 hunt_tools_ 开头的 43 位），沿用不了。请在下面填一把。`,
   },
   model: {
     title: '选择模型来源',

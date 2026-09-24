@@ -36,9 +36,10 @@ SETTLE="${SETTLE:-9}"
 #   dashboard-alert —— 运行面板顶上那条异常提醒（R7）
 #   backup / backup-restore —— 「备份与恢复」那一页，以及它上面逐字输入「恢复数据」的弹窗（R6）
 #   uninstall / uninstall-all —— 删除应用的两档（R4）。第二档要摆出数据概况与「先备份一次」
-# I14 新增一页：key-kept —— 「只删除应用，保留数据」之后重装时的 key 页，
-# 上面是「沿用上次保留的 key（hunt_tools_****）」那张卡片，输入框收起来（F3）
-PAGES=(booting data-found welcome key key-kept consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-builtin error-recovered)
+# I14 新增两页：key-kept —— 「只删除应用，保留数据」之后重装时的 key 页，
+# 上面是「沿用上次保留的 key（hunt_tools_****）」那张卡片，输入框收起来（F3）；
+# key-shape —— 留着的那一项不是一把 key 的样子，沿用不了，但界面上要说明为什么（F3 · 3.4）
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

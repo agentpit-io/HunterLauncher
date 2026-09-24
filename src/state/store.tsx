@@ -18,6 +18,8 @@ const DEMO_STATES: Record<string, State> = {
   // I14 · F3：「只删除应用，保留数据」之后重装时的 key 页 ——
   // 上面是「沿用上次保留的 key」那张卡片，输入框收起来
   'key-kept': { name: 'NeedKey' },
+  // 同上那一档旁边：留着的那一项不是一把 key 的样子，沿用不了，但界面上要说明为什么
+  'key-shape': { name: 'NeedKey' },
   model: { name: 'ChooseModel' },
   consent: { name: 'Consent' },
   auto: { name: 'AutoInstalling' },
