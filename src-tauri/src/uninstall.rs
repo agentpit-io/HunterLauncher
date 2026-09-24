@@ -223,9 +223,21 @@ pub fn plan(scope: Scope, deep: bool) -> Plan {
         })
         .collect();
 
-    let home_bytes = backup::dir_size(&paths::root());
+    // I14 · F2：两行数字必须来自两处，而且都按**实占块数**算。
+    //
+    // 0.1.13 在用户 Mac 上把「工作目录」与「运行环境」都印成了 86.1 GB ——
+    // 一是两行都从 `~/.hunter` 整个算了一遍（运行环境就在它里面），
+    // 二是按文件的表观长度算，而虚拟机磁盘镜像是稀疏文件（表观几十 GB、实占一两 GB）。
+    // 实测 `du -sh ~/.hunter` 当时是 5.8 GB。
     let builtin = crate::runtime::builtin::installed().is_some();
-    let runtime_bytes = builtin.then(|| backup::dir_size(&paths::runtime_dir()));
+    let rt_dir = paths::runtime_dir();
+    let runtime_bytes = builtin.then(|| backup::dir_size(&rt_dir));
+    // 报了「运行环境」那一行，「工作目录」就得把它刨掉，否则同一批字节被数了两次
+    let home_bytes = if runtime_bytes.is_some() {
+        backup::dir_size_excluding(&paths::root(), std::slice::from_ref(&rt_dir))
+    } else {
+        backup::dir_size(&paths::root())
+    };
 
     // 内置运行时 + 保留数据 + 删虚拟机 = 数据跟着虚拟机一起没（方案第六节第 1 条）
     let runtime_blocked = if scope == Scope::AppOnly && builtin && !volumes.is_empty() {
@@ -238,9 +250,9 @@ pub fn plan(scope: Scope, deep: bool) -> Plan {
     } else {
         None
     };
-    if let Some(w) = &runtime_blocked {
-        warnings.push(w.clone());
-    }
+    // **不再往 warnings 里塞一份**（I14 · F2）：`runtime_blocked` 自己就是一个字段，
+    // 命令行与界面都已经单独摆了它。两边都摆等于同一段话连着说两遍 ——
+    // 0.1.13 在用户 Mac 上就是这样印出来的。
 
     // 数据概况：范围 ② 的界面上必须摆出来（方案 R4 第 1 步）
     let (table_count, last_write) = if deep && !volumes.is_empty() {
@@ -372,7 +384,12 @@ pub fn run(opts: &Options, mut note: impl FnMut(&str)) -> AppResult<Report> {
     match crate::schedule::remove(|_| {}) {
         Ok(()) => {
             rep.removed_schedule = true;
-            step(&mut rep, "已移除自动备份的定时任务".into());
+            // I14 · F4：说清楚它还会回来。用户 0.1.13 真机验收时以为这一步是永久的，
+            // 重装之后自己去手工装了一次
+            step(
+                &mut rep,
+                "已移除自动备份的定时任务（重装完成后会按你的备份设置自动装回）".into(),
+            );
         }
         Err(e) => rep.failures.push(format!("移除定时任务没成：{}", e.msg)),
     }
@@ -820,6 +837,30 @@ mod tests {
         );
         assert_eq!(after.backup.keep_days, 7);
         assert!(!after.install.done, "安装标记要清掉，下次打开回到欢迎页");
+    }
+
+    /// I14 · F2：「不能同时删运行环境」那段话**只说一遍**。
+    ///
+    /// 0.1.13 在用户 Mac 上连着印了两次：一次是 `runtime_blocked` 这个字段自己，
+    /// 一次是它被顺手塞进了 `warnings`（命令行与界面都是先印前者、再遍历后者）。
+    #[test]
+    fn 不能删运行环境那段话不会被说两遍() {
+        let _h = paths::test_home("uninstall-dup-warn");
+        let p = plan(Scope::AppOnly, false);
+        if let Some(w) = &p.runtime_blocked {
+            assert!(
+                !p.warnings.iter().any(|x| x == w),
+                "同一段话不能既在 runtime_blocked 里、又在 warnings 里：{w}"
+            );
+        }
+        // 不管这台机器上是不是内置运行时，warnings 里都不该出现这句话的开头
+        assert!(
+            !p.warnings
+                .iter()
+                .any(|w| w.contains("删掉运行环境等于把数据一起删掉")),
+            "warnings 里不该再有这一条：{:?}",
+            p.warnings
+        );
     }
 
     #[test]

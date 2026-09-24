@@ -332,6 +332,12 @@ const FORBIDDEN_PROGRAMS: &[&str] = &[
     "shred",
     "unlink",
     "mv",
+    // 会「镜像一个目录到另一个目录」的那一类：带上 `--delete` / `/MIR`
+    // 它们就是一条删除命令，只是长得不像（I14 · F1 加的 —— 那一轮给
+    // macOS 换 `.app` 开了一道只认死形状的 `rsync` 窄门，大名单要同步堵上）
+    "rsync",
+    "robocopy",
+    "ditto",
 ];
 
 /// docker 子命令里一律拒绝的组合。
@@ -1091,6 +1097,9 @@ pub const PRIVILEGED_OPS: &[&str] = &[
     "dpkg -i <启动器的 .deb>",
     // Linux：docker 后台服务要 root 才起得来
     "systemctl start docker",
+    // macOS 自更新：.app 所在的目录当前账号写不了时才走这条（I14 · F1）。
+    // 正常的 /Applications 是 drwxrwxr-x root:admin，管理员账号自己就写得了
+    "rsync -a --delete <刚解出来的新 .app>/ <正在跑的那个 .app>/",
 ];
 
 /// 校验**要以 root 身份跑的那条命令**（提权前的最后一道）。
@@ -1127,6 +1136,45 @@ pub fn argv_privileged(argv: &[String]) -> AppResult<()> {
             Ok(())
         }
         ("systemctl", ["start", "docker"]) => Ok(()),
+        // macOS 自更新最后那一步（I14 · F1）。**两头都钉死**：
+        //
+        // * 源只能是启动器自己下到 `~/.hunter/updates/` 里、刚解出来的那个 `.app`；
+        // * 目标只能是**这台机器上正在跑的那个 `.app` 包**（`current_exe` 往上找出来的，
+        //   不是命令行里说了算）。
+        //
+        // 少了第二条，这条命令就成了「以 root 身份把任意目录镜像成另一个目录、
+        // 还带 `--delete`」—— 那是这张表里最不该出现的东西。
+        ("rsync", ["-a", "--delete", src, dst]) => {
+            let s = src.trim_end_matches('/');
+            let d = dst.trim_end_matches('/');
+            if !s.ends_with(".app") || !d.ends_with(".app") {
+                return Err(reject(
+                    "这条 rsync 的两头都必须是 .app 包，拒绝提权。".to_string(),
+                ));
+            }
+            let real_src = canon_for_write(Path::new(s))?;
+            let updates = canon_for_write(&crate::paths::updates_dir())?;
+            if !real_src.starts_with(&updates) {
+                return Err(reject(format!(
+                    "只能把启动器自己下到 {} 里的那份新包搬过去，拒绝提权。",
+                    crate::redact::mask_home(&updates.to_string_lossy())
+                )));
+            }
+            let Some(app) = crate::selfupdate::app_bundle_path() else {
+                return Err(reject(
+                    "认不出这份启动器自己在哪个 .app 包里，拒绝提权。".to_string(),
+                ));
+            };
+            let real_dst = canon_for_write(Path::new(d))?;
+            let real_app = canon_for_write(&app)?;
+            if real_dst != real_app {
+                return Err(reject(format!(
+                    "只能替换启动器自己所在的那个 .app（{}），拒绝提权。",
+                    crate::redact::mask_home(&real_app.to_string_lossy())
+                )));
+            }
+            Ok(())
+        }
         _ => Err(reject(format!(
             "「{}」不在可以提权的那张表里（表里只有 {}），拒绝。",
             safe(&argv.join(" ")),
@@ -2165,6 +2213,80 @@ mod tests {
         assert!(argv_privileged(&a(&["dpkg", "-i", &other.to_string_lossy()])).is_err());
         let _ = std::fs::remove_file(&deb);
         let _ = std::fs::remove_file(&other);
+    }
+
+    /// I14 · F1 新开的那道窄门：macOS 换 `.app` 那条 `rsync`
+    ///（`argv_privileged` 那张表上的第三条形状，前两条是 `dpkg -i` 与 `systemctl start docker`）。
+    ///
+    /// 这台机器（Linux 的测试二进制）不在任何 `.app` 包里，所以
+    /// `app_bundle_path()` 是 `None` —— **连形状对的那一条也一律拒**。
+    /// 这正是想要的行为：认不出自己在哪个包里，就别以 root 身份去镜像目录。
+    #[test]
+    fn 换_app_那条_rsync_两头都钉死() {
+        let _g = crate::paths::test_home("guard-rsync-app");
+        let up = crate::paths::updates_dir();
+        std::fs::create_dir_all(up.join("stage/Hunter Launcher.app")).unwrap();
+        let src = up.join("stage/Hunter Launcher.app");
+        let src_s = format!("{}/", src.to_string_lossy());
+
+        for bad in [
+            // 两头不是 .app
+            vec!["rsync", "-a", "--delete", "/tmp/a/", "/tmp/b/"],
+            // 目标是 .app，但源不在 ~/.hunter/updates/ 下面
+            vec![
+                "rsync",
+                "-a",
+                "--delete",
+                "/tmp/evil.app/",
+                "/Applications/X.app/",
+            ],
+            // 形状不对：少了 --delete / 多了别的开关 / 只有一头
+            vec!["rsync", "-a", &src_s, "/Applications/X.app/"],
+            vec![
+                "rsync",
+                "-a",
+                "--delete",
+                "--rsh=ssh",
+                &src_s,
+                "/Applications/X.app/",
+            ],
+            vec!["rsync", "-a", "--delete", &src_s],
+            // 换个程序名也不行
+            vec!["cp", "-R", &src_s, "/Applications/X.app/"],
+            vec!["ditto", &src_s, "/Applications/X.app/"],
+        ] {
+            assert!(argv_privileged(&a(&bad)).is_err(), "这条该被拒：{bad:?}");
+        }
+
+        // 形状完全对、源也在 updates 下面 —— 但这台机器不在 .app 里，照样拒
+        let shaped = a(&[
+            "rsync",
+            "-a",
+            "--delete",
+            &src_s,
+            "/Applications/Hunter Launcher.app/",
+        ]);
+        let e = argv_privileged(&shaped).expect_err("认不出自己在哪个包里就该拒");
+        assert!(
+            e.msg.contains(".app"),
+            "拒绝的理由要说清楚是哪一头的问题：{}",
+            e.msg
+        );
+    }
+
+    /// 这道窄门**没有把大名单撬开**：模型走的 `argv` 照样不认识 rsync。
+    #[test]
+    fn 换_app_那道窄门没有把大名单撬开() {
+        for bad in [
+            vec!["rsync", "-a", "--delete", "/a/x.app/", "/b/x.app/"],
+            vec!["rsync", "-av", "/a/", "/b/"],
+            vec!["/usr/bin/rsync", "-a", "--delete", "/a/", "/b/"],
+            // 同一类的另外两个：它们带上 --delete / /MIR 就是删除命令，只是长得不像
+            vec!["ditto", "/a", "/b"],
+            vec!["robocopy", "C:\\a", "C:\\b", "/MIR"],
+        ] {
+            assert!(argv(&a(&bad)).is_err(), "模型不该提得出这条：{bad:?}");
+        }
     }
 
     // ── I9 的 P0-2：colima / limactl 隔离守卫 ────────────────────────────

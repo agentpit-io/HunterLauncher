@@ -148,7 +148,7 @@ const en: Dict = {
       'Install a container runtime for you if this machine has none (the box below says what)',
       'Bind all six Hunter service ports to this computer only (127.0.0.1) — no other device on the network can open them',
       'Create and modify files only inside Hunter\'s own folder ~/.hunter',
-      'Install a daily backup task under your own account (LaunchAgent on macOS, systemd --user on Linux, Task Scheduler on Windows). No administrator password, and removing Hunter removes it too',
+      'Install a daily backup task under your own account (LaunchAgent on macOS, systemd --user on Linux, Task Scheduler on Windows). No administrator password; removing Hunter removes it too, and reinstalling puts it back',
       'Back up the database, the secrets volume and the config to a folder you choose every day (by default in Documents, outside ~/.hunter, so removal never touches it)',
     ],
     neverTitle: 'What it will never do (enforced in code, not by prompt)',
@@ -322,6 +322,13 @@ const en: Dict = {
     cardModelsUnit: '',
     advancedHint: 'Advanced users can switch to their own model key (DeepSeek, Qwen, Claude, OpenAI…) in the next step.',
     applyLink: 'No key yet? Get one free',
+    keptChecking: 'Checking whether the key you kept still works…',
+    keptTitle: (masked: string) => `Reusing the key you kept (${masked})`,
+    keptSub: (path: string) =>
+      `It has been sitting in ${path} all along — “remove the app, keep the data” left it untouched, and it just passed validation.`,
+    keptChange: 'Use a different key',
+    keptBad: (why: string) => `The key you kept no longer works: ${why}`,
+    keptShape: (masked: string) => `${masked} is kept in the config file, but it does not look like a hunter key (should be 43 characters starting with hunt_tools_), so it cannot be reused. Please enter one below.`,
   },
   model: {
     title: 'Choose a model source',
@@ -539,7 +546,8 @@ const en: Dict = {
     kept: 'Kept',
     failures: 'Could not remove',
     backToWelcome: 'Back to start',
-    reinstallHint: 'Your data is still here; reinstalling will reuse it.',
+    reinstallHint: 'Your data is still here; reinstalling will reuse it — including your key, so you stay logged in.',
+    scheduleHint: 'The daily backup schedule is removed too; it is put back automatically once you reinstall.',
   },
   cleanup: {
     title: 'Free up space',

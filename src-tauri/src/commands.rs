@@ -383,6 +383,67 @@ pub async fn validate_key(app: tauri::AppHandle, key: String) -> Result<gateway:
     .await
 }
 
+/// 「上次保留下来的那把 key」的现状（I14 · F3）。
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KeptKey {
+    /// `~/.hunter/app/.env` 里有一把格式对得上的 key
+    pub present: bool,
+    /// 打码后的样子（红线 2：完整的 key 不出这个进程）
+    pub masked: String,
+    /// 它在哪个文件里（路径里的家目录已打码）
+    pub path: String,
+    /// 拿去问过网关的结果。`present` 为假时是 `None`
+    pub check: Option<gateway::KeyCheckResult>,
+    /// `.env` 里确实留着 `HUNTER_API_KEY=…`、但它不是一把 hunter key 的样子。
+    ///
+    /// 这一档 `present` 是假（沿用不了，照常让用户填），但**界面上要说一句**：
+    /// 用户留着东西、启动器却当没看见，是 F3 原来那个坏法的另一个版本。
+    pub bad_shape: bool,
+}
+
+/// 安装向导的 key 页先问一句：上次有没有留下一把能用的 key。
+///
+/// 「只删除应用，保留数据」那一档保留了 `.env`，界面上承诺过
+/// 「重新安装会直接沿用」—— 这个命令就是那句承诺的实现。
+/// 验得过就**直接放进内存**，用户一个字都不用重新输；
+/// 验不过就如实把原因交给界面，照常让他填一把新的。
+///
+/// **完整的 key 不返回给前端**：只给打码后的样子与校验结论。
+#[tauri::command]
+pub async fn kept_key(app: tauri::AppHandle) -> Result<KeptKey> {
+    blocking(move || {
+        let path = crate::redact::mask_home(&crate::paths::env_file().to_string_lossy());
+        let k = match crate::config::kept_hunter_key_state() {
+            crate::config::KeptKeyState::Absent => return Ok(KeptKey::default()),
+            crate::config::KeptKeyState::BadShape(masked) => {
+                crate::lwarn!("上次保留的 key 形状不对，沿用不了");
+                return Ok(KeptKey {
+                    present: false,
+                    masked,
+                    path,
+                    check: None,
+                    bad_shape: true,
+                });
+            }
+            crate::config::KeptKeyState::Usable(k) => k,
+        };
+        let r = gateway::check_key(&k, Duration::from_secs(20));
+        crate::linfo!("上次保留的 key：valid={} reason={:?}", r.valid, r.reason);
+        if r.valid {
+            state(&app).set_hunter_key(&k);
+        }
+        Ok(KeptKey {
+            present: true,
+            masked: crate::redact::mask_key(&k),
+            path,
+            check: Some(r),
+            bad_shape: false,
+        })
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelChoice {

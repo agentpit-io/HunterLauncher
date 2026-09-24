@@ -1049,16 +1049,58 @@ pub fn total_bytes() -> u64 {
     dir_size(&dir()) + dir_size(&legacy_dir())
 }
 
+/// 一个目录**实际占用**多少磁盘空间。
+///
+/// ## 为什么不是「把文件长度加起来」（I14 · F2）
+///
+/// 0.1.13 在用户 Mac 上算出「工作目录 86.1 GB」，而 `du -sh ~/.hunter` 只有 **5.8 GB**
+/// —— 差了大约 15 倍。原因是内置运行时那台虚拟机的磁盘镜像是**稀疏文件**：
+/// 它对外宣称自己有 60 多 GB（那是虚拟机磁盘的上限），实际落在盘上的只有一两 GB。
+/// `metadata().len()` 给的是前者，于是「删掉能腾出多少」变成了一个吓人的假数字。
+///
+/// 所以这里数的是**实占块数**（Unix 的 `st_blocks × 512`，`du` 用的就是它）。
+///
+/// Windows 上 std 拿不到实占块数（稀疏 / 压缩文件要 `GetCompressedFileSize`），
+/// 退回文件长度 —— 那个平台上没有内置运行时，不存在这一类文件。
 pub fn dir_size(p: &Path) -> u64 {
+    dir_size_excluding(p, &[])
+}
+
+/// 同上，但**跳过 `skip` 里的那几个子目录**。
+///
+/// 删除计划上「工作目录」与「运行环境」是两行，而运行环境（`~/.hunter/runtime`）
+/// 就在工作目录里面 —— 两行都从 `~/.hunter` 整个算一遍的话，屏幕上会出现
+/// 两个一模一样的数字（0.1.13 就是这样，两行都是 86.1 GB）。
+pub fn dir_size_excluding(p: &Path, skip: &[std::path::PathBuf]) -> u64 {
     let Ok(rd) = std::fs::read_dir(p) else {
         return 0;
     };
     rd.flatten()
-        .map(|e| match e.file_type() {
-            Ok(t) if t.is_dir() => dir_size(&e.path()),
-            _ => e.metadata().map(|m| m.len()).unwrap_or(0),
+        .map(|e| {
+            let path = e.path();
+            if skip.contains(&path) {
+                return 0;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => dir_size_excluding(&path, skip),
+                _ => e.metadata().map(|m| occupied_bytes(&m)).unwrap_or(0),
+            }
         })
         .sum()
+}
+
+/// 一个文件**实际占了多少块**。稀疏文件的表观长度和这个数可以差一个数量级。
+fn occupied_bytes(m: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // st_blocks 的单位按 POSIX 固定是 512 字节，和文件系统的块大小无关
+        m.blocks().saturating_mul(512)
+    }
+    #[cfg(not(unix))]
+    {
+        m.len()
+    }
 }
 
 /// 一份备份大概多大（用来判「这块盘还放得下几份」）。
@@ -2100,6 +2142,70 @@ mod tests {
         let (b, _) = unique_dir(&base, "hunter-20260923-0000-v1.2.0");
         assert_eq!(a, "hunter-20260923-0000-v1.2.0");
         assert_eq!(b, "hunter-20260923-0000-v1.2.0-2");
+    }
+
+    /// I14 · F2：**稀疏文件按实占算，不按表观长度算。**
+    ///
+    /// 0.1.13 在用户 Mac 上把 `~/.hunter` 算成 86.1 GB，而 `du -sh` 是 5.8 GB ——
+    /// 差的那一截全是内置运行时那台虚拟机的磁盘镜像（表观几十 GB、实占一两 GB）。
+    #[test]
+    #[cfg(unix)]
+    fn 稀疏文件按实占的块数算不按表观长度算() {
+        let h = paths::test_home("sparse");
+        let _ = &h;
+        let dir = paths::root().join("sparse-case");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 造一个表观 256 MB、实际一个数据块都没写的稀疏文件
+        let p = dir.join("disk.img");
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_len(256 * 1024 * 1024).unwrap();
+        drop(f);
+
+        let apparent = std::fs::metadata(&p).unwrap().len();
+        assert_eq!(apparent, 256 * 1024 * 1024, "先确认这个文件的表观长度");
+
+        let n = dir_size(&dir);
+        assert!(
+            n < 4 * 1024 * 1024,
+            "稀疏文件应当按实占算（拿到 {n} 字节，表观是 {apparent}）"
+        );
+
+        // 真写进去的那部分要数得出来：写 1 MB，实占至少 1 MB
+        std::fs::write(dir.join("real.bin"), vec![7u8; 1024 * 1024]).unwrap();
+        let n2 = dir_size(&dir);
+        assert!(n2 >= 1024 * 1024, "真写进去的字节要数出来（拿到 {n2}）");
+    }
+
+    /// I14 · F2：删除计划上「工作目录」与「运行环境」是两行，
+    /// 而运行环境就在工作目录里面 —— 两行都整个算一遍就会出现两个一样的数字。
+    #[test]
+    fn 排除子目录之后两个数字来自不同的地方() {
+        let h = paths::test_home("dirsize-exclude");
+        let _ = &h;
+        let root = paths::root();
+        let rt = paths::runtime_dir();
+        std::fs::create_dir_all(&rt).unwrap();
+        std::fs::write(rt.join("big"), vec![1u8; 512 * 1024]).unwrap();
+        std::fs::write(root.join("small"), vec![1u8; 8 * 1024]).unwrap();
+
+        let all = dir_size(&root);
+        let rt_only = dir_size(&rt);
+        let without = dir_size_excluding(&root, std::slice::from_ref(&rt));
+
+        assert!(rt_only >= 512 * 1024, "运行环境那一份要数得出来：{rt_only}");
+        assert!(
+            without < rt_only,
+            "刨掉运行环境之后应当明显变小（{without} vs 整个 {all}）"
+        );
+        assert_ne!(
+            without, rt_only,
+            "两行数字不能是同一个数 —— 0.1.13 就是两行都印 86.1 GB"
+        );
+        assert!(
+            all >= without + rt_only,
+            "整个 {all} 应当不小于两部分之和（{without} + {rt_only}）"
+        );
     }
 
     #[test]

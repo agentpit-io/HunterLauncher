@@ -1,0 +1,15 @@
+
+[1m== F5 · 根本不存在的 tag：停在第 ① 步，**不许**谎称回滚 ==[0m
+    
+    升级 Hunter v1.2.1 → v9.9.9-i14-不存在
+    ──────────────────────────────────────────────────────────────────
+      升级 Hunter：v1.2.1 → v9.9.9-i14-不存在
+      这是一次跨大版本升级，升级前请先读一遍这个版本的 Release Notes
+      正在取 v9.9.9-i14-不存在 的 docker-compose.yml…
+    
+    ✗ E_COMPOSE_FETCH: 取不到 v9.9.9-i14-不存在 的 docker-compose.yml：raw.githubusercontent.com HTTP 400；hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com HTTP 404。这个版本可能不存在。
+      日志：/home/support/.hunter/logs/launcher.log
+    退出码 1
+  [32m✓[0m 如实失败（退出码 1）
+  [32m✓[0m 没有谎称回滚
+  [32m✓[0m tag 原样没动（1.2.1）

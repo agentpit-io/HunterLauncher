@@ -361,7 +361,7 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --monitor             三层资源：这台电脑 / Hunter 运行环境 / Hunter 各服务（I12 · R2）
   hunter-launcher --data-check [--deep] 这台机器上还有没有上一次的数据（I12 · R5）。--deep 会起一个用完就删的 postgres 去数表
   hunter-launcher --check-update        查 Hunter 与启动器有没有新版本
-  hunter-launcher --self-update         更新启动器自己（AppImage 就地换；.deb 走系统授权框装）
+  hunter-launcher --self-update         更新启动器自己（macOS 换 .app / Windows 跑安装器 / AppImage 就地换 / .deb 走系统授权框）
   hunter-launcher --upgrade <版本>      升级 Hunter（先自动备份，失败自动回滚）
   hunter-launcher --backups             列出全部备份（当前备份目录 + 老的 ~/.hunter/backups）
   hunter-launcher --backup              立刻做一次备份（pg_dump -Fc + 密钥卷 + 配置，做完校验）
@@ -486,8 +486,9 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
     println!("工作目录 {}", paths::root().display());
 
     // 1) key：模型那一层要用它；没有 key 也能装，只是退回确定性规则
-    let key = read_key(args)?;
-    let check = gateway::check_key(&key, Duration::from_secs(25));
+    let (key, pre) = read_key(args)?;
+    // 沿用那条路已经验过一次了，别再问网关一遍
+    let check = pre.unwrap_or_else(|| gateway::check_key(&key, Duration::from_secs(25)));
     if !check.valid {
         println!("  ✗ {}", check.message.clone().unwrap_or_default());
         let code = match check.reason {
@@ -606,6 +607,14 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
         return Ok(());
     }
     if out.ok {
+        // I14 · F4：定时备份任务挂没挂上，这条路上也要说。
+        //
+        // 用户 0.1.13 真机验收走的就是 `--auto -y`（不是 `--install`），
+        // 而这件事当时只印在 `cmd_install` 里 —— 于是他重装完什么都没看见，
+        // 以为定时任务再也不会回来，自己去手工 `--schedule install` 了一遍。
+        for n in &crate::flow::runtime_status(st).post_install_notes {
+            println!("  {n}");
+        }
         // I11 · U2：**这一次什么都没装**的时候别说「装好了」——
         // 那句话会让人以为刚刚下载并重建了一遍（红线 1 的同一条道理）
         if out.reused {
@@ -650,8 +659,9 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     // 1) key（I4 把它挪到了最前面：界面版的 AI 诊断助手要用这把 key 调网关，
     //    两条路径的顺序必须一致，否则 --headless 与界面版走出来的步骤号对不上）
     step(1, steps, "hunter key");
-    let key = read_key(args)?;
-    let check = gateway::check_key(&key, Duration::from_secs(25));
+    let (key, pre) = read_key(args)?;
+    // 沿用那条路已经验过一次了，别再问网关一遍
+    let check = pre.unwrap_or_else(|| gateway::check_key(&key, Duration::from_secs(25)));
     if !check.valid {
         println!("  ✗ {}", check.message.clone().unwrap_or_default());
         let code = match check.reason {
@@ -850,6 +860,10 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
         }
         None => println!("  api 的 /api/health 没读到，key 是否落进容器未确认"),
     }
+    // I14 · F4：定时备份任务挂没挂上是这一步的结论之一，要印在过程流里
+    for n in &status.post_install_notes {
+        println!("  {n}");
+    }
     println!("  配置 {}（权限 600）", paths::env_file().display());
     println!("  日志 {}", paths::launcher_log().display());
     println!("\n  总用时 {}\n", human_secs(t0.elapsed().as_secs()));
@@ -878,7 +892,16 @@ fn file_mode(path: &str) -> Option<u32> {
     }
 }
 
-fn read_key(args: &Args) -> AppResult<String> {
+/// 拿 hunter key。**顺序是：`--key-file` → 上次保留下来的 `.env` → 交互式输入。**
+///
+/// 第二项是 I14 · F3 补的：「只删除应用，保留数据」那一档明确留下了
+/// `~/.hunter/app/.env`，界面上也承诺了「重新安装会直接沿用」，
+/// 而 0.1.13 的 `--auto -y` 仍然报 `E_KEY_INVALID: 标准输入不是终端…`。
+///
+/// 返回值第二项是「**这把 key 已经问过网关了**」的校验结果：
+/// 沿用那条路本来就得先验一次才敢用，验过的结果直接交给调用方，
+/// 免得同一把 key 连问网关两次。
+fn read_key(args: &Args) -> AppResult<(String, Option<gateway::KeyCheckResult>)> {
     if let Some(p) = &args.key_file {
         let s = std::fs::read_to_string(p)
             .map_err(|e| AppError::new(Code::KeyInvalid, format!("读不到 key 文件 {p}：{e}")))?;
@@ -902,7 +925,33 @@ fn read_key(args: &Args) -> AppResult<String> {
                 );
             }
         }
-        return Ok(k);
+        return Ok((k, None));
+    }
+    // 上次「只删应用」留下来的那一把（I14 · F3）。先当场验一次：
+    // 验得过就用它，验不过就如实说为什么，再往下走该问还是问
+    let where_ = crate::redact::mask_home(&paths::env_file().to_string_lossy());
+    match crate::config::kept_hunter_key_state() {
+        crate::config::KeptKeyState::Usable(k) => {
+            let masked = crate::redact::mask_key(&k);
+            let c = gateway::check_key(&k, Duration::from_secs(25));
+            if c.valid {
+                println!("  沿用上次保留的 key（{masked}，来自 {where_}）");
+                return Ok((k, Some(c)));
+            }
+            println!(
+                "  ⚠ {where_} 里留着的 key（{masked}）没通过校验：{}",
+                c.message.clone().unwrap_or_else(|| "网关没给原因".into())
+            );
+        }
+        // 留着一个、但它长得不像一把 hunter key。这一档也要说 ——
+        // 不说的话用户看到的就是「我明明留着 key，它却说要我重新输」
+        crate::config::KeptKeyState::BadShape(masked) => {
+            println!(
+                "  ⚠ {where_} 里的 HUNTER_API_KEY（{masked}）不是一把 hunter key 的样子\
+                 （应当是 hunt_tools_ 开头的 43 位），没法沿用。"
+            );
+        }
+        crate::config::KeptKeyState::Absent => {}
     }
     if !std::io::stdin().is_terminal() {
         return Err(AppError::new(
@@ -928,7 +977,7 @@ fn read_key(args: &Args) -> AppResult<String> {
         ));
     }
     crate::redact::register_secret(&k);
-    Ok(k)
+    Ok((k, None))
 }
 
 // ── 其它子命令 ────────────────────────────────────────────────────────────
@@ -1307,7 +1356,7 @@ fn cmd_review(st: &AppState, args: &Args) -> AppResult<()> {
         }
     );
 
-    let key = read_key(args)?;
+    let (key, _) = read_key(args)?;
     let why = args
         .review_why
         .clone()
@@ -2362,10 +2411,20 @@ fn print_uninstall_plan(p: &crate::uninstall::Plan) {
             .map(human_bytes)
             .unwrap_or_else(|| "大小没查到".into())
     );
-    println!("工作目录  {}", human_bytes(p.home_bytes));
+    // 两行数字来自两处、都按实占块数算（I14 · F2）。有运行环境时，
+    // 「工作目录」这一行已经把它刨掉了 —— 说清楚，免得用户以为少算了
     match p.runtime_bytes {
-        Some(b) => println!("运行环境  {}", human_bytes(b)),
-        None => println!("运行环境  没装内置运行时"),
+        Some(b) => {
+            println!("工作目录  {}（不含运行环境）", human_bytes(p.home_bytes));
+            println!(
+                "运行环境  {}（实际占用，虚拟机磁盘是稀疏文件）",
+                human_bytes(b)
+            );
+        }
+        None => {
+            println!("工作目录  {}", human_bytes(p.home_bytes));
+            println!("运行环境  没装内置运行时");
+        }
     }
     if let Some(n) = p.table_count {
         println!(
@@ -2380,7 +2439,7 @@ fn print_uninstall_plan(p: &crate::uninstall::Plan) {
     println!(
         "定时任务  {}",
         if p.schedule_installed {
-            "装着（会一并移除）"
+            "装着（会一并移除；重装完成后按你的备份设置自动装回）"
         } else {
             "没装"
         }

@@ -150,6 +150,7 @@ pub fn run() {
             commands::detect_docker,
             commands::start_daemon,
             commands::validate_key,
+            commands::kept_key,
             commands::set_model,
             commands::probe_registries,
             commands::start_install,

@@ -22,23 +22,29 @@
 //! **签名验不过就不装** —— 这是自更新唯一的安全边界：安装包本身没有代码签名证书，
 //! 更新通道要是也不验签，等于给任何能劫持 HTTP 的人一个装任意程序的口子。
 //!
-//! ## Linux 上的一个真实限制：`.deb` 装不了自己
+//! ## 四个平台，四条路（I14 · F1 之后）
 //!
-//! Tauri 的 updater 在 Linux 上**只能更新 AppImage** —— AppImage 是一个文件，
-//! 替换它就完事了；而 `.deb` 装在 `/usr/lib` 与 `/usr/bin` 下，要 root 才动得了，
-//! 一个桌面程序既不该也不能在用户不知情的时候拿 root 改系统目录。
+//! | 这份启动器是怎么装的 | `--self-update` 做什么 | 要不要管理员 |
+//! |---|---|---|
+//! | macOS 的 `.app` | 下 `*_universal.app.tar.gz` → 验签 → 解包 → 两次 `rename` **就地换掉那个 `.app`** | 目录写得了就**不要** |
+//! | Windows 的 NSIS | 下 `*_x64-setup.exe` → 验签 → 被动模式（`/P`）跑一遍 | 安装器自己按需要弹 UAC |
+//! | Linux 的 AppImage | 下 `*.AppImage` → 验签 → 写临时文件 → `rename` 换掉自己 | 不要 |
+//! | Linux 的 `.deb` | 下包到 `~/.hunter/updates/` → 系统授权框 → `dpkg -i` | 要（系统弹的框） |
 //!
-//! 所以这里按格式分成两条路，**都做完整，都不假装**：
+//! **该下哪个文件不由这里拼，由清单说了算**：`latest.json` 的 `platforms`
+//! 里每个平台一条 `url` + `signature`，按 [`target_key`] 取（[`fetch_asset`]）。
 //!
-//! | 安装方式 | 点「更新」之后 |
-//! |---|---|
-//! | AppImage / Windows / macOS | 下载 → 验签 → 就地安装 → 重启，全自动 |
-//! | `.deb`（以及别的包管理器装的） | 下载新包到 `~/.hunter/updates/` → 给出**一条可以直接粘贴的命令** |
+//! 0.1.13 之前不是这样：那时候只单独处理了 AppImage，macOS 与 Windows 全落进
+//! 「下 `.deb` 然后 `dpkg -i`」那个分支。用户 Mac 上 2026-09-23 实测的结果是
+//! `已下载并验签 hunter-launcher_0.1.13_amd64.deb` →
+//! `E_NOT_IMPLEMENTED: /bin/sh: dpkg: command not found (127)` ——
+//! **在 macOS 上下了一个 Linux 的包**。按清单取之后，这一类错从根上没有了。
 //!
-//! 第二条路听起来像半成品，但它是这个格式下唯一诚实的做法：真正装包的那一步
-//! 需要用户自己给出 sudo 授权。启动器把能做的都做了（查、下、校验大小、告诉你装哪个文件）。
+//! `.deb` 那条路仍然要管理员：`.deb` 装在 `/usr/lib` 与 `/usr/bin` 下，
+//! 一个桌面程序既不该也不能在用户不知情的时候拿 root 改系统目录，
+//! 所以那一步走 polkit 的原生授权框（I8）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -676,20 +682,7 @@ pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
 
     match kind {
         InstallKind::AppImage => {
-            let p = m.platforms.get(target_key()).ok_or_else(|| {
-                AppError::new(
-                    Code::UpdateFailed,
-                    format!("清单里没有 {} 这个平台的包", target_key()),
-                )
-            })?;
-            note(&format!("正在下载 {}", p.url));
-            let bytes = crate::http::get_bytes(&p.url, Duration::from_secs(900))?;
-            note(&format!(
-                "下好了 {}，正在验签…",
-                crate::flow::human_bytes(bytes.len() as u64)
-            ));
-            verify(&bytes, &p.signature)?;
-            note("签名通过");
+            let (bytes, _) = fetch_asset(&m, &mut note)?;
 
             let target = std::env::var_os("APPIMAGE")
                 .map(PathBuf::from)
@@ -727,11 +720,26 @@ pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
                 target.display()
             ))
         }
+        InstallKind::MacOS => {
+            let (bytes, url) = fetch_asset(&m, &mut note)?;
+            macos_install(&bytes, &m.version, &url, &mut note)
+        }
+        InstallKind::Windows => {
+            let (bytes, url) = fetch_asset(&m, &mut note)?;
+            windows_install(&bytes, &m.version, &url, &mut note)
+        }
+        // 到这儿只剩 Linux 上的 `.deb` 与「认不出装法」两种。
+        // 认不出的时候也走 `.deb` 这条路（Linux 上的包管理器装法只有它一种），
+        // 但话要说得不一样 —— 不能对着一台认不出来的机器咬定它是 .deb 装的
         _ => {
-            note(&format!(
-                "这台机器上的启动器是 {} 形式装的，换包要管理员权限。",
-                kind.as_str()
-            ));
+            note(match kind {
+                InstallKind::Deb => {
+                    "这台机器上的启动器是 .deb 装的，安装包要写进 /usr —— 那个位置只有管理员能改。"
+                }
+                _ => {
+                    "认不出这份启动器是怎么装的，按 Linux 的包管理器装法处理（安装包要写进 /usr，那个位置只有管理员能改）。"
+                }
+            });
             let deb = download_and_verify_deb(&m.version, &mut note)?;
             // I8：先试着自己装完 —— 弹的是 polkit 自己的授权框
             match crate::runtime::elevate::available() {
@@ -760,6 +768,305 @@ pub fn self_update_headless(mut note: impl FnMut(&str)) -> AppResult<String> {
             }
         }
     }
+}
+
+/// 按**这台机器的平台**从清单里取该下哪个包，下下来、验完签再交出去（I14 · F1）。
+///
+/// ## 这个函数是怎么来的
+///
+/// 0.1.13 在用户 Mac 上 `--self-update` 的结果是：
+///
+/// ```text
+/// 已下载并验签 hunter-launcher_0.1.13_amd64.deb
+/// E_NOT_IMPLEMENTED: /bin/sh: dpkg: command not found (127)
+/// ```
+///
+/// —— 在 macOS 上下了一个 Linux 的 `.deb`，然后用系统授权框去跑 `dpkg`。
+/// 根子是原来的 `match` 只单独处理了 AppImage，`macOS` / `Windows` 全落进
+/// 那个 `_ =>` 分支，而那个分支写死了「下 `.deb`、`dpkg -i`」。
+///
+/// 现在**不再按安装形式猜文件名**：清单（`latest.json`）里每个平台那一项
+/// 本来就写着该下哪个 URL 与它的签名，直接按 [`target_key`] 取。
+/// 这样「选错平台」这一类问题从根上就不存在了 —— 选的不是我们拼的名字，
+/// 是发布流水线自己写进清单的那一条。
+///
+/// 返回 `(包的字节, 它的下载地址)`。**验不过签就不返回**。
+fn fetch_asset(m: &Manifest, note: &mut impl FnMut(&str)) -> AppResult<(Vec<u8>, String)> {
+    let key = target_key();
+    let p = m.platforms.get(key).ok_or_else(|| {
+        AppError::new(
+            Code::UpdateFailed,
+            format!(
+                "清单里没有 {key} 这个平台的包（清单里有的是 {}）",
+                m.platforms.keys().cloned().collect::<Vec<_>>().join(" / ")
+            ),
+        )
+    })?;
+    note(&format!("这台机器对应清单里的 {key}，正在下载 {}", p.url));
+    let bytes = crate::http::get_bytes(&p.url, Duration::from_secs(900))?;
+    note(&format!(
+        "下好了 {}，正在验签…",
+        crate::flow::human_bytes(bytes.len() as u64)
+    ));
+    verify(&bytes, &p.signature)?;
+    note("签名通过");
+    Ok((bytes, p.url.clone()))
+}
+
+/// 从 URL 里取文件名（落盘时用它，保持和发布出去的名字一致）。
+fn file_name_of(url: &str, fallback: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty() && !s.contains(['?', '\\']))
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+/// 这份启动器所在的那个 `.app` 包（macOS）。
+///
+/// 从**正在跑的这个可执行文件**往上找第一个 `.app` 目录，而不是写死
+/// `/Applications/Hunter Launcher.app`：用户完全可能把它放在
+/// `~/Applications`、外接盘或者下载文件夹里。写死路径的后果不是「更新失败」，
+/// 是**把新版本装到一个他根本没在用的位置上，界面还报「已更新」**。
+pub fn app_bundle_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(|p| p.to_path_buf())
+}
+
+/// macOS：把 `.app.tar.gz` 就地换成新版。
+///
+/// | 情况 | 怎么装 | 要不要密码 |
+/// |---|---|---|
+/// | `.app` 所在目录当前账号写得了（`/Applications` 默认就是这样：`drwxrwxr-x root:admin`） | 解包到旁边 → 两次 `rename` 换过去 | **不要** |
+/// | 写不了（被 MDM 管起来、或者装在别人的账号下） | 走 macOS 自己的授权框，一条 `rsync -a --delete` | 要（系统弹的框） |
+///
+/// 换法是「先把旧的挪开，再把新的搬进来」：两次 `rename` 都在同一个目录里，
+/// 同一个文件系统上 `rename` 是原子的，中途断电不会留下半个包。
+/// 第二次没成就**把旧的搬回来** —— 宁可这次没更新成，也不能让用户开不了。
+fn macos_install(
+    bytes: &[u8],
+    version: &str,
+    url: &str,
+    note: &mut impl FnMut(&str),
+) -> AppResult<String> {
+    let app = app_bundle_path().ok_or_else(|| {
+        AppError::new(
+            Code::UpdateFailed,
+            "找不到这份启动器所在的 .app 包（当前可执行文件的路径里没有 .app）。\
+             不知道该换哪儿，就什么都不换。"
+                .to_string(),
+        )
+    })?;
+    let parent = app
+        .parent()
+        .ok_or_else(|| {
+            AppError::new(
+                Code::UpdateFailed,
+                format!("{} 没有上级目录，换不了。", app.display()),
+            )
+        })?
+        .to_path_buf();
+
+    // 已经验过签才落地
+    let tgz = paths::updates_dir().join(file_name_of(url, "hunter-launcher.app.tar.gz"));
+    std::fs::write(&tgz, bytes).map_err(|e| {
+        AppError::new(
+            Code::UpdateFailed,
+            format!("写 {} 失败：{e}", tgz.display()),
+        )
+    })?;
+
+    // 解包目录先试着建在 `.app` 旁边 —— 它同时是一次**写权限实测**：
+    // 这一步建得起来，后面那两次 rename 就一定做得成（同一个目录、同一个文件系统）。
+    // 建不起来才说明要提权，而不是靠「路径是不是 /Applications」去猜。
+    let near = parent.join(format!(".hunter-launcher-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&near);
+    let writable = std::fs::create_dir(&near).is_ok();
+    let stage = if writable {
+        near.clone()
+    } else {
+        let d = paths::updates_dir().join(format!("stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).map_err(|e| {
+            AppError::new(Code::UpdateFailed, format!("建 {} 失败：{e}", d.display()))
+        })?;
+        d
+    };
+
+    let out = (|| -> AppResult<String> {
+        untar_gz(&tgz, &stage)?;
+        let new_app = single_app_in(&stage)?;
+        if writable {
+            note(&format!(
+                "正在就地替换 {}（这个位置不需要管理员权限）",
+                app.display()
+            ));
+            swap_bundle(&app, &new_app)?;
+        } else {
+            note(&format!(
+                "{} 这个位置当前账号写不了，接下来系统会弹出它自己的授权框",
+                parent.display()
+            ));
+            crate::runtime::elevate::run(
+                crate::runtime::elevate::Op::ReplaceAppBundle,
+                &[
+                    "/usr/bin/rsync".to_string(),
+                    "-a".to_string(),
+                    "--delete".to_string(),
+                    format!("{}/", new_app.display()),
+                    format!("{}/", app.display()),
+                ],
+                Duration::from_secs(600),
+            )?;
+        }
+        linfo!("macOS 的 .app 已就地替换为 {version}（{}）", app.display());
+        Ok(format!(
+            "已就地更新到 v{version}（{}）。退出再打开它就是新版本。",
+            app.display()
+        ))
+    })();
+
+    // 不管成没成，临时目录都收拾干净
+    let _ = std::fs::remove_dir_all(&stage);
+    let _ = std::fs::remove_file(&tgz);
+    out
+}
+
+/// 「把旧的挪开，再把新的搬进来」这两次 `rename`。
+///
+/// 两次都在**同一个目录**里，同一个文件系统上 `rename` 是原子的 ——
+/// 中途断电不会留下半个包。第二次没成就**把旧的搬回来**：
+/// 宁可这次没更新成，也不能让用户下次打不开启动器。
+///
+/// 拆出来是为了能在 Linux 上测 —— 这段逻辑动的是用户 `/Applications` 里的东西，
+/// 是这条路上最该被钉死的一段，而它本身和 macOS 没有任何关系。
+fn swap_bundle(app: &Path, new_app: &Path) -> AppResult<()> {
+    let parent = app.parent().ok_or_else(|| {
+        AppError::new(
+            Code::UpdateFailed,
+            format!("{} 没有上级目录，换不了。", app.display()),
+        )
+    })?;
+    let backup = parent.join(format!(".hunter-launcher-old-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&backup);
+    std::fs::rename(app, &backup).map_err(|e| {
+        AppError::new(
+            Code::UpdateFailed,
+            format!("挪开旧的 {} 失败：{e}（什么都没有改动）", app.display()),
+        )
+    })?;
+    if let Err(e) = std::fs::rename(new_app, app) {
+        let back = std::fs::rename(&backup, app);
+        return Err(AppError::new(
+            Code::UpdateFailed,
+            format!(
+                "把新版本搬到 {} 失败：{e}。旧版本{}。",
+                app.display(),
+                if back.is_ok() {
+                    "已经放回原位，照常可以打开"
+                } else {
+                    "没能放回原位，它现在在同一个目录下、名字以 .hunter-launcher-old- 开头"
+                }
+            ),
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+    Ok(())
+}
+
+/// 解一个 `.tar.gz` 到指定目录。用系统自带的 `tar`（macOS 上是 bsdtar）。
+///
+/// 参数是**数组**不是拼出来的命令行（红线 3）。
+fn untar_gz(tgz: &Path, dst: &Path) -> AppResult<()> {
+    let r = crate::proc::run_timeout(
+        "/usr/bin/tar",
+        &["-xzf", &tgz.to_string_lossy(), "-C", &dst.to_string_lossy()],
+        Duration::from_secs(300),
+    )?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::UpdateFailed,
+            format!("解包 {} 失败：{}", tgz.display(), r.err_line()),
+        ));
+    }
+    Ok(())
+}
+
+/// 解出来的目录里那唯一一个 `.app`。
+///
+/// **不止一个就停下来**：我们只发一个包，出现第二个说明下到的东西不是我们以为的那个，
+/// 这时候乱挑一个去替换用户的应用是最不该做的事。
+fn single_app_in(dir: &Path) -> AppResult<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| {
+            AppError::new(
+                Code::UpdateFailed,
+                format!("读 {} 失败：{e}", dir.display()),
+            )
+        })?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "app"))
+        .collect();
+    found.sort();
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => Err(AppError::new(
+            Code::UpdateFailed,
+            "解出来的包里没有 .app —— 下到的东西不是 macOS 的启动器包，不换。".to_string(),
+        )),
+        n => Err(AppError::new(
+            Code::UpdateFailed,
+            format!("解出来的包里有 {n} 个 .app，认不准该用哪一个，不换。"),
+        )),
+    }
+}
+
+/// Windows：下 NSIS 安装器，用 **passive** 模式跑它（与 `tauri.conf.json` 的
+/// `plugins.updater.windows.installMode = "passive"` 一致 —— 界面版走 Tauri 的
+/// updater，也是这个模式，两条路的行为得是同一个）。
+///
+/// `/P` 是 Tauri 的 NSIS 模板认的「被动模式」开关：只显示进度条、不问问题。
+/// **不带 `/R`**：那是「装完把程序重新拉起来」，而这条路是命令行，
+/// 调用方要的是一个退出码，不是一个突然弹出来的窗口。
+fn windows_install(
+    bytes: &[u8],
+    version: &str,
+    url: &str,
+    note: &mut impl FnMut(&str),
+) -> AppResult<String> {
+    let name = file_name_of(url, "hunter-launcher-setup.exe");
+    let exe = paths::updates_dir().join(&name);
+    std::fs::write(&exe, bytes).map_err(|e| {
+        AppError::new(
+            Code::UpdateFailed,
+            format!("写 {} 失败：{e}", exe.display()),
+        )
+    })?;
+    note(&format!(
+        "正在用被动模式安装 {name}（只显示进度条，不会问你问题）"
+    ));
+    let r = crate::proc::run_timeout(&exe.to_string_lossy(), &["/P"], Duration::from_secs(900))?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::UpdateFailed,
+            format!(
+                "安装器返回了 {:?}：{}（包还在 {}）",
+                r.status,
+                r.err_line(),
+                exe.display()
+            ),
+        ));
+    }
+    linfo!("Windows 安装器已跑完（退出码 0），目标版本 {version}");
+    // **不说「已经更新好了」**：NSIS 在需要 UAC 时会另起一个提权进程，
+    // 父进程可能在那之前就返回 0 —— 我们能确定的只有「安装器跑完了、没报错」。
+    // 版本号得等它真的装完、重新打开才算数（红线 1）。
+    Ok(format!(
+        "{name} 已经跑完（退出码 0），目标版本 v{version}。重新打开启动器确认版本号。"
+    ))
 }
 
 /// 下 `.deb` 与它的 `.sig`，验完再返回落地路径。
@@ -865,6 +1172,200 @@ mod headless_tests {
             .contains(&k),
             "{k}"
         );
+    }
+
+    /// 一份**按真实 `latest.json` 的形状**造出来的清单（签名段是占位符，
+    /// 这几条测试只看「选中了哪个 url」，验签有它自己的测试）。
+    ///
+    /// 各平台的文件名与 `release.yml` 实际发出去的一致：
+    /// Linux 是 `.AppImage`、Windows 是 `_x64-setup.exe`、
+    /// macOS 两个键都指向同一个 `_universal.app.tar.gz`（通用二进制，一份管两种芯片）。
+    fn 样本清单() -> Manifest {
+        serde_json::from_str(
+            r#"{
+              "version": "0.1.14",
+              "notes": "n",
+              "platforms": {
+                "linux-x86_64":   {"signature":"s1","url":"https://cos/launcher/0.1.14/hunter-launcher_0.1.14_amd64.AppImage"},
+                "windows-x86_64": {"signature":"s2","url":"https://cos/launcher/0.1.14/hunter-launcher_0.1.14_x64-setup.exe"},
+                "darwin-x86_64":  {"signature":"s3","url":"https://cos/launcher/0.1.14/hunter-launcher_0.1.14_universal.app.tar.gz"},
+                "darwin-aarch64": {"signature":"s4","url":"https://cos/launcher/0.1.14/hunter-launcher_0.1.14_universal.app.tar.gz"}
+              }
+            }"#,
+        )
+        .expect("样本清单要解析得了")
+    }
+
+    /// **I14 · F1 的回归**：这台机器该下哪个包，由清单里它自己那一项说了算。
+    ///
+    /// 0.1.13 在用户 Mac 上下的是 `hunter-launcher_0.1.13_amd64.deb`，
+    /// 然后 `dpkg: command not found` —— 因为 macOS / Windows 都落进了
+    /// 「下 .deb」那个兜底分支。这条测试在三个平台上都跑，
+    /// 断言的是「按 target_key 取到的那一项，后缀是这个平台该有的后缀」。
+    #[test]
+    fn 每个平台取到的都是它自己那个包() {
+        let m = 样本清单();
+        for (key, want) in [
+            ("linux-x86_64", ".AppImage"),
+            ("windows-x86_64", "-setup.exe"),
+            ("darwin-x86_64", ".app.tar.gz"),
+            ("darwin-aarch64", ".app.tar.gz"),
+        ] {
+            let p = m
+                .platforms
+                .get(key)
+                .unwrap_or_else(|| panic!("{key} 该在清单里"));
+            assert!(p.url.ends_with(want), "{key} 应当取 {want}：{}", p.url);
+            // 任何一个平台都不该取到 .deb —— 那是 Linux 包管理器的东西，
+            // 而且它从来就不在 latest.json 里（updater 换不了它）
+            assert!(!p.url.ends_with(".deb"), "{key} 不该是 .deb：{}", p.url);
+        }
+        // 这台机器自己那一项一定取得到
+        let mine = m.platforms.get(target_key());
+        assert!(mine.is_some(), "清单里必须有 {}", target_key());
+    }
+
+    /// macOS 的两个 target 指的是**同一个通用二进制包**（`release.yml` 就是这么打的）。
+    #[test]
+    fn macos_两个架构共用同一个通用包() {
+        let m = 样本清单();
+        assert_eq!(
+            m.platforms["darwin-x86_64"].url, m.platforms["darwin-aarch64"].url,
+            "universal 包一份管两种芯片"
+        );
+    }
+
+    /// 清单里没有这台机器的平台时**如实报**，不去拼一个文件名硬下。
+    #[test]
+    fn 清单里没有这个平台就如实说() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"version":"0.1.14","platforms":{"某个不存在的平台":{"signature":"s","url":"u"}}}"#,
+        )
+        .unwrap();
+        let e = fetch_asset(&m, &mut |_| {}).unwrap_err();
+        assert!(e.msg.contains(target_key()), "{}", e.msg);
+        assert!(
+            e.msg.contains("清单里有的是"),
+            "要说清单里到底有什么：{}",
+            e.msg
+        );
+    }
+
+    #[test]
+    fn 从地址里取文件名() {
+        assert_eq!(
+            file_name_of(
+                "https://cos/launcher/0.1.14/hunter-launcher_0.1.14_universal.app.tar.gz",
+                "x"
+            ),
+            "hunter-launcher_0.1.14_universal.app.tar.gz"
+        );
+        assert_eq!(
+            file_name_of("https://cos/launcher/", "fallback"),
+            "fallback"
+        );
+        // 带查询串或反斜杠的一律退回兜底名字，不拿它去拼路径
+        assert_eq!(
+            file_name_of("https://x/a.exe?token=1", "fallback"),
+            "fallback"
+        );
+        assert_eq!(file_name_of("https://x/..\\evil", "fallback"), "fallback");
+    }
+
+    /// 解出来的包里必须**正好一个** `.app`。零个或多个都停下来 ——
+    /// 这一步之后就要动用户 `/Applications` 里的东西了，认不准就别动。
+    #[test]
+    fn 解出来的包里必须正好一个_app() {
+        let base = std::env::temp_dir().join(format!("hunter-app-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        let zero = base.join("zero");
+        std::fs::create_dir_all(&zero).unwrap();
+        assert!(single_app_in(&zero).is_err(), "一个都没有要报错");
+
+        let one = base.join("one");
+        std::fs::create_dir_all(one.join("Hunter Launcher.app")).unwrap();
+        std::fs::write(one.join("readme.txt"), "x").unwrap();
+        let got = single_app_in(&one).expect("正好一个要挑得出来");
+        assert!(got.ends_with("Hunter Launcher.app"), "{}", got.display());
+
+        let two = base.join("two");
+        std::fs::create_dir_all(two.join("A.app")).unwrap();
+        std::fs::create_dir_all(two.join("B.app")).unwrap();
+        assert!(single_app_in(&two).is_err(), "两个要报错，不许乱挑一个");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 换包那两次 `rename`：**换成了新的，而且旧的收拾干净了**。
+    ///
+    /// 这段逻辑动的是用户 `/Applications` 里的东西，所以它单独拆出来、
+    /// 在 Linux 上也真跑一遍（它和 macOS 本身没有任何关系）。
+    #[test]
+    fn 换包那两次_rename_换得对也收拾得干净() {
+        let base = std::env::temp_dir().join(format!("hunter-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let apps = base.join("Applications");
+        let stage = base.join("stage");
+        std::fs::create_dir_all(apps.join("Hunter Launcher.app/Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(stage.join("Hunter Launcher.app/Contents/MacOS")).unwrap();
+        let app = apps.join("Hunter Launcher.app");
+        let new_app = stage.join("Hunter Launcher.app");
+        std::fs::write(app.join("Contents/MacOS/hunter-launcher"), b"old").unwrap();
+        // 旧包里有、新包里没有的文件：换完之后不该再出现（不是「盖上去」而是「换掉」）
+        std::fs::write(app.join("Contents/stale.txt"), b"x").unwrap();
+        std::fs::write(new_app.join("Contents/MacOS/hunter-launcher"), b"new").unwrap();
+
+        swap_bundle(&app, &new_app).expect("换包应当成功");
+
+        assert_eq!(
+            std::fs::read(app.join("Contents/MacOS/hunter-launcher")).unwrap(),
+            b"new",
+            "换上去的必须是新的那一份"
+        );
+        assert!(
+            !app.join("Contents/stale.txt").exists(),
+            "旧包里多出来的文件不该留下 —— 这是「换掉」不是「盖上去」"
+        );
+        // 临时的备份目录收拾干净了：同级目录里只剩那一个 .app
+        let left: Vec<String> = std::fs::read_dir(&apps)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec!["Hunter Launcher.app".to_string()], "{left:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 第二次 `rename` 失败时**旧的要回到原位** —— 用户下次必须还能打开它。
+    #[test]
+    fn 换包搬不进去的时候旧的会被放回来() {
+        let base = std::env::temp_dir().join(format!("hunter-swap-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let apps = base.join("Applications");
+        std::fs::create_dir_all(apps.join("Hunter Launcher.app")).unwrap();
+        let app = apps.join("Hunter Launcher.app");
+        std::fs::write(app.join("marker"), b"old").unwrap();
+        // 新包根本不存在 → 第二次 rename 必然失败
+        let missing = base.join("stage").join("Hunter Launcher.app");
+
+        let e = swap_bundle(&app, &missing).expect_err("这一次必须失败");
+        assert!(e.msg.contains("已经放回原位"), "{}", e.msg);
+        assert!(app.join("marker").exists(), "旧包必须回到原位");
+        assert_eq!(std::fs::read(app.join("marker")).unwrap(), b"old");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `.deb` 那条路是 **Linux 专属**的兜底，不该再对 macOS / Windows 说
+    /// 「这台机器上的启动器是 macos 形式装的，换包要管理员权限」。
+    #[test]
+    fn 只有_deb_那一档才说要管理员() {
+        assert!(InstallKind::MacOS.can_self_install(), "mac 上要能自己装");
+        assert!(
+            InstallKind::Windows.can_self_install(),
+            "Windows 上要能自己装"
+        );
+        assert!(!InstallKind::Deb.can_self_install());
     }
 
     #[test]

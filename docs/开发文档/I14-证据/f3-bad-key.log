@@ -1,0 +1,14 @@
+
+[1m== F3 · .env 里是一把格式不对的 key → 不许说「沿用」 ==[0m
+    
+    复核员 · 真实调用
+    ────────────────────
+      计划里 1 个动作：
+        · install_runtime：**这一条连动作表那一关都没过** —— 这台机器是 Linux：装 Docker 要改系统服务、要管理员权限，启动器这一版还没有做这条链路。你可以先用系统自带的包管理器装好 Docker，再回来点一次「重新检测」；启动器会自己接着往下装。
+      要不要复核：要（计划里含「需要你同意」级别的动作）
+      ⚠ <用户目录>/.hunter/app/.env 里的 HUNTER_API_KEY（hunt_tools_****）不是一把 hunter key 的样子（应当是 hunt_tools_ 开头的 43 位），没法沿用。
+    
+    ✗ E_KEY_INVALID: 标准输入不是终端，没法交互式问 key。用 --key-file <路径> 指一个文件。
+      日志：/home/support/.hunter/logs/launcher.log
+  [32m✓[0m 没有谎称沿用
+  [32m✓[0m 已还原 .env

@@ -46,6 +46,7 @@ import type {
   ExportResult,
   FeedbackForm,
   KeyCheckResult,
+  KeptKey,
   LauncherSettings,
   LauncherUpdate,
   MissingEndpoint,
@@ -161,6 +162,12 @@ export async function startDaemon(): Promise<string> {
 export async function validateKey(key: string): Promise<KeyCheckResult> {
   if (DEMO) return demo.demoKeyCheck
   return call<KeyCheckResult>('validate_key', { key })
+}
+
+/** 上次「只删应用」保留下来的那把 key 还能不能用（I14 · F3）。 */
+export async function keptKey(): Promise<KeptKey> {
+  if (DEMO) return demo.demoKeptKey(demoPage())
+  return call<KeptKey>('kept_key')
 }
 
 export interface ModelChoice {

@@ -55,6 +55,12 @@ pub struct AppState {
     /// 于是「拉取」这一步在很多机器上悄悄没执行，出问题时谁也说不清它到底跑没跑。
     /// 显式开关只在用户真的导入过离线包时为真，行为可预期。
     pub offline: AtomicBool,
+    /// 装完那一刻发生过、但不属于「六个服务起没起来」的那几件事（I14 · F4）。
+    ///
+    /// 目前只有一件：定时备份任务有没有按 `[backup] enabled` 重新挂上。
+    /// 0.1.13 时这件事**只写进日志**，界面与命令行上一个字都没有 ——
+    /// 于是用户删掉应用重装之后，以为定时备份再也不会回来了，自己去手工装了一遍。
+    pub post_install: Mutex<Vec<String>>,
 }
 
 impl Default for AppState {
@@ -81,6 +87,7 @@ impl AppState {
             start_note: Mutex::new(None),
             // 从落盘的配置里读回来 —— `--import-images` 与真正的安装是两个进程
             offline: AtomicBool::new(cfg_offline),
+            post_install: Mutex::new(Vec::new()),
         }
     }
 
@@ -807,16 +814,49 @@ pub fn start(
             // 刚装完的那一天晚上 00:00 就该有第一份备份，而用户完全可能
             // 装完就把启动器关了、几天不开。装不上不算安装失败 ——
             // 设置页与运行面板会如实显示定时任务的真实状态。
-            if cfg.backup.enabled {
+            //
+            // I14 · F4：这件事**要说出来**。0.1.13 只往日志里写一行，
+            // 命令行与界面上什么都没有，用户没法知道定时任务回来了没有。
+            let note = if cfg.backup.enabled {
                 match crate::schedule::sync(|t| crate::linfo!("装完挂定时备份：{t}")) {
-                    Ok(st) => crate::linfo!(
-                        "装完挂定时备份：{} · 每天 {} · 系统里装上了 {}",
-                        st.mech,
-                        st.time,
-                        st.installed
-                    ),
-                    Err(e) => crate::lwarn!("装完挂定时备份没成（不影响安装）：{}", e.msg),
+                    Ok(sc) if sc.installed => {
+                        crate::linfo!(
+                            "装完挂定时备份：{} · 每天 {} · 系统里装上了 true",
+                            sc.mech,
+                            sc.time
+                        );
+                        format!(
+                            "已按你的备份设置把每天 {} 的自动备份重新挂上（{}）",
+                            sc.time, sc.mech
+                        )
+                    }
+                    // 装了但系统里查不到：如实说，不当作成功（红线 1）
+                    Ok(sc) => {
+                        crate::lwarn!("装完挂定时备份：系统里没查到（{}）", sc.reason);
+                        format!(
+                            "自动备份的定时任务没挂上：{}。Hunter 本身不受影响，可以到设置页重试。",
+                            if sc.reason.is_empty() {
+                                "系统里查不到这个任务".to_string()
+                            } else {
+                                sc.reason.clone()
+                            }
+                        )
+                    }
+                    Err(e) => {
+                        crate::lwarn!("装完挂定时备份没成（不影响安装）：{}", e.msg);
+                        format!(
+                            "自动备份的定时任务没挂上：{}。Hunter 本身不受影响，可以到设置页重试。",
+                            e.msg
+                        )
+                    }
                 }
+            } else {
+                crate::linfo!("装完没挂定时备份：配置里 [backup] enabled = false");
+                "配置里自动备份是关着的，所以没有装定时任务（设置页可以打开）".to_string()
+            };
+            if let Ok(mut g) = state.post_install.lock() {
+                g.clear();
+                g.push(note);
             }
             if let Ok(mut g) = state.services.lock() {
                 *g = v.clone();
@@ -903,6 +943,8 @@ pub struct RuntimeStatus {
     pub data_source_sub: String,
     /// 上游确实没有、因此只能显示「—」的几项（前端按 id 取说明）
     pub missing: Vec<MissingEndpoint>,
+    /// 这一次安装收尾时发生的事（目前只有「定时备份挂没挂上」，见 [`AppState::post_install`]）
+    pub post_install_notes: Vec<String>,
 }
 
 /// 一条「需上游配合」的接口。界面与成果文档用的是同一份清单。
@@ -1054,6 +1096,11 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         data_source,
         data_source_sub,
         missing: missing_endpoints(),
+        post_install_notes: state
+            .post_install
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default(),
     }
 }
 

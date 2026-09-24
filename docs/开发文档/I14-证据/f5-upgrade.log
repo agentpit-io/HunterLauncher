@@ -1,0 +1,39 @@
+
+[1m== F5 · 升级 Hunter（升级前自动备份 → 拉新 tag → up → 健康） ==[0m
+    升级前：61 张表
+    当前 tag = "1.2.0"
+    
+    升级 Hunter v1.2.0 → v1.2.1
+    ──────────────────────────────────────────────────
+      升级 Hunter：v1.2.0 → v1.2.1
+      正在取 v1.2.1 的 docker-compose.yml…
+      已取到（来自 raw.githubusercontent.com，23990 字节）
+      正在备份（数据库 + 配置）…
+      备份放到 <用户目录>/Hunter-backups/hunter-20260924-2327-v1.2.0
+      已备份配置：.env、docker-compose.yml、docker-compose.launcher.yml、launcher.toml
+      正在转储数据库 hunter（用户 hunter）…
+      数据库已转储（144 KB）
+      校验通过 · pg_restore --list 读出 391 条目录项
+      已打包 hunter_secrets（303 B）
+      已打包 hunter_user_skills（87 B）
+      已打包 hunter_opencode_data（15.2 KB）
+      已写入新的 compose 与 .env（HUNTER_VERSION=1.2.1，端口不变）
+      docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）
+      要拉的六个镜像合计约 850 MB（已有的层不会重复下载）
+      正在拉取新版本的镜像…
+        0% 0 B / 850 MB
+       84% 716 MB / 850 MB
+       93% 786 MB / 850 MB
+       93% 786 MB / 850 MB
+       93% 786 MB / 850 MB
+       93% 786 MB / 850 MB
+      正在用新镜像重建容器…
+      6 个服务全部就绪
+      已升级到 v1.2.1，六个服务都已就绪。升级前的备份留在 /home/support/Hunter-backups/hunter-20260924-2327-v1.2.0。
+    
+      ✓ 已升级到 v1.2.1，六个服务都已就绪。升级前的备份留在 /home/support/Hunter-backups/hunter-20260924-2327-v1.2.0。
+    
+    用时 144 秒
+    升级后 tag = "1.2.1"
+  [32m✓[0m 6/6 健康
+    升级后：61 张表
