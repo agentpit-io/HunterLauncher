@@ -29,6 +29,30 @@ pub fn hms_shanghai(unix: i64) -> String {
     format!("{h:02}:{mi:02}:{s:02}")
 }
 
+/// 一段时长说成人话：`45 秒` / `1 分 30 秒` / `2 小时 5 分`（I16）。
+///
+/// 界面上「拉了 90 秒没有任何数据进来」比「拉了 90000 毫秒」好懂得多，
+/// 而「一个多小时」这种量级用秒说就完全没有感觉了。
+pub fn human_secs(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs} 秒");
+    }
+    let (m, s) = (secs / 60, secs % 60);
+    if m < 60 {
+        return if s == 0 {
+            format!("{m} 分")
+        } else {
+            format!("{m} 分 {s} 秒")
+        };
+    }
+    let (h, m) = (m / 60, m % 60);
+    if m == 0 {
+        format!("{h} 小时")
+    } else {
+        format!("{h} 小时 {m} 分")
+    }
+}
+
 /// 文件名安全的上海时间戳：`20260921-183045`。
 ///
 /// 定长，所以**按名字排序 = 按时间排序**（事件流归档就靠这一点决定删哪几份）。
@@ -165,5 +189,17 @@ mod tests {
         let s = now_shanghai();
         assert_eq!(s.len(), 19, "{s}");
         assert!(s.starts_with("20"), "{s}");
+    }
+
+    #[test]
+    fn 时长说人话() {
+        assert_eq!(human_secs(0), "0 秒");
+        assert_eq!(human_secs(59), "59 秒");
+        assert_eq!(human_secs(60), "1 分");
+        assert_eq!(human_secs(90), "1 分 30 秒");
+        assert_eq!(human_secs(3600), "1 小时");
+        assert_eq!(human_secs(3900), "1 小时 5 分");
+        // 客户那次就是这个量级
+        assert_eq!(human_secs(4200), "1 小时 10 分");
     }
 }

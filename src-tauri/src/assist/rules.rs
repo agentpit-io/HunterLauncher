@@ -394,7 +394,10 @@ fn cred_helper(r: &Report) -> Option<Suggestion> {
 }
 
 fn pull_failed(r: &Report) -> Option<Suggestion> {
-    if r.error_code.as_deref() != Some("E_PULL_FAILED") {
+    // **卡住也走这条规则**（I16）：两个现场的第一步动作是同一个 —— 换源。
+    // 但说法不一样，所以下面的 `detail` 分成两套（见 `stalled`）。
+    let stalled = r.error_code.as_deref() == Some("E_PULL_STALLED");
+    if !stalled && r.error_code.as_deref() != Some("E_PULL_FAILED") {
         return None;
     }
     // 现在用的不是国内源时，换源是最见效的一步
@@ -402,16 +405,46 @@ fn pull_failed(r: &Report) -> Option<Suggestion> {
         .iter()
         .find(|c| c.id != r.registry_id)?;
     let plan = actions::plan(&Call::with("switch_registry", "registry", &other.id)).ok()?;
-    Some(Suggestion {
-        rule: "pull-failed-switch-registry".into(),
-        code: Some("E_PULL_FAILED".into()),
-        title: "镜像没拉下来".into(),
-        detail: format!(
+    let detail = if stalled {
+        // 卡住的机器上「源不通」这句话是错的 —— manifest 明明读到了。
+        // 说错原因比不说更糟：用户会照着一个不存在的问题去折腾。
+        format!(
+            "现在用的源是「{}」（{}）。\n\
+             这一次不是「连不上」，是**连上了但不给数据** —— 镜像列表都读到了，\n\
+             拉层的时候一个字节都不来。这种连接不会报错，只会一直等下去。\n\
+             多半是这台机器到镜像仓库的路被掐在半路上了（运营商、公司网关、代理）。\n\
+             换成「{}」（{}）走另一条路再试一次是最省事的一步；两条路都这样的话，\n\
+             换个网络（手机热点最快验），或者用离线包装。",
+            r.registry_id, r.registry_prefix, other.label, other.prefix
+        )
+    } else {
+        format!(
             "现在用的源是「{}」（{}）。\n\
              拉不动最常见的原因就是这个源在你的网络里不通 —— 国内直连 ghcr.io 经常超时。\n\
              可以换成「{}」（{}）再试一次。",
             r.registry_id, r.registry_prefix, other.label, other.prefix
+        )
+    };
+    Some(Suggestion {
+        rule: if stalled {
+            "pull-stalled-switch-registry".into()
+        } else {
+            "pull-failed-switch-registry".into()
+        },
+        code: Some(
+            if stalled {
+                "E_PULL_STALLED"
+            } else {
+                "E_PULL_FAILED"
+            }
+            .into(),
         ),
+        title: if stalled {
+            "镜像拉着拉着不动了".into()
+        } else {
+            "镜像没拉下来".into()
+        },
+        detail,
         actions: vec![plan],
         // 换源大概率有用，但也可能是代理、磁盘、认证的问题，留给用户决定要不要问 AI
         confident: false,

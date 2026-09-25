@@ -61,6 +61,12 @@ pub struct AppState {
     /// 0.1.13 时这件事**只写进日志**，界面与命令行上一个字都没有 ——
     /// 于是用户删掉应用重装之后，以为定时备份再也不会回来了，自己去手工装了一遍。
     pub post_install: Mutex<Vec<String>>,
+    /// **上一次给用户看过的那份上传预览**（I16）。
+    ///
+    /// 上传时用的就是它，不重新收集一遍 —— 否则「界面上给他看的」与
+    /// 「真正送出去的」会是两份不同的字节（中间隔着几秒，日志又长了几行）。
+    /// 那种「看到的是一套、发出去的是另一套」正是这一条最不能有的毛病。
+    pub upload_preview: Mutex<Option<crate::logship::Preview>>,
 }
 
 impl Default for AppState {
@@ -88,6 +94,7 @@ impl AppState {
             // 从落盘的配置里读回来 —— `--import-images` 与真正的安装是两个进程
             offline: AtomicBool::new(cfg_offline),
             post_install: Mutex::new(Vec::new()),
+            upload_preview: Mutex::new(None),
         }
     }
 
@@ -523,6 +530,8 @@ pub fn pull(
     let mut last_err: Option<AppError> = None;
     // 上一次「因为哪条原话」换的源。下一次还是同一条 → 与源无关，别再换了（I6）
     let mut switched_from: Option<String> = None;
+    // 已经卡死过的源（I16）。两个源都在这里面 = 换源救不了，别再换（见下面那一段）
+    let mut stalled: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     // 离线包模式：镜像已经在本机了，一个字节都不用下（方案 §9）。
     // 但仍然要**复核一遍六个镜像真在**，不然「跳过拉取」就成了一句空话，
@@ -562,7 +571,8 @@ pub fn pull(
         }
 
         linfo!("第 {attempt} 次拉取，镜像源 {prefix}");
-        let r = compose::pull_streaming(&mut agg, &state.cancel, |p| {
+        let stall = state.config().hunter.pull_stall();
+        let r = compose::pull_streaming(&mut agg, &state.cancel, stall, |p| {
             if let Ok(mut g) = state.pull.lock() {
                 *g = p.clone();
             }
@@ -606,15 +616,65 @@ pub fn pull(
             }
             Err(e) => {
                 lwarn!("第 {attempt} 次拉取失败：{}", e.msg);
+                if state.cancel.load(Ordering::Relaxed) {
+                    let mut snap = agg.snapshot(PullPhase::Failed, Some(e.msg.clone()));
+                    snap.attempt = attempt;
+                    if let Ok(mut g) = state.pull.lock() {
+                        *g = snap.clone();
+                    }
+                    on_progress(&snap);
+                    return Err(e);
+                }
+
+                // ── 卡住（I16） ────────────────────────────────────────
+                //
+                // 「拉不动」和「拉失败」在这里分两条路走：
+                // 失败有原话，可以按原话判断换源有没有用；**卡住没有原话** ——
+                // 它什么都没说，我们只知道这一路不出数据。
+                // 对这一档，唯一讲得通的动作就是换一条路再试；
+                // **两条路都卡死了才算失败**，那时候再换就是在浪费用户的时间。
+                let mut e = e;
+                if e.code == Code::PullStalled {
+                    stalled.insert(prefix.clone());
+                    let next = if opts.registry.is_none() {
+                        next_registry(&prefix, &opts.tag)
+                    } else {
+                        // 用户点名了源，不给他换到别处去
+                        None
+                    };
+                    match next {
+                        Some(n) if !stalled.contains(n.prefix.as_ref()) => {
+                            e.msg = format!("{}，换「{}」再试", e.msg, n.label);
+                        }
+                        _ => {
+                            let tried: Vec<&str> = stalled.iter().map(String::as_str).collect();
+                            e.msg = format!(
+                                "{}。{} 都试过了，都是连得上、不给数据 ——                                  这多半是这台机器到镜像仓库的网络被掐在半路上了（运营商、公司网关、代理）。                                 可以换个网络再试，或者用离线包安装。",
+                                e.msg,
+                                if tried.len() > 1 {
+                                    format!("{} 个源", tried.len())
+                                } else {
+                                    "这个源".to_string()
+                                }
+                            );
+                            let mut snap = agg.snapshot(PullPhase::Failed, Some(e.msg.clone()));
+                            snap.attempt = attempt;
+                            if let Ok(mut g) = state.pull.lock() {
+                                *g = snap.clone();
+                            }
+                            on_progress(&snap);
+                            return Err(e);
+                        }
+                    }
+                }
+
                 let mut snap = agg.snapshot(PullPhase::Failed, Some(e.msg.clone()));
                 snap.attempt = attempt;
                 if let Ok(mut g) = state.pull.lock() {
                     *g = snap.clone();
                 }
                 on_progress(&snap);
-                if state.cancel.load(Ordering::Relaxed) {
-                    return Err(e);
-                }
+
                 // **与下载源无关的失败，立刻停**（I6）。
                 //
                 // 0.1.5 在用户 Mac 上：凭据助手找不到 → 这里照样换源重试，
@@ -624,9 +684,11 @@ pub fn pull(
                     lwarn!("这条失败与下载源无关（{}），不再换源重试", e.code.as_str());
                     return Err(e);
                 }
-                // 换过一次源，原话一个字都没变 —— 同上，不再换第二次
+                // 换过一次源，原话一个字都没变 —— 同上，不再换第二次。
+                // **卡住那一档不走这条判断**：它上面已经按「哪些源卡过」判完了，
+                // 而它的原话里带着源的名字，指纹本来就不会相同
                 let fp = crate::assist::auto::error_fingerprint(&e.msg);
-                if switched_from.as_deref() == Some(fp.as_str()) {
+                if e.code != Code::PullStalled && switched_from.as_deref() == Some(fp.as_str()) {
                     lwarn!("换过源之后原话没变，判定与下载源无关，不再换源重试");
                     return Err(e);
                 }

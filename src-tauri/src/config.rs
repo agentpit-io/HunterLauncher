@@ -152,11 +152,24 @@ pub struct HunterSection {
     /// 慢机器上 AI 的 `raise_timeouts` 动作会把它调长（I5 动作表 v2）
     #[serde(default = "default_start_timeout")]
     pub start_timeout_secs: u64,
+    /// **拉镜像时「多久没有新进展就算卡死」（秒）**，默认 90（I16）。
+    ///
+    /// 和 `start_timeout_secs` 不是一回事：那一条是「总共最多等多久」，
+    /// 这一条是「多久没有任何进展」—— 拉 748 MB 在好网上 52 秒、
+    /// 在慢网上二十分钟，总超时写死哪个数都是错的，
+    /// 而「九十秒一个字节都没来」在两种网上都是同一个意思。
+    #[serde(default = "default_pull_stall")]
+    pub pull_stall_secs: u64,
 }
 
 /// 方案 §18 的 `E_START_TIMEOUT` 就是这个数。
 fn default_start_timeout() -> u64 {
     180
+}
+
+/// 静默超时的默认值，理由见 [`crate::proc::DEFAULT_SILENCE`]。
+fn default_pull_stall() -> u64 {
+    crate::proc::DEFAULT_SILENCE.as_secs()
 }
 
 /// 新配置的默认值 = 只绑本机（I7 起）。
@@ -174,6 +187,12 @@ impl HunterSection {
     pub fn start_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.start_timeout_secs.clamp(180, 900))
     }
+
+    /// 拉镜像的静默超时。同样夹回 [20, 1800] —— 手改成 1 秒会在正常的
+    /// 慢网上乱杀，改成一天就等于没有这个功能。
+    pub fn pull_stall(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.pull_stall_secs.clamp(20, 1800))
+    }
 }
 
 impl Default for HunterSection {
@@ -186,6 +205,7 @@ impl Default for HunterSection {
             ports: Ports::default(),
             web_bind: default_web_bind(),
             start_timeout_secs: default_start_timeout(),
+            pull_stall_secs: default_pull_stall(),
         }
     }
 }
@@ -200,6 +220,34 @@ pub struct TelemetrySection {
     /// 留成可配置项是为了日后真建好服务时改一行配置就能用，不用改代码。
     #[serde(default)]
     pub endpoint: String,
+}
+
+/// **一键上传日志**（I16 · P0-2）。
+///
+/// 排障原来的样子是：让用户导诊断包 → 他把 zip 发给我们 → 我们人工翻。
+/// 客户一休息这条链子就断了 —— 2026-09-25 那次拉取卡死，我们**手上一份日志都没有**。
+///
+/// 现在是：用户点一下，脱敏后的日志直接进我们的库，他只要念一个追踪码。
+///
+/// 三条底线写在这里，不靠自觉：
+/// * `machine_id` 是**随机 UUID**，不碰任何硬件信息（MAC、序列号、主机名一律不读）；
+/// * `auto_on_error` 默认关，而且打开之后也**只在出错时**传，正常流程一个字节都不传；
+/// * key 一个字节都不上传（红线 2），串同一个用户靠的是 `machine_id`。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SupportSection {
+    /// 这台机器的随机标识。第一次要用的时候生成，之后不再变。
+    /// **不是硬件指纹** —— 用户删掉 `launcher.toml` 就换一个，本来就该这样。
+    #[serde(default)]
+    pub machine_id: String,
+    /// 出错时自动上传日志。**默认 false**，只有用户在设置页亲手打开才是 true。
+    #[serde(default)]
+    pub auto_on_error: bool,
+    /// 最近一次上传拿到的追踪码（界面上「上次的码是什么」问得出来）
+    #[serde(default)]
+    pub last_trace_code: String,
+    /// 最近一次上传的时间（上海时间）
+    #[serde(default)]
+    pub last_upload_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -684,6 +732,8 @@ pub struct LauncherConfig {
     pub hunter: HunterSection,
     #[serde(default)]
     pub telemetry: TelemetrySection,
+    #[serde(default)]
+    pub support: SupportSection,
     #[serde(default)]
     pub model: ModelSection,
     #[serde(default)]

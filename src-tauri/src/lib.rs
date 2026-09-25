@@ -28,6 +28,7 @@
 //! | [`uninstall`] | R4 | 删除应用（两种范围 + 逐字确认 + 只动本项目） |
 //! | [`cleanup`] | R7 | 一键腾空间：只清本项目旧镜像、悬空卷、过期备份 |
 //! | [`offline`] | §9 | 离线包导入 / 导出（`docker load` / `save`） |
+//! | [`logship`] | I16 | 一键上传日志（脱敏后直接进我们的库，用户只要念一个追踪码） |
 
 use serde::Serialize;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -48,6 +49,7 @@ pub mod gateway;
 pub mod headless;
 pub mod http;
 pub mod log;
+pub mod logship;
 pub mod monitor;
 pub mod netproxy;
 pub mod offline;
@@ -182,6 +184,9 @@ pub fn run() {
             commands::check_hunter_update,
             commands::upgrade_hunter,
             commands::upgrade_status,
+            // I16 · 强退之后的中间态：查一遍 + 回退到正在跑的那一版
+            commands::interrupted_upgrade,
+            commands::revert_to_running,
             commands::list_backups,
             commands::create_backup,
             commands::restore_backup,
@@ -238,6 +243,9 @@ pub fn run() {
             commands::takeover_confirm_text,
             commands::takeover_logs,
             commands::feedback_one_click,
+            // I16 · 一键上传日志
+            commands::logship_preview,
+            commands::logship_upload,
             // I7 · 只允许本机访问（用户 2026-09-21 19:05 的决定）
             commands::tighten_web_bind,
         ])

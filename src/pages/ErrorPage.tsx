@@ -5,6 +5,7 @@ import { Card } from '../components/Card'
 import { AlertTriangle, CheckCircle, Spinner } from '../components/Icons'
 import { Modal } from '../components/Modal'
 import { OfflineImport } from '../components/OfflineImport'
+import { UploadLogs } from '../components/UploadLogs'
 import { PlainLayout } from '../components/WizardLayout'
 import * as ipc from '../lib/ipc'
 import { useSelfCheck } from '../lib/useSelfCheck'
@@ -100,13 +101,19 @@ export function ErrorPage() {
         <div className="mt-[20px] flex flex-wrap gap-[10px]">
           {/* I7 · 一键反馈直达：生成脱敏包 + 预填 issue，**中间隔一屏给用户看**，
               他点了才打开浏览器。不会自动上传、不会假装上报成功。 */}
+          {/* I16 · 一键上传日志：脱敏后的日志直接进我们的排障库，用户只要念一个追踪码。
+              和上面那条「发送诊断给开发者」的区别是：那一条要他自己去 GitHub 贴，
+              这一条是他点一下就到我们手里 —— 客户一休息就断线的那个链条断在这里。 */}
+          <UploadLogs stage={stageOf(state.from)} errorCode={code} summary={state.detail} />
           <SendToDev code={code} detail={state.detail} />
           <Button size="sm" onClick={() => setOverlay('feedback')}>
             {t.error.oneClickFeedback}
           </Button>
           {/* 方案 §18 给 E_PULL_FAILED 规定的动作就是「换源重试 / 离线导入」。
-              换源由「重试」那条路自己做（flow::pull 会自动换源 3 次），这里补上离线导入。 */}
-          {code === 'E_PULL_FAILED' && <OfflineImport variant="button" />}
+              换源由「重试」那条路自己做（flow::pull 会自动换源 3 次），这里补上离线导入。
+              I16：拉着拉着不动了那一档同样该给这个出口 —— 两个源都不出数据时，
+              离线包是唯一还走得通的路。 */}
+          {(code === 'E_PULL_FAILED' || code === 'E_PULL_STALLED') && <OfflineImport variant="button" />}
         </div>
       </Card>
 
@@ -296,6 +303,26 @@ function SendToDev({ code, detail }: { code: string; detail?: string }) {
       )}
     </>
   )
+}
+
+/**
+ * 出错时的「阶段」。上传日志时带上它，我们在库里一眼看得出这条记录是哪一步炸的。
+ *
+ * 用的是状态机里「从哪一页出的错」，不是我们另起一套名字 ——
+ * 两套名字迟早会走岔。
+ */
+function stageOf(from: string): string {
+  switch (from) {
+    case 'AutoInstalling':
+    case 'Pulling':
+      return 'install'
+    case 'Starting':
+      return 'start'
+    case 'Upgrading':
+      return 'upgrade'
+    default:
+      return from.toLowerCase()
+  }
 }
 
 function KV({ label, value }: { label: string; value: string }) {

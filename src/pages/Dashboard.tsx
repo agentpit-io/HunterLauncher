@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { AlertBanner } from '../components/AlertBanner'
+import { InterruptedUpgradeCard } from '../components/InterruptedUpgradeCard'
+import { UploadLogs } from '../components/UploadLogs'
 import { Badge } from '../components/Badge'
 import { Modal } from '../components/Modal'
 import { UninstallDialog } from '../components/UninstallDialog'
@@ -312,6 +314,11 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* I16 · P1-2：上一次升级没做完（强退留下的中间态）。
+          **排在所有提醒的最前面** —— 这台机器现在的「版本」这件事本身是说不清的，
+          在用户选定之前，面板上其它关于版本的数字都要打个问号 */}
+      <InterruptedUpgradeCard onResolved={() => rt.reload()} />
+
       {/* I13 · R7：硬盘 / 内存 / 服务异常的提醒。排在资源卡之前 ——
           有问题的时候，用户要先看到结论，再去看那一堆数字 */}
       <AlertBanner />
@@ -533,6 +540,9 @@ export function Dashboard() {
             <Button size="sm" onClick={() => setOverlay('feedback')}>
               {t.common.feedback}
             </Button>
+            {/* I16：诊断区的第三个出口 —— 点一下，脱敏后的日志直接进我们的排障库，
+                用户只要念一个追踪码。上面那两个（日志 / 反馈）都要他自己动手发文件 */}
+            <UploadLogs stage="dashboard" testId="dashboard-upload-logs" />
             {/* 「更多 ▾」：删除应用放在这里，不放主按钮区（方案第三节第 2 条） */}
             <div className="relative">
               <Button size="sm" variant="ghost" data-testid="open-more" onClick={() => setMore((v) => !v)}>

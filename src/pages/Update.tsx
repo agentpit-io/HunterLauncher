@@ -195,6 +195,18 @@ function HunterCard() {
   }
 
   const running = st?.running ?? false
+  const [cancelling, setCancelling] = useState(false)
+
+  /** 取消升级。后端收到之后会杀子进程、回滚配置，然后照常把结果写进 upgradeStatus。 */
+  async function cancel() {
+    setCancelling(true)
+    try {
+      await ipc.cancelInstall()
+    } finally {
+      // 取消之后后端还要写回配置、复核一遍，所以按钮一直灰到那一轮跑完为止
+      window.setTimeout(() => setCancelling(false), 1500)
+    }
+  }
 
   return (
     <Card className="flex flex-col">
@@ -262,8 +274,23 @@ function HunterCard() {
             </div>
           )}
           {st.result && (
-            <div className="mt-[10px] text-sm leading-[1.6] text-amber-text" data-testid="upgrade-result">
+            <div
+              className={`mt-[10px] text-sm leading-[1.6] ${st.result.cancelled ? 'text-muted' : 'text-amber-text'}`}
+              data-testid="upgrade-result"
+            >
               {st.result.message}
+            </div>
+          )}
+          {/* I16 · P1-1：升级过程中可以取消。
+              点了就杀掉子进程、把配置写回升级前那一份，并明说容器一个都没动 ——
+              客户 2026-09-25 那次只能强退，而强退发生在「配置已经改成新版本、
+              镜像还没拉全」之后，**没有走到回滚**，机器就停在一个说不清的中间态。 */}
+          {running && (
+            <div className="mt-[10px] flex items-center gap-[10px]">
+              <Button size="sm" data-testid="upgrade-cancel" disabled={cancelling} onClick={() => void cancel()}>
+                {cancelling ? t.update.cancelling : t.update.cancelUpgrade}
+              </Button>
+              <span className="text-xs leading-[1.5] text-muted">{t.update.cancelHint}</span>
             </div>
           )}
         </>

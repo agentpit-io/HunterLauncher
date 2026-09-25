@@ -61,6 +61,10 @@ export type ErrorCode =
   | 'E_KEY_INVALID'
   | 'E_QUOTA_EXHAUSTED'
   | 'E_PULL_FAILED'
+  // I16：**拉着拉着不动了**。和 E_PULL_FAILED 分开，因为它连错都没报 ——
+  // TCP 连上了、进程活着、一个字节都不传。0.1.15 在客户 Mac 上就是这个现场：
+  // 界面「正在拉取新版本的镜像…」挂了一个多小时，「报错→换源」一次都没触发
+  | 'E_PULL_STALLED'
   | 'E_PORT_IN_USE'
   // I5：**起容器时** Docker 自己报的端口冲突（`port is already allocated`）。
   // 0.1.4 把它归成了 E_START_TIMEOUT，规则层于是认不出来 —— 用户 Mac 上那次失败的第 2 条根因
@@ -104,6 +108,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_KEY_INVALID',
   'E_QUOTA_EXHAUSTED',
   'E_PULL_FAILED',
+  'E_PULL_STALLED',
   'E_PORT_IN_USE',
   'E_PORT_CONFLICT',
   'E_CRED_HELPER',
@@ -220,6 +225,7 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   // I5：安装期的失败一律回到「自动安装」那一页从头再跑一次 ——
   // 那一页现在就是安装本身，没有别的地方可回
   E_PULL_FAILED: 'AutoInstalling',
+  E_PULL_STALLED: 'AutoInstalling',
   E_PORT_IN_USE: 'AutoInstalling',
   E_PORT_CONFLICT: 'AutoInstalling',
   E_CRED_HELPER: 'AutoInstalling',

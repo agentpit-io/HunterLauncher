@@ -111,6 +111,15 @@ pub struct Args {
     pub with_images: bool,
     pub with_runtime: bool,
     pub backup_first: bool,
+
+    // ── I16 ─────────────────────────────────────────────────────────────
+    /// `--upload-logs`：把脱敏后的日志传给我们，换一个追踪码。
+    ///
+    /// 不带 `-y` 只**打印将要上传的内容**（和界面上那一屏预览是同一份字节），
+    /// 一个请求都不发。带 `-y` 才真的传。
+    /// `--stage` / `--code` / `--summary` 是可选的上下文。
+    pub stage: Option<String>,
+    pub summary: Option<String>,
 }
 
 /// 手写参数解析。为这几个开关拖一个 clap 进来不划算，而且 Tauri 的可执行文件
@@ -148,6 +157,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         with_images: false,
         with_runtime: false,
         backup_first: false,
+        stage: None,
+        summary: None,
     };
     let v: Vec<String> = argv.into_iter().collect();
     let mut i = 0;
@@ -243,6 +254,19 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
             "--feedback" => {
                 a.action = Some("feedback".into());
                 a.headless = true;
+            }
+            // I16：一键上传日志。不带 -y 只打印要传什么，不发请求
+            "--upload-logs" => {
+                a.action = Some("upload-logs".into());
+                a.headless = true;
+            }
+            "--stage" => {
+                a.stage = v.get(i + 1).cloned();
+                i += 1;
+            }
+            "--summary" => {
+                a.summary = v.get(i + 1).cloned();
+                i += 1;
             }
             "--code" => {
                 a.code = v.get(i + 1).cloned();
@@ -356,6 +380,9 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --takeover stop|start|restart   动它（每一次都要 -y 再确认一遍）
   hunter-launcher --takeover release      不再管理它（它原地不动）
   hunter-launcher --feedback              生成脱敏诊断包 + 预填 issue 链接（**不发送**）
+  hunter-launcher --upload-logs           打印「将要上传给我们的那份日志」（**不发送**）
+  hunter-launcher --upload-logs -y        真的传，换回一个追踪码（不含 key 与口令）
+       可选：--stage upgrade --code E_PULL_STALLED --summary 一句话说明
   hunter-launcher --check-net           查「虚拟机有没有 DNS」与「容器连不连得上模型网关」（I10）
   hunter-launcher --boot-state          打开启动器时会走的那一次判定：该进哪一页、装没装过（I12 · R1）
   hunter-launcher --monitor             三层资源：这台电脑 / Hunter 运行环境 / Hunter 各服务（I12 · R2）
@@ -427,6 +454,7 @@ pub fn run(args: &Args) -> i32 {
         Some("review") => cmd_review(&st, args),
         Some("takeover") => cmd_takeover(args),
         Some("feedback") => cmd_feedback(args),
+        Some("upload-logs") => cmd_upload_logs(&st, args),
         Some("assist-replay") => match args.assist_replay.as_deref() {
             Some(p) => cmd_assist_replay(p),
             None => Err(AppError::new(
@@ -1608,6 +1636,96 @@ fn cmd_feedback(args: &Args) -> AppResult<()> {
     }
     println!();
     println!("  {}", r.note);
+    Ok(())
+}
+
+/// `--upload-logs`（I16）。
+///
+/// **不带 `-y` 时一个请求都不发**：只把将要上传的那份字节原样打出来。
+/// 这和界面上那一屏预览是同一个 [`crate::logship::preview`]、同一份 `body` ——
+/// 命令行这条路也不许「不给看就传」。
+fn cmd_upload_logs(st: &AppState, args: &Args) -> AppResult<()> {
+    title("上传日志给我们（不含 key 与口令）");
+    let mut cfg = st.config();
+    if crate::logship::ensure_machine_id(&mut cfg) {
+        cfg.save_if(true);
+        st.set_config(cfg.clone());
+    }
+    let p = crate::logship::preview(
+        &cfg,
+        args.stage.as_deref().unwrap_or(""),
+        args.code.as_deref().unwrap_or(""),
+        args.summary.as_deref().unwrap_or(""),
+        None,
+    )?;
+    println!("  接收地址：{}", p.endpoint);
+    println!(
+        "  machineId：{}（随机 UUID，不含任何硬件信息）",
+        p.machine_id
+    );
+    println!(
+        "  阶段 / 错误码：{} / {}",
+        if p.stage.is_empty() { "—" } else { &p.stage },
+        if p.error_code.is_empty() {
+            "—"
+        } else {
+            &p.error_code
+        }
+    );
+    for l in &p.meta_lines {
+        println!("  {l}");
+    }
+    println!(
+        "  正文：{} 字节{}",
+        p.body_bytes,
+        if p.truncated { "（已截断）" } else { "" }
+    );
+    println!(
+        "  出口闸：{}",
+        match &p.scan_hit {
+            None => "干净（key、口令、邮箱、IP、用户名、主机名都没扫出来）".to_string(),
+            Some(h) => format!("**命中，已挡下**：{h}"),
+        }
+    );
+    println!();
+    println!("  ── 将要上传的正文（一字不差就是下面这些） ──");
+    for l in p.body.lines() {
+        println!("  | {l}");
+    }
+    println!("  ── 正文到此为止 ──");
+    println!();
+    if !args.yes {
+        println!("  这一次**什么都没有发出去**。确认没问题就再跑一次，加上 -y。");
+        return Ok(());
+    }
+    if p.scan_hit.is_some() {
+        return Err(AppError::new(
+            Code::Unknown,
+            "出口闸命中，不上传。".to_string(),
+        ));
+    }
+    let out = crate::logship::upload(&cfg, &p)?;
+    if let Some(code) = &out.trace_code {
+        let mut c = st.config();
+        c.support.last_trace_code = code.clone();
+        c.support.last_upload_at = crate::timefmt::now_shanghai();
+        c.save_if(true);
+        st.set_config(c);
+        println!("  ✓ 追踪码：{code}");
+        println!("    把这个码发给我们，我们就能查到这份日志。");
+    } else {
+        println!("  ✗ 没有拿到追踪码");
+    }
+    println!(
+        "  HTTP {}",
+        out.status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "（没连上）".into())
+    );
+    println!("  {}", out.message);
+    if !out.ok {
+        return Err(AppError::new(Code::Unknown, out.message));
+    }
     Ok(())
 }
 

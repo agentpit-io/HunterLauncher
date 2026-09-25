@@ -6,6 +6,7 @@ import { Checkbox, Field, SegmentedControl, TextInput, Toggle } from '../compone
 import { Modal } from '../components/Modal'
 import { OfflineImport } from '../components/OfflineImport'
 import { PlainLayout } from '../components/WizardLayout'
+import { UploadLogs } from '../components/UploadLogs'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import { useStore } from '../state/context'
@@ -20,6 +21,9 @@ import type { BackupSettings, LauncherSettings } from '../lib/types'
  */
 const OUTBOUND = [
   'hunter.agentpit.io',
+  // I16：一键上传日志的接收地址。**只有用户点了那个按钮、或者开了「出错时自动上传」
+  // 并且真的出了错**，启动器才会连这里 —— 但它确实会连，所以这份清单里必须有它
+  'www.agentpit.io',
   'ghcr.io',
   'hkccr.ccs.tencentyun.com',
   'registry-1.docker.io',
@@ -206,6 +210,25 @@ export function Settings() {
               <li key={h}>{h}</li>
             ))}
           </ul>
+          {/* I16 · 一键上传日志。开关默认关，而且打开之后**只在出错时**传 ——
+              这一条和上面那个遥测开关是两回事：遥测是「平时的事件」，
+              这一条是「出事了那一份现场」，而且永远由用户点或者由错误触发。 */}
+          <div className="mt-[18px] border-t border-line pt-[16px]">
+            <Row label={t.logship.autoLabel} hint={t.logship.autoHint}>
+              <Toggle
+                on={d?.autoUploadLogs ?? false}
+                testId="settings-auto-upload"
+                onChange={(v) => void patch({ autoUploadLogs: v })}
+                label={t.logship.autoLabel}
+              />
+            </Row>
+            <div className="tnum mt-[10px] text-xs text-muted" data-testid="last-trace">
+              {d?.lastTraceCode
+                ? t.logship.lastTrace(d.lastTraceCode, d.lastUploadAt)
+                : t.logship.lastTraceNever}
+            </div>
+          </div>
+
           <div className="mt-[16px] flex flex-wrap gap-[10px]">
             <Button size="sm" data-testid="view-queue" onClick={() => setShowQueue(true)}>
               {t.settings.viewQueue}
@@ -213,6 +236,7 @@ export function Settings() {
             <Button size="sm" onClick={() => setOverlay('feedback')}>
               {t.settings.exportDiag}
             </Button>
+            <UploadLogs stage="settings" testId="settings-upload-logs" />
           </div>
         </Card>
 

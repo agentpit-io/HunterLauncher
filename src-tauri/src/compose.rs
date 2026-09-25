@@ -13,10 +13,8 @@
 //! * `docker pull`（不带 compose）在非 TTY 下完全没有逐层进度，所以不能走那条路。
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -483,6 +481,51 @@ impl PullAggregator {
         self.started.elapsed()
     }
 
+    /// **「到现在为止的进展」压成一个数**（I16）。这个数变了就说明真的有进展。
+    ///
+    /// 为什么不直接用「管道上有没有字节」：`docker compose --progress json pull`
+    /// 在一条拉不动的连接上照样会把同一条进度行重复吐出来 ——
+    /// 字节一直有，进展一个没有。判据必须建立在**解析之后**的状态上。
+    ///
+    /// 参与的量：每一层的已下载字节与完成标志、层的个数、每个镜像的状态。
+    /// 少任何一样都会漏判：只看字节的话「层拉完了但下一层还没开始」会被当成卡住；
+    /// 只看层数的话「同一层正在稳稳地下」会被当成卡住。
+    pub fn progress_token(&self) -> u64 {
+        let mut t: u64 = 1469598103934665603; // FNV-1a 的 offset basis，随便挑的种子
+        for l in self.layers.values() {
+            t = t.wrapping_mul(31).wrapping_add(l.current);
+            t = t.wrapping_mul(31).wrapping_add(u64::from(l.complete));
+        }
+        t = t.wrapping_mul(31).wrapping_add(self.layers.len() as u64);
+        for i in &self.images {
+            t = t.wrapping_mul(31).wrapping_add(i.state as u64 + 1);
+            t = t.wrapping_mul(31).wrapping_add(i.downloaded_bytes);
+        }
+        t
+    }
+
+    /// 卡住时给用户的那一句。**说清楚卡在哪、卡了多久、下了多少**，
+    /// 而不是一句「拉取失败」——「失败」和「不动」在用户那里是两件事。
+    pub fn stall_line(&self, silent_secs: u64) -> String {
+        let done: u64 = self.images.iter().map(|i| i.downloaded_bytes).sum();
+        let total: u64 = self.images.iter().map(|i| i.total_bytes).sum();
+        let got = if total > 0 {
+            format!(
+                "已下载 {} / 共 {}",
+                crate::flow::human_bytes(done),
+                crate::flow::human_bytes(total)
+            )
+        } else {
+            format!("已下载 {}（总量还没读到）", crate::flow::human_bytes(done))
+        };
+        format!(
+            "从「{}」拉了 {} 没有任何数据进来（{}）",
+            self.registry_label,
+            crate::timefmt::human_secs(silent_secs),
+            got
+        )
+    }
+
     /// 每个镜像各花了多久（成果文档要记这个）——按「首次出现」到「Pulled」的时间差没有记，
     /// 这里给的是最终每镜像下载的字节数，耗时由调用方按整体计时。
     pub fn per_image_bytes(&self) -> Vec<(String, u64, u64)> {
@@ -500,14 +543,34 @@ fn short_of(s: &str) -> &str {
 // ── 拉取 ──────────────────────────────────────────────────────────────────
 
 /// 流式跑 `compose pull`，每收到一批进度就调一次 `on_progress`。
-/// `cancel` 置位时杀掉子进程并返回 `Err`。
+///
+/// 四种结束方式，**结论各不相同**：
+///
+/// | 结束方式 | 返回 | 为什么要分开 |
+/// |---|---|---|
+/// | 自己跑完、退出码 0 | `Ok(())` | |
+/// | 自己跑完、退出码非 0 | `Err(E_PULL_FAILED / E_CRED_HELPER …)` | compose 说了原因，按原话分类 |
+/// | `stall` 秒没有任何新进展 | `Err(E_PULL_STALLED)` | **它不报错**，见下 |
+/// | `cancel` 置位 | `Err(E_PULL_FAILED，「用户取消了拉取」)` | |
 ///
 /// **进度流在 stderr 上**。M0 §5.1 记的是 stdout，M2 实测下来是 stderr ——
 /// 按 stdout 读的话拉取过程中一行都收不到，所有进度会在进程结束后一次性涌出来
 /// （表现为「进度条一直 0%，最后瞬间 100%」）。这里两个流都读，谁有内容都吃得下。
+///
+/// ## 为什么要有「卡住」这一档（I16）
+///
+/// 客户 Mac 上 0.1.15 的现场：六个镜像的 manifest 全读到了
+/// （界面真的算出了「合计约 748 MB」），然后拉层那一步 **TCP 连上了、
+/// 进程活着、一个字节都不传**，界面挂了一个多小时。
+/// `compose pull` 从头到尾没有报过错，所以「报错 → 换源重试」一次都没触发。
+///
+/// 判据不是「管道上有没有字节」，是**「聚合出来的进度有没有变」**
+/// （[`PullAggregator::progress_token`]）：compose 在拉不动的时候照样会
+/// 重复吐同一条进度行，按管道字节判永远判不出来。
 pub fn pull_streaming(
     agg: &mut PullAggregator,
     cancel: &Arc<AtomicBool>,
+    stall: Duration,
     mut on_progress: impl FnMut(&PullProgress),
 ) -> AppResult<()> {
     let (c, o) = file_paths();
@@ -515,122 +578,84 @@ pub fn pull_streaming(
     let dir_s = dir.to_string_lossy().into_owned();
     // --progress 是 `docker compose` 的**全局**参数，必须写在 pull 前面（M0 §5.1）
     let (program, args) = full_args(&c, &o, &dir_s, &["--progress", "json", "pull"]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    let mut child = proc::base_command(&program)
-        .args(&args)
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            AppError::new(
-                Code::PullFailed,
-                format!("起 docker compose pull 失败：{e}"),
-            )
-        })?;
-
-    let (tx, rx) = mpsc::channel::<String>();
-    let mut readers = Vec::new();
-    for (stream, is_err) in [
-        (child.stdout.take().map(Either::Out), false),
-        (child.stderr.take().map(Either::Err), true),
-    ] {
-        let Some(stream) = stream else { continue };
-        let tx = tx.clone();
-        // **两个流都收**。原来只收 stderr —— 而「原话」是给用户看的唯一一句实话，
-        // 少收一个流就可能让它是空的（I6：0.1.5 那次「原话：」后面什么都没有）
-        let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&collected);
-        let h = std::thread::spawn(move || {
-            let reader: Box<dyn BufRead> = match stream {
-                Either::Out(s) => Box::new(BufReader::new(s)),
-                Either::Err(s) => Box::new(BufReader::new(s)),
-            };
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(mut g) = sink.lock() {
-                    g.push(line.clone());
-                    if g.len() > 400 {
-                        let n = g.len() - 400;
-                        g.drain(..n);
-                    }
-                }
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        readers.push((h, collected, is_err));
-    }
-    drop(tx); // 两个读线程都结束后，rx 才会断开
-
+    let mut token = agg.progress_token();
     let mut last_emit = Instant::now() - Duration::from_secs(1);
-    loop {
-        match rx.recv_timeout(Duration::from_millis(250)) {
-            Ok(line) => agg.feed(&line),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-        if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(AppError::new(
-                Code::PullFailed,
-                "用户取消了拉取".to_string(),
-            ));
+    let opts = proc::StreamOpts {
+        silence: Some(stall),
+        total: None,
+        cancel: Some(cancel),
+        cwd: Some(dir.as_path()),
+        env: &[],
+        tail: 400,
+    };
+    let r = proc::run_streaming(&program, &refs, &opts, |ev| {
+        if let proc::Ev::Line { text, .. } = ev {
+            agg.feed(text);
         }
         // 每 300ms 推一次，别把前端淹了
         if last_emit.elapsed() >= Duration::from_millis(300) {
             last_emit = Instant::now();
             on_progress(&agg.snapshot(PullPhase::Pulling, None));
         }
-    }
-
-    let status = child
-        .wait()
-        .map_err(|e| AppError::new(Code::PullFailed, format!("等 compose pull 结束失败：{e}")))?;
-    // stderr 优先，它空了才看 stdout
-    let mut from_err = String::new();
-    let mut from_out = String::new();
-    for (h, collected, is_err) in readers {
-        let _ = h.join();
-        if let Ok(g) = collected.lock() {
-            let t = extract_error_text(&g);
-            if is_err {
-                from_err = t;
-            } else {
-                from_out = t;
-            }
+        let now = agg.progress_token();
+        if now == token {
+            proc::Fresh::No
+        } else {
+            token = now;
+            proc::Fresh::Yes
         }
-    }
-    let err_text = if from_err.trim().is_empty() {
-        from_out
-    } else {
-        from_err
-    };
+    })
+    .map_err(|e| {
+        AppError::new(
+            Code::PullFailed,
+            format!("起 docker compose pull 失败：{}", e.msg),
+        )
+    })?;
+
     on_progress(&agg.snapshot(PullPhase::Pulling, None));
 
-    if status.success() {
-        Ok(())
-    } else {
-        if err_text.trim().is_empty() {
-            // 两个流都没说话。**如实说「一个字都没说」**，别留一句半截话给用户
+    match r.ended {
+        proc::Ended::Exited(Some(0)) => Ok(()),
+        proc::Ended::Cancelled => Err(AppError::new(
+            Code::PullFailed,
+            "用户取消了拉取".to_string(),
+        )),
+        proc::Ended::Stalled { silent_secs } => {
             crate::lwarn!(
-                "docker compose pull 退出码 {:?}，但 stdout / stderr 都没有可识别的错误行",
-                status.code()
+                "拉取卡住：{silent_secs} 秒没有任何新数据进来，已经把 docker compose pull 杀掉"
             );
+            Err(AppError::new(
+                Code::PullStalled,
+                agg.stall_line(silent_secs),
+            ))
         }
-        Err(AppError::new(
-            pull_error_code(&err_text),
-            classify_pull_error(&err_text, status.code()),
-        ))
+        proc::Ended::TimedOut { secs } => Err(AppError::new(
+            Code::PullStalled,
+            format!("拉取超过 {secs} 秒还没结束，已经中止"),
+        )),
+        proc::Ended::Exited(code) => {
+            // stderr 优先，它空了才看 stdout
+            let from_err = extract_error_text(&r.stderr);
+            let from_out = extract_error_text(&r.stdout);
+            let err_text = if from_err.trim().is_empty() {
+                from_out
+            } else {
+                from_err
+            };
+            if err_text.trim().is_empty() {
+                // 两个流都没说话。**如实说「一个字都没说」**，别留一句半截话给用户
+                crate::lwarn!(
+                    "docker compose pull 退出码 {code:?}，但 stdout / stderr 都没有可识别的错误行"
+                );
+            }
+            Err(AppError::new(
+                pull_error_code(&err_text),
+                classify_pull_error(&err_text, code),
+            ))
+        }
     }
-}
-
-/// 两个管道类型不同，又想用同一段读取代码，包一层。
-enum Either {
-    Out(std::process::ChildStdout),
-    Err(std::process::ChildStderr),
 }
 
 /// 从 stderr 的全部行里挑出「能说明失败原因」的部分。
@@ -841,6 +866,12 @@ pub struct ServiceStatus {
     /// 空串 / 拿不到就是 `None`，界面显示「还没读到」。
     pub bind: Option<String>,
     pub exit_code: Option<i64>,
+    /// 这个容器**实际在用的镜像**（`docker compose ps` 的 `Image` 字段）。
+    ///
+    /// I16 加的，用来回答「跑着的到底是哪一版」—— 配置里写的是意图，
+    /// 这一项才是现状（红线 1）。「上一次升级没做完」的判定靠它。
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 impl ServiceStatus {
@@ -868,6 +899,8 @@ struct PsLine {
     exit_code: Option<i64>,
     #[serde(rename = "Publishers")]
     publishers: Option<Vec<Publisher>>,
+    #[serde(rename = "Image")]
+    image: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -954,6 +987,7 @@ fn to_status(p: PsLine) -> ServiceStatus {
         }
         widest
     });
+    let image = p.image.filter(|s| !s.trim().is_empty());
     ServiceStatus {
         service: p.service.unwrap_or_default(),
         state,
@@ -961,6 +995,7 @@ fn to_status(p: PsLine) -> ServiceStatus {
         port,
         bind,
         exit_code: p.exit_code,
+        image,
     }
 }
 
@@ -2980,6 +3015,7 @@ mod tests {
             port,
             bind: bind.map(str::to_string),
             exit_code: None,
+            image: None,
         }
     }
 

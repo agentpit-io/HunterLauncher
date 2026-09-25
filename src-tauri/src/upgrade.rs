@@ -101,6 +101,12 @@ pub struct UpgradeResult {
     pub backup_sql_bytes: Option<u64>,
     /// 失败时：回滚做了没有、做成了没有
     pub rolled_back: bool,
+    /// **是用户自己点的「取消」**（I16），不是出了错。
+    ///
+    /// 界面要靠它把这两件事分开说：失败要给「重试 / 反馈」，
+    /// 取消只要一句「已取消，什么都没变」。把用户的主动选择显示成一条红色错误，
+    /// 会让他以为自己把机器点坏了。
+    pub cancelled: bool,
     pub message: String,
 }
 
@@ -343,6 +349,52 @@ pub fn upgrade(
                 backup_id: Some(backup.id),
                 backup_sql_bytes: backup.sql_bytes,
                 rolled_back: false,
+                cancelled: false,
+                message: msg,
+            })
+        }
+        // ── 用户自己点了「取消」（I16） ───────────────────────────────
+        //
+        // 客户 2026-09-25 那次只能强退，而强退发生在「`.env` 已经写成 1.2.2、
+        // 镜像还没拉全」之后 —— **没有走到回滚**，机器就停在一个说不清的中间态。
+        // 有了「取消」这条路，同样的现场会走完整的回滚，而且说得清楚：
+        // 版本没变、容器没动。
+        Err(e) if state.cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+            linfo!("升级被用户取消：{}", e.msg);
+            note("已取消，正在把配置写回升级前那一份…");
+            let rolled = rollback(state, &cfg0, &backup.id, &mut note);
+            let running = compose::ps()
+                .map(|v| v.iter().filter(|s| s.state == "running").count())
+                .unwrap_or(0);
+            let msg = match &rolled {
+                Ok(_) => format!(
+                    "已取消。Hunter 还是 v{from}，正在跑的 {running} 个容器一个都没动，\
+                     配置也写回了升级前那一份。升级前的备份留在 {}。",
+                    crate::backup::dir_of(&backup.id).display()
+                ),
+                Err(re) => format!(
+                    "已取消，但配置没能完全写回：{}。备份在 {}，可以照着它手工恢复。",
+                    re.msg,
+                    crate::backup::dir_of(&backup.id).display()
+                ),
+            };
+            note(&msg);
+            state.tele(
+                "hunter_upgrade_cancelled",
+                &[
+                    ("from", crate::telemetry::Field::Enum(from.clone())),
+                    ("to", crate::telemetry::Field::Enum(target.to_string())),
+                    ("rolled_back", crate::telemetry::Field::Bool(rolled.is_ok())),
+                ],
+            );
+            Ok(UpgradeResult {
+                ok: false,
+                from,
+                to: target.to_string(),
+                backup_id: Some(backup.id),
+                backup_sql_bytes: backup.sql_bytes,
+                rolled_back: rolled.is_ok(),
+                cancelled: true,
                 message: msg,
             })
         }
@@ -512,9 +564,293 @@ fn rollback(
     ))
 }
 
+// ── 上一次升级没做完（I16 · P1-2） ────────────────────────────────────────
+
+/// 「配置说的是一版、跑着的是另一版、而新版镜像本机还不齐」的现场。
+///
+/// ## 这是怎么留下来的
+///
+/// 客户 2026-09-25 那次：`.env` 已经写成 `HUNTER_VERSION=1.2.2`、
+/// `docker-compose.yml` 也换成了 1.2.2 的，镜像拉到一半卡死，
+/// 他只能强退 —— **强退不会走回滚**。于是机器停在：
+///
+/// ```text
+/// 配置（.env / compose）  → 1.2.2
+/// 正在跑的六个容器        → 1.2.0
+/// 本机的 1.2.2 镜像       → 不齐
+/// ```
+///
+/// 下一次打开启动器，如果照着配置去 `up -d`，docker 会去拉那个还没下完的镜像
+/// —— 用户又看到一次「卡住」。**这一档必须先问人**。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Interrupted {
+    /// 配置（`.env` / compose）说的版本
+    pub config_tag: String,
+    /// 正在跑的容器实际用的版本
+    pub running_tag: String,
+    /// 本机还缺的那几个服务的镜像
+    pub missing_images: Vec<String>,
+    /// 摆给用户看的一句话
+    pub headline: String,
+    /// 逐条事实（每一条都是实测的，不猜）
+    pub lines: Vec<String>,
+}
+
+/// 纯判据。**机器状态由调用方喂进来**，这样它考得了 ——
+/// I7 那条「把机器状态当成测试前提」的教训在这里同样成立。
+///
+/// 三个条件缺一不可：
+/// 1. 配置说的版本与正在跑的版本不一样；
+/// 2. 真的有容器在跑（一个都没有 = 那是「还没装」或「停着」，不是「升级没做完」）；
+/// 3. 配置那一版的镜像**本机不齐** —— 齐了的话直接 `up -d` 就完事，
+///    那不是一个需要打断用户的现场。
+pub fn judge_interrupted(
+    config_tag: &str,
+    running_tags: &[(String, String)],
+    missing_images: &[String],
+) -> Option<Interrupted> {
+    let config_tag = config_tag.trim();
+    if config_tag.is_empty() || running_tags.is_empty() || missing_images.is_empty() {
+        return None;
+    }
+    // 跑着的版本：取出现次数最多的那一个（升级到一半时可能几个新几个旧）
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, t) in running_tags {
+        *counts.entry(t.as_str()).or_default() += 1;
+    }
+    let running_tag = counts
+        .iter()
+        .max_by_key(|(_, n)| **n)
+        .map(|(t, _)| (*t).to_string())?;
+    if running_tag.is_empty() || running_tag == config_tag {
+        return None;
+    }
+    let mut lines = vec![
+        format!("配置（.env 与 compose）写的是 v{config_tag}"),
+        format!(
+            "正在跑的 {} 个容器用的是 v{running_tag}",
+            running_tags.len()
+        ),
+        format!(
+            "v{config_tag} 的镜像本机还缺 {} 个：{}",
+            missing_images.len(),
+            missing_images.join("、")
+        ),
+    ];
+    lines.push(
+        "所以上一次升级多半是拉镜像时被打断的（强退 / 断电 / 关机）。\
+         在你选之前，启动器不会按新配置去起容器 —— 那只会再卡一次。"
+            .to_string(),
+    );
+    Some(Interrupted {
+        headline: format!(
+            "上一次升级没做完：配置已经是 v{config_tag}，跑着的还是 v{running_tag}，而 v{config_tag} 的镜像本机不齐"
+        ),
+        config_tag: config_tag.to_string(),
+        running_tag,
+        missing_images: missing_images.to_vec(),
+        lines,
+    })
+}
+
+/// 去现场查一遍。**只读**：`docker compose ps` + `docker image inspect`，
+/// 一个容器、一个卷、一个配置文件都不碰。
+pub fn interrupted(cfg: &config::LauncherConfig) -> Option<Interrupted> {
+    let config_tag = config::parse_env_file(&crate::paths::env_file())
+        .get("HUNTER_VERSION")
+        .cloned()
+        .unwrap_or_else(|| cfg.hunter.tag.clone());
+    let ps = compose::ps().ok()?;
+    let running: Vec<(String, String)> = ps
+        .iter()
+        .filter(|s| s.state == "running")
+        .filter_map(|s| {
+            let img = s.image.as_deref()?;
+            Some((s.service.clone(), tag_of_image(img)?))
+        })
+        // postgres:16-alpine / redis:7-alpine 的 tag 和 Hunter 的版本号无关，
+        // 拿它们比版本会得出一堆假阳性 —— 只看我们自己那四个镜像
+        .filter(|(svc, _)| matches!(svc.as_str(), "web" | "api" | "opencode" | "llm-shim"))
+        .collect();
+    let specs = config::images(
+        &cfg.hunter.registry_prefix,
+        &cfg.hunter.base_prefix,
+        &config_tag,
+    );
+    let (_ok, missing) = crate::offline::all_present(&specs);
+    judge_interrupted(&config_tag, &running, &missing)
+}
+
+/// 从一个完整镜像引用里取 tag：`ghcr.io/agentpit-io/hunter-community-web:1.2.0` → `1.2.0`。
+/// 没有 tag（或者只有 digest）时返回 `None` —— **不猜成 latest**。
+pub fn tag_of_image(image: &str) -> Option<String> {
+    let last = image.rsplit('/').next()?;
+    let (_, tag) = last.rsplit_once(':')?;
+    if tag.is_empty() || tag.contains('@') {
+        return None;
+    }
+    Some(tag.to_string())
+}
+
+/// **回退到正在跑的那一版**（中间态的第二个出口）。
+///
+/// 做的事只有一件：把配置写回 `tag` 那一版，让「配置说的」和「跑着的」
+/// 重新对上。**不碰容器、不碰卷、不拉任何镜像** —— 那六个容器本来就在正常跑，
+/// 为了「让配置对上」去重建它们是完全不必要的风险。
+///
+/// 优先从**升级前那次自动备份**里把配置原样写回（它就是当时那一份，
+/// 而且不需要网络）；找不到对得上的备份才去重新取一份 compose。
+pub fn revert_to_running(
+    state: &AppState,
+    tag: &str,
+    mut note: impl FnMut(&str),
+) -> AppResult<String> {
+    let tag = tag.trim().to_string();
+    if tag.is_empty() {
+        return Err(AppError::new(Code::UpdateFailed, "没说要回到哪一版"));
+    }
+    let mut cfg = state.config();
+    let from = cfg.hunter.tag.clone();
+    note(&format!("把配置写回 v{tag}（不动正在跑的容器）"));
+
+    let backup = crate::backup::list()
+        .into_iter()
+        .find(|m| m.tag == tag && m.kind == crate::backup::Kind::PreUpgrade);
+    match &backup {
+        Some(m) => {
+            let files = crate::backup::restore_config(&m.id)?;
+            note(&format!(
+                "已从升级前那次备份（{}）写回 {}",
+                m.id,
+                files.join("、")
+            ));
+        }
+        None => {
+            // 没有对得上的备份就重新取一份那一版的 compose。
+            // 取不到就停 —— 宁可什么都不改，也不要写一份来路不明的配置
+            note(&format!(
+                "没有找到 v{tag} 的升级前备份，去取一份 v{tag} 的 compose…"
+            ));
+            let (yml, host) = config::fetch_compose_strict(&tag, NET_TIMEOUT)?;
+            config::write_compose(&yml)?;
+            note(&format!("已取到（来自 {host}，{} 字节）", yml.len()));
+            cfg.hunter.tag = tag.clone();
+            flow::rewrite_env_and_override(state, &cfg, &tag)?;
+        }
+    }
+    cfg.hunter.tag = tag.clone();
+    crate::flow::write_version_file(&tag);
+    cfg.save()?;
+    state.set_config(cfg);
+
+    // 复核一遍：写完之后配置到底是不是那一版（红线 1：说「已回退」之前先看一眼）
+    let now = config::parse_env_file(&crate::paths::env_file())
+        .get("HUNTER_VERSION")
+        .cloned()
+        .unwrap_or_default();
+    if now != tag {
+        return Err(AppError::new(
+            Code::UpdateFailed,
+            format!("写回之后 .env 里的 HUNTER_VERSION 还是 {now}，不是 {tag}。配置没有改成功。"),
+        ));
+    }
+    let msg = format!(
+        "已经回到 v{tag}：配置写回了，正在跑的容器一个都没动（它们本来就是 v{tag}）。\
+         之前那次没做完的升级（→ v{from}）就此作罢，想再升随时可以在更新页点。"
+    );
+    linfo!("{msg}");
+    note(&msg);
+    Ok(msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 上一次升级没做完（I16 · P1-2） ──────────────────────────────────
+
+    fn running(tag: &str) -> Vec<(String, String)> {
+        ["web", "api", "opencode", "llm-shim"]
+            .iter()
+            .map(|s| ((*s).to_string(), tag.to_string()))
+            .collect()
+    }
+
+    /// 客户 2026-09-25 强退之后留下的那个现场：
+    /// 配置 1.2.2 / 容器 1.2.0 / 1.2.2 的镜像本机不齐。
+    #[test]
+    fn 配置_1_2_2_容器_1_2_0_镜像不全判定为升级未完成() {
+        let r = judge_interrupted(
+            "1.2.2",
+            &running("1.2.0"),
+            &["web".into(), "api".into(), "opencode".into()],
+        )
+        .expect("这就是「上一次升级没做完」");
+        assert_eq!(r.config_tag, "1.2.2");
+        assert_eq!(r.running_tag, "1.2.0");
+        assert_eq!(r.missing_images.len(), 3);
+        // 两个按钮都给得出来：继续升到 config_tag、回退到 running_tag
+        assert!(r.headline.contains("1.2.2") && r.headline.contains("1.2.0"));
+        assert!(r.lines.iter().any(|l| l.contains("镜像本机还缺")));
+    }
+
+    /// **配置与容器一致时不许误报。** 这是最要紧的一条 ——
+    /// 误报会在每一台正常机器的开机第一屏上弹一个吓人的问句。
+    #[test]
+    fn 配置与容器一致时不误报() {
+        assert!(judge_interrupted("1.2.0", &running("1.2.0"), &[]).is_none());
+        // 就算镜像不齐（有人手工 `docker rmi` 过），只要版本对得上就不是这个现场
+        assert!(judge_interrupted("1.2.0", &running("1.2.0"), &["web".into()]).is_none());
+    }
+
+    #[test]
+    fn 镜像齐了就不是这个现场() {
+        // 配置 1.2.2、容器 1.2.0，但 1.2.2 的镜像都在本机 ——
+        // 那只是「拉完了还没 up」，直接起就行，不用打断用户
+        assert!(judge_interrupted("1.2.2", &running("1.2.0"), &[]).is_none());
+    }
+
+    #[test]
+    fn 一个容器都没跑的时候不是这个现场() {
+        // 「还没装」与「全停着」都会走到这里，它们都不是「升级没做完」
+        assert!(judge_interrupted("1.2.2", &[], &["web".into()]).is_none());
+    }
+
+    #[test]
+    fn 升到一半几个新几个旧时按多数判() {
+        let mixed = vec![
+            ("web".to_string(), "1.2.2".to_string()),
+            ("api".to_string(), "1.2.0".to_string()),
+            ("opencode".to_string(), "1.2.0".to_string()),
+            ("llm-shim".to_string(), "1.2.0".to_string()),
+        ];
+        let r = judge_interrupted("1.2.2", &mixed, &["opencode".into()]).expect("算这个现场");
+        assert_eq!(r.running_tag, "1.2.0", "多数派是旧版");
+    }
+
+    #[test]
+    fn 从镜像引用里取_tag() {
+        assert_eq!(
+            tag_of_image("ghcr.io/agentpit-io/hunter-community-web:1.2.0").as_deref(),
+            Some("1.2.0")
+        );
+        assert_eq!(
+            tag_of_image("hkccr.ccs.tencentyun.com/agentpit/hunter-community-api:1.2.2").as_deref(),
+            Some("1.2.2")
+        );
+        // 带端口的私有仓库：冒号在主机那一段，别把端口当成 tag
+        assert_eq!(
+            tag_of_image("10.0.0.2:5000/hunter/web:1.2.0").as_deref(),
+            Some("1.2.0")
+        );
+        assert_eq!(
+            tag_of_image("10.0.0.2:5000/hunter/web"),
+            None,
+            "没有 tag 就不猜"
+        );
+        assert_eq!(tag_of_image("postgres"), None);
+    }
 
     #[test]
     fn 版本比较() {

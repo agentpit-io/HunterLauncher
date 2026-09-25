@@ -513,6 +513,7 @@ mod tests {
             port,
             bind: Some("127.0.0.1".into()),
             exit_code: None,
+            image: None,
         }
     }
 

@@ -64,6 +64,9 @@ import type {
   TelemetryView,
   UpgradeCheck,
   UpgradeStatus,
+  LogshipPreview,
+  LogshipOutcome,
+  InterruptedUpgrade,
 } from './types'
 import * as demo from './demo'
 
@@ -863,6 +866,55 @@ export async function takeoverLogs(service?: string, lines = 200): Promise<strin
  *
  * **它不发送任何东西**，也不打开浏览器 —— 那是用户看过内容之后另一次点击的事。
  */
+/**
+ * **一键上传日志 · 第一步：看一眼要传什么。**
+ *
+ * 这一步**不发任何请求**。返回的 `body` 会被后端记下来，
+ * 第二步 {@link logshipUpload} 传的就是它 —— 界面上看到的和送出去的
+ * 是同一串字节，不存在「看到的是一套、发出去的是另一套」。
+ */
+export async function logshipPreview(opts?: {
+  stage?: string
+  errorCode?: string
+  summary?: string
+  include?: string[]
+}): Promise<LogshipPreview> {
+  if (DEMO) return demo.demoLogshipPreview
+  return call<LogshipPreview>('logship_preview', {
+    stage: opts?.stage ?? null,
+    errorCode: opts?.errorCode ?? null,
+    summary: opts?.summary ?? null,
+    include: opts?.include ?? null,
+  })
+}
+
+/**
+ * **一键上传日志 · 第二步：真的传。**
+ *
+ * 传的是上一次 {@link logshipPreview} 给用户看过的那一份。
+ * 没有预览过就会报错 —— 不给看就传等于替用户做决定。
+ */
+export async function logshipUpload(): Promise<LogshipOutcome> {
+  if (DEMO) return demo.demoLogshipOutcome
+  return call<LogshipOutcome>('logship_upload', {})
+}
+
+/** 「上一次升级做完了没有」当场再查一遍（I16 · P1-2）。 */
+export async function interruptedUpgrade(): Promise<InterruptedUpgrade | null> {
+  if (DEMO) return demo.demoInterruptedUpgrade
+  return call<InterruptedUpgrade | null>('interrupted_upgrade', {})
+}
+
+/**
+ * **回退到正在跑的那一版**（中间态的第二个出口）。
+ *
+ * 只把配置写回去，不碰容器、不碰卷、不拉镜像。
+ */
+export async function revertToRunning(tag: string): Promise<string> {
+  if (DEMO) return `已经回到 v${tag}（演示数据）`
+  return call<string>('revert_to_running', { tag })
+}
+
 export async function feedbackOneClick(
   errorCode?: string,
   errorMessage?: string,

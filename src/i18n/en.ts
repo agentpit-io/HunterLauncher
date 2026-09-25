@@ -714,6 +714,9 @@ const en: Dict = {
     monitorCleanup: 'See what can be freed',
   },
   update: {
+    cancelUpgrade: 'Cancel upgrade',
+    cancelling: 'Cancelling…',
+    cancelHint: 'Stops at the current step and rewrites the config back to what it was before — running containers are not touched.',
     launcherTitle: 'A newer launcher is available',
     launcherCard: 'Launcher',
     launcherLine: (from: string, to: string) => `v${from} → v${to}`,
@@ -829,6 +832,52 @@ const en: Dict = {
     redactNote:
       'What you see here is exactly what goes into the zip: keys, Bearer tokens, emails, phone numbers, the last IP octet, .env values outside the allowlist and content/text fields in container logs are already stripped. The whole bundle is scanned once more before export and refused if anything slips through.',
   },
+  logship: {
+    button: 'Send your logs to us (no keys, no passwords)',
+    title: 'This is what gets sent — take a look first',
+    intro:
+      'Press "Upload" and the text below is sent to www.agentpit.io; you get back a trace code we can look the log up by. Keys, passwords, emails, phone numbers, the last IP octet, your username, your hostname and any conversation content are already stripped — what you see here is exactly what leaves this machine.',
+    endpoint: 'Goes to',
+    machineId: 'Machine id',
+    machineIdHint:
+      'A random UUID generated the first time it was needed and kept in launcher.toml. It contains no hardware information (no MAC address, serial number or hostname was read); delete launcher.toml and you get a new one.',
+    stage: 'Stage',
+    errorCode: 'Error code',
+    summary: 'One-line summary',
+    bodyLabel: 'Body',
+    bodyBytes: (n: number) => `${n} bytes`,
+    truncated: 'The body was too long, so the head was trimmed — the clues are usually at the end, so the tail is what was kept.',
+    metaLabel: 'Also attached',
+    confirm: 'Upload',
+    uploading: 'Uploading…',
+    scanHit: (what: string) =>
+      `The outbound gate found something sensitive in the text and blocked it: ${what}. Nothing was uploaded — use "Export diagnostics" instead and send it after reviewing it yourself.`,
+    doneTitle: 'Uploaded',
+    traceLabel: 'Trace code',
+    traceHint: 'Send us this code and we can pull up the log. It is also written to the local log, so you can find it again after closing this window.',
+    copyTrace: 'Copy trace code',
+    failTitle: 'Upload did not go through',
+    localLog: 'Local log',
+    bundleSaved: (p: string) => `A diagnostics bundle was written to ${p}; sending us that file works just as well.`,
+    lastTrace: (code: string, at: string) => `Last upload: ${code} (${at})`,
+    lastTraceNever: 'Never uploaded',
+    autoLabel: 'Upload logs automatically when something fails',
+    autoHint:
+      'Off by default. Even when on, it only uploads on failure — a normal install or a normal run sends nothing at all, and what it uploads is identical to what a manual upload would send (same redaction).',
+  },
+  interrupted: {
+    title: 'The last upgrade never finished',
+    badge: 'measured',
+    detail: (config: string, running: string) =>
+      `The config says v${config}, the running containers are still v${running}, and the v${config} images are not all present on this machine — the last attempt was most likely interrupted while pulling images (force quit, power loss, shutdown).`,
+    hint: 'Until you choose, the launcher will not bring containers up against the new config: that would pull a half-downloaded image and you would be stuck again.',
+    continueUpgrade: (tag: string) => `Continue upgrading to v${tag}`,
+    revert: (tag: string) => `Go back to the running v${tag}`,
+    revertHint: 'Only rewrites the config. Running containers, your data and images are untouched.',
+    reverting: 'Rewriting…',
+    evidence: 'Show the evidence',
+    hideEvidence: 'Hide',
+  },
   error: {
     title: 'Something went wrong',
     codeLabel: 'Error code',
@@ -867,6 +916,10 @@ const en: Dict = {
       E_KEY_INVALID: { title: 'Invalid key', hint: 'The gateway rejected this key (wrong key, or it has been revoked).' },
       E_QUOTA_EXHAUSTED: { title: "Today's quota is used up", hint: 'It resets at 00:00 Asia/Shanghai, or switch to your own model key now.' },
       E_PULL_FAILED: { title: 'Image pull failed', hint: 'Retried 3 times without success. Switch registry, or import an offline bundle.' },
+      E_PULL_STALLED: {
+        title: 'Image pull went silent',
+        hint: 'Not a connection failure — the image list was read fine, but no bytes arrive while pulling layers. Such a connection never errors out, it just waits forever, so the launcher kills it after 90 seconds without new data and retries on the other registry. If both registries go silent, the path from this machine to the registry is most likely cut mid-way (ISP, corporate gateway, proxy): try another network, or install from an offline bundle.',
+      },
       E_PORT_IN_USE: { title: 'Port already in use', hint: 'The launcher already remapped to a free port — nothing for you to do.' },
       E_PORT_CONFLICT: { title: 'Docker refused the port', hint: 'The launcher re-probed and moved to a free port. If it still collides, another program on this machine is grabbing the same port — it is named below.' },
       E_CRED_HELPER: { title: 'Docker cannot find its own credential helper', hint: 'Your ~/.docker/config.json sets credsStore, but that docker-credential-* binary is not on the PATH the launcher can see. Hunter pulls public images, which need no login — the launcher writes its own config without a credential helper; your ~/.docker/config.json is left untouched, byte for byte.' },
