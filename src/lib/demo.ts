@@ -64,7 +64,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.14'
+export const DEMO_LAUNCHER_VERSION = '0.1.15'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'

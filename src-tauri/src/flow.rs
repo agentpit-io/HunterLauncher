@@ -1296,6 +1296,42 @@ pub fn latest_hunter_tag_now() -> Option<String> {
     crate::upgrade::latest_release_now().map(|r| r.tag)
 }
 
+/// **全新安装**用哪个 Hunter 版本。
+///
+/// 以前一律用配置里的 `hunter.tag`，它的默认值是启动器编译时内置的 [`config::BUNDLED_TAG`] ——
+/// 于是 GitHub 上早就发了新版，新用户装到的仍是启动器发版那天的旧版，要装完再点一次「升级」
+/// （2026-09-25：Hunter 已是 1.2.1，0.1.14 新装仍是 1.2.0，缺了「选择器显示真实模型名」）。
+///
+/// 现在先问一次最新正式版，**比配置里的新才换**；问不到（离线 / GitHub 不通）就照旧。
+/// 只给「安装」用，升级有自己的流程（先备份再换版本），不走这里。
+pub fn install_tag(configured: &str, mut note: impl FnMut(&str)) -> String {
+    let latest = latest_hunter_tag();
+    let (tag, msg) = pick_install_tag(configured, latest.as_deref());
+    if let Some(m) = msg {
+        note(&m);
+    }
+    tag
+}
+
+/// [`install_tag`] 的判断部分，拆出来是为了不联网也能测。
+pub fn pick_install_tag(configured: &str, latest: Option<&str>) -> (String, Option<String>) {
+    match latest {
+        Some(l) if crate::upgrade::is_newer(l, configured) => (
+            l.to_string(),
+            Some(format!(
+                "安装最新正式版 Hunter {l}（启动器内置的是 {configured}）"
+            )),
+        ),
+        Some(_) => (configured.to_string(), None),
+        None => (
+            configured.to_string(),
+            Some(format!(
+                "查不到 Hunter 最新版本，按 {configured} 安装，装好后可在运行面板里升级"
+            )),
+        ),
+    }
+}
+
 /// 一格「值 + 取到它的时刻」。
 pub type CacheSlot<T> = Mutex<Option<(std::time::Instant, T)>>;
 
@@ -1500,6 +1536,32 @@ mod tests {
         let o = InstallOptions::default();
         assert_eq!(o.tag, config::BUNDLED_TAG);
         assert!(o.registry.is_none(), "默认是测速自动选，不是写死某个源");
+    }
+
+    #[test]
+    fn 新装版本_有更新的正式版就用它() {
+        let (t, msg) = pick_install_tag("1.2.0", Some("1.2.2"));
+        assert_eq!(t, "1.2.2");
+        assert!(msg.unwrap().contains("1.2.2"));
+    }
+
+    #[test]
+    fn 新装版本_最新版不比配置新就不动() {
+        assert_eq!(
+            pick_install_tag("1.2.2", Some("1.2.2")),
+            ("1.2.2".into(), None)
+        );
+        // 用户用 --tag 或手改配置指定了更新的版本（例如测试 rc），不能被「最新正式版」拉回去
+        assert_eq!(pick_install_tag("1.3.0", Some("1.2.2")).0, "1.3.0");
+        // 预发布号不算比正式版新
+        assert_eq!(pick_install_tag("1.2.2", Some("1.2.2-rc1")).0, "1.2.2");
+    }
+
+    #[test]
+    fn 新装版本_问不到最新版就按配置装并说一声() {
+        let (t, msg) = pick_install_tag("1.2.2", None);
+        assert_eq!(t, "1.2.2");
+        assert!(msg.unwrap().contains("查不到"));
     }
 
     #[test]

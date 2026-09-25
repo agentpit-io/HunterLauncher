@@ -22,12 +22,16 @@ use crate::paths;
 use crate::registry::Candidate;
 
 /// 启动器内置的同版本 compose 副本（离线 / raw 被墙时兜底）。
-pub const BUNDLED_TAG: &str = "1.2.0";
+///
+/// 它只是**兜底**：全新安装时先问 GitHub 最新正式版（见 `flow::install_tag`），
+/// 问不到才用它。所以这里落后一两个版本不会让新用户装到旧版，但发 Hunter 新版时
+/// 顺手跟上，能让离线 / GitHub 不通的用户也装到新版。
+pub const BUNDLED_TAG: &str = "1.2.2";
 const BUNDLED_COMPOSE: &str =
-    include_str!("../../templates/docker-compose.hunter-community-1.2.0.yml");
+    include_str!("../../templates/docker-compose.hunter-community-1.2.2.yml");
 /// 内置副本的 sha256。下载回来的内容与它不一致时说明链路上有人动过手脚，宁可用内置的。
 pub const BUNDLED_COMPOSE_SHA256: &str =
-    "4732348f491779051bfab0783ea7b552a2b35314d051c0ea7c95cf5471162ee2";
+    "66004a2c2b82dae3037b19d6a52f24e4c38a775727b55d2c0ca73dac3657bdc1";
 
 const ENV_TEMPLATE: &str = include_str!("../../templates/env.template");
 

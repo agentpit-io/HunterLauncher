@@ -548,7 +548,10 @@ fn cmd_auto(st: &AppState, args: &Args) -> AppResult<()> {
 
     let opts = InstallOptions {
         registry: args.registry.clone(),
-        tag: args.tag.clone().unwrap_or_else(|| cfg.hunter.tag.clone()),
+        tag: args
+            .tag
+            .clone()
+            .unwrap_or_else(|| flow::install_tag(&cfg.hunter.tag, |l| println!("  {l}"))),
     };
     let bus = std::sync::Arc::new(Bus::new(Box::new(Stdout::new()), true));
     let mut orch = Orchestrator::new(bus, mode, Some(key), st.cancel.clone());
@@ -736,9 +739,10 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
     // 3) 准备（选源 / compose / 端口 / .env）
     step(3, steps, "准备配置");
     let mut cfg = st.config();
-    if let Some(t) = &args.tag {
-        cfg.hunter.tag = t.clone();
-    }
+    cfg.hunter.tag = match &args.tag {
+        Some(t) => t.clone(),
+        None => flow::install_tag(&cfg.hunter.tag, |l| println!("  {l}")),
+    };
     st.set_config(cfg.clone());
     let opts = InstallOptions {
         registry: args.registry.clone(),
@@ -2992,7 +2996,7 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert!(v.iter().any(|s| s.contains("ghcr")));
         assert!(v.iter().any(|s| s.contains("腾讯云")));
-        assert_eq!(default_tag(), "1.2.0");
+        assert_eq!(default_tag(), "1.2.2");
     }
 
     /// `--code` 是**参数**不是子命令：`--feedback --code X` 要跑反馈，不是诊断。

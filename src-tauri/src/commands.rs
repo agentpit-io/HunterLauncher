@@ -535,7 +535,10 @@ pub fn start_install(app: tauri::AppHandle, registry_id: Option<String>) -> Resu
         let cfg = st.config();
         let opts = InstallOptions {
             registry: registry_id,
-            tag: cfg.hunter.tag.clone(),
+            tag: flow::install_tag(&cfg.hunter.tag, |l| {
+                crate::linfo!("{l}");
+                let _ = handle.emit(EV_LOG, l.to_string());
+            }),
         };
 
         let h2 = handle.clone();
@@ -2526,7 +2529,7 @@ pub fn assist_auto_start(app: tauri::AppHandle, registry_id: Option<String>) -> 
         let cfg = st.config();
         let opts = InstallOptions {
             registry: registry_id,
-            tag: cfg.hunter.tag.clone(),
+            tag: flow::install_tag(&cfg.hunter.tag, |l| crate::linfo!("{l}")),
         };
         let bus = std::sync::Arc::new(crate::assist::events::Bus::new(
             Box::new(TauriSink(handle.clone())),
