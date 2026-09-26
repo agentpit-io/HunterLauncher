@@ -711,7 +711,15 @@ pub fn revert_to_running(
         return Err(AppError::new(Code::UpdateFailed, "没说要回到哪一版"));
     }
     let mut cfg = state.config();
-    let from = cfg.hunter.tag.clone();
+    // **被放弃的是「配置里现在写着的那一版」，不是 launcher.toml 里的 tag。**
+    //
+    // 中间态的形状正是这两处对不上：升级只在**成功之后**才改 `launcher.toml`，
+    // 所以强退留下来的机器上 `launcher.toml` 还是旧版本、`.env` 已经是新版本。
+    // 拿 `cfg.hunter.tag` 去说「这次升级作罢」会说出一个完全不相干的版本号。
+    let from = config::parse_env_file(&crate::paths::env_file())
+        .get("HUNTER_VERSION")
+        .cloned()
+        .unwrap_or_else(|| cfg.hunter.tag.clone());
     note(&format!("把配置写回 v{tag}（不动正在跑的容器）"));
 
     let backup = crate::backup::list()
@@ -755,10 +763,14 @@ pub fn revert_to_running(
             format!("写回之后 .env 里的 HUNTER_VERSION 还是 {now}，不是 {tag}。配置没有改成功。"),
         ));
     }
-    let msg = format!(
-        "已经回到 v{tag}：配置写回了，正在跑的容器一个都没动（它们本来就是 v{tag}）。\
-         之前那次没做完的升级（→ v{from}）就此作罢，想再升随时可以在更新页点。"
-    );
+    let msg = if from == tag {
+        format!("已经回到 v{tag}：配置写回了，正在跑的容器一个都没动（它们本来就是 v{tag}）。")
+    } else {
+        format!(
+            "已经回到 v{tag}：配置写回了，正在跑的容器一个都没动（它们本来就是 v{tag}）。\
+             之前那次没做完的升级（要升到 v{from}）就此作罢，想再升随时可以在更新页点。"
+        )
+    };
     linfo!("{msg}");
     note(&msg);
     Ok(msg)

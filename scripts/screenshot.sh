@@ -39,7 +39,13 @@ SETTLE="${SETTLE:-9}"
 # I14 新增两页：key-kept —— 「只删除应用，保留数据」之后重装时的 key 页，
 # 上面是「沿用上次保留的 key（hunt_tools_****）」那张卡片，输入框收起来（F3）；
 # key-shape —— 留着的那一项不是一把 key 的样子，沿用不了，但界面上要说明为什么（F3 · 3.4）
-PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-builtin error-recovered)
+# I16 新增四页：
+#   error-stalled —— 「拉着拉着不动了」那一档（客户 Mac 上 0.1.15 的现场）。
+#     和 error（E_START_TIMEOUT）分开截：这一档的说法完全不同，而且多一个「上传日志给我们」
+#   upload-preview / upload-done —— 一键上传日志的两屏：
+#     传之前把要传的东西原样摆出来；传完把追踪码用一行大字显示出来
+#   dashboard-interrupted —— 强退之后留下的中间态（配置一版、容器另一版、镜像不齐）
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-interrupted upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

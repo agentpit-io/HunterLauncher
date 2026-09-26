@@ -899,9 +899,15 @@ export async function logshipUpload(): Promise<LogshipOutcome> {
   return call<LogshipOutcome>('logship_upload', {})
 }
 
-/** 「上一次升级做完了没有」当场再查一遍（I16 · P1-2）。 */
+/**
+ * 「上一次升级做完了没有」当场再查一遍（I16 · P1-2）。
+ *
+ * 演示模式下**只有 `dashboard-interrupted` 那一页**才给这张卡片 ——
+ * 否则每一张运行面板的截图上都会顶着一条「上一次升级没做完」，
+ * 而那在真机上是个罕见现场，不该出现在「一切正常」的那几张图里。
+ */
 export async function interruptedUpgrade(): Promise<InterruptedUpgrade | null> {
-  if (DEMO) return demo.demoInterruptedUpgrade
+  if (DEMO) return demoPage() === 'dashboard-interrupted' ? demo.demoInterruptedUpgrade : null
   return call<InterruptedUpgrade | null>('interrupted_upgrade', {})
 }
 

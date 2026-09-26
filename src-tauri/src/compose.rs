@@ -509,17 +509,19 @@ impl PullAggregator {
     pub fn stall_line(&self, silent_secs: u64) -> String {
         let done: u64 = self.images.iter().map(|i| i.downloaded_bytes).sum();
         let total: u64 = self.images.iter().map(|i| i.total_bytes).sum();
-        let got = if total > 0 {
-            format!(
+        // 三种说法，对应三种真实情况。**没读到的东西就说没读到**（红线 1）：
+        // 自签证书的私有源上我们读不了 manifest，那时候分母是真的不知道
+        let got = match (done, total) {
+            (0, _) => "一个字节都没下到".to_string(),
+            (d, t) if t > 0 => format!(
                 "已下载 {} / 共 {}",
-                crate::flow::human_bytes(done),
-                crate::flow::human_bytes(total)
-            )
-        } else {
-            format!("已下载 {}（总量还没读到）", crate::flow::human_bytes(done))
+                crate::flow::human_bytes(d),
+                crate::flow::human_bytes(t)
+            ),
+            (d, _) => format!("已下载 {}，总量没读到", crate::flow::human_bytes(d)),
         };
         format!(
-            "从「{}」拉了 {} 没有任何数据进来（{}）",
+            "从「{}」拉了 {}，{}",
             self.registry_label,
             crate::timefmt::human_secs(silent_secs),
             got
@@ -2147,6 +2149,71 @@ pub fn container_names() -> BTreeMap<String, String> {
 mod tests {
     use super::*;
     use crate::config;
+
+    // ── I16 · 拉取卡住 ──────────────────────────────────────────────────
+
+    fn agg_for(tag: &str, sizes: &[(&str, u64)]) -> PullAggregator {
+        let specs = config::images("ghcr.io/agentpit-io", "docker.io/library", tag);
+        let m: BTreeMap<String, u64> = sizes
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), *v))
+            .collect();
+        PullAggregator::new(&specs, &m, "ghcr.io/agentpit-io", "GHCR · GitHub")
+    }
+
+    /// **进度没变 = 没有进展**，哪怕管道上一直有字节。
+    ///
+    /// 这就是 `compose pull` 拉不动时的真实形状 —— 测试机上实测原文
+    /// （`docs/开发文档/I16-证据/compose-pull-stalled.jsonl`）：同一条
+    /// `Pulling fs layer … details:"0B"` 一遍遍重复，既没有 `current` 也没有 `total`。
+    /// 按「管道上有没有字节」判，这个现场永远判不出卡死。
+    #[test]
+    fn 重复同一条进度行时进度指纹不变() {
+        let mut a = agg_for("1.2.2", &[]);
+        let line = r#"{"id":"d4f147ee4233","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Pulling fs layer","details":"0B"}"#;
+        // 第一条**算进展**：多出了一个层，那是真的往前走了一步
+        let empty = a.progress_token();
+        a.feed(line);
+        let before = a.progress_token();
+        assert_ne!(before, empty, "第一次看见这一层是有进展的");
+        // 之后一模一样的 49 条一条都不算
+        for _ in 0..49 {
+            a.feed(line);
+        }
+        assert_eq!(a.progress_token(), before, "一直是同一句，不该算有进展");
+
+        // 真的下到字节了，指纹必须变
+        a.feed(r#"{"id":"d4f147ee4233","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Downloading","current":1048576,"total":31000000}"#);
+        assert_ne!(a.progress_token(), before, "下到字节了就是有进展");
+        let after_1mb = a.progress_token();
+        a.feed(r#"{"id":"d4f147ee4233","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Downloading","current":2097152,"total":31000000}"#);
+        assert_ne!(a.progress_token(), after_1mb, "又多下了 1 MB，同样算有进展");
+    }
+
+    /// 卡住那句话要说清「哪个源、多久、下了多少」。三种情况三种说法，
+    /// **不知道的就说不知道**（红线 1）。
+    #[test]
+    fn 卡住那句话把该说的都说了() {
+        // ① 一个字节都没来（测试机上的假 registry 就是这一档）
+        let a = agg_for("1.2.2", &[]);
+        let s = a.stall_line(90);
+        assert!(s.contains("GHCR · GitHub"), "{s}");
+        assert!(s.contains("1 分 30 秒"), "{s}");
+        assert!(s.contains("一个字节都没下到"), "{s}");
+
+        // ② 分母读到了、下了一半（客户那台 Mac 上就是这一档 —— 748 MB 算得出来）
+        let mut b = agg_for("1.2.2", &[("web", 748_000_000)]);
+        b.feed(r#"{"id":"L1","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Downloading","current":120000000,"total":748000000}"#);
+        let s = b.stall_line(90);
+        assert!(s.contains("已下载"), "{s}");
+        assert!(s.contains("748"), "分母要说出来：{s}");
+
+        // ③ 下到了字节但分母没读到（私有源读不了 manifest 时）
+        let mut c = agg_for("1.2.2", &[]);
+        c.feed(r#"{"id":"L1","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Downloading","current":5000000}"#);
+        let s = c.stall_line(30);
+        assert!(s.contains("总量没读到"), "{s}");
+    }
 
     // ── I12 · R3：compose 调用必带覆盖文件 ──────────────────────────────
     //

@@ -3,6 +3,7 @@ import { Button } from './Button'
 import { Modal } from './Modal'
 import { copyText } from '../lib/clipboard'
 import * as ipc from '../lib/ipc'
+import * as demoData from '../lib/demo'
 import type { LogshipOutcome, LogshipPreview } from '../lib/types'
 import { useStore } from '../state/context'
 
@@ -41,8 +42,18 @@ export function UploadLogs({
 }) {
   const { t } = useStore()
   const [busy, setBusy] = useState<'preview' | 'upload' | null>(null)
-  const [preview, setPreview] = useState<LogshipPreview | null>(null)
-  const [outcome, setOutcome] = useState<LogshipOutcome | null>(null)
+  // 截图脚本用 HUNTER_DEMO_PAGE=upload-preview / upload-done 直接把这两屏打开 ——
+  // 它们都在弹窗里，不先点一下按钮是截不到的
+  const [preview, setPreview] = useState<LogshipPreview | null>(() =>
+    ipc.DEMO && ipc.demoPage() === 'upload-preview' && testId === 'dashboard-upload-logs'
+      ? demoPreview()
+      : null,
+  )
+  const [outcome, setOutcome] = useState<LogshipOutcome | null>(() =>
+    ipc.DEMO && ipc.demoPage() === 'upload-done' && testId === 'dashboard-upload-logs'
+      ? demoOutcome()
+      : null,
+  )
   const [err, setErr] = useState<string | null>(null)
   const [copied, setCopied] = useState<boolean | null>(null)
 
@@ -89,6 +100,7 @@ export function UploadLogs({
         <Modal
           title={t.logship.title}
           testId={`${testId}-preview`}
+          wide
           onClose={() => setPreview(null)}
           footer={
             <>
@@ -202,6 +214,14 @@ export function UploadLogs({
       )}
     </>
   )
+}
+
+/** 演示态那两屏。只有 VITE_DEMO=1 的开发构建走得到这里（发布包里进不来）。 */
+function demoPreview(): LogshipPreview | null {
+  return (demoData as { demoLogshipPreview?: LogshipPreview }).demoLogshipPreview ?? null
+}
+function demoOutcome(): LogshipOutcome | null {
+  return (demoData as { demoLogshipOutcome?: LogshipOutcome }).demoLogshipOutcome ?? null
 }
 
 function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {

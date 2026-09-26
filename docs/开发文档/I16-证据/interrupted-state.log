@@ -1,0 +1,47 @@
+=== ① 现状：配置与容器一致时不许误报 ===
+  .env 里的版本：HUNTER_VERSION=1.2.1
+  正在跑的容器用的镜像：
+    api ghcr.io/agentpit-io/hunter-community-api:1.2.1
+    llm-shim ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.1
+    opencode ghcr.io/agentpit-io/hunter-community-opencode:1.2.1
+    postgres postgres:16-alpine
+    redis redis:7-alpine
+    web ghcr.io/agentpit-io/hunter-community-web:1.2.1
+  升级状态 没有没做完的升级（配置与正在跑的容器对得上）
+
+=== ② 造中间态：把 .env 的版本改成 v9.9.9（本机没有这一版的镜像） ===
+HUNTER_VERSION=9.9.9
+  本机有没有 v9.9.9 的镜像：
+    没有 ✓
+
+=== ③ 再问一次判定 ===
+
+Hunter 启动器 · 开机判定
+──────────────────────────────────
+  现状     Hunter 已经在正常运行（6 / 6 健康，网页返回 HTTP 200）
+  服务     6 / 6 就绪，网页 HTTP 200
+  该进哪   运行面板
+  安装标记 进来时 done=true，现在 done=true
+  记录     启动器 0.1.16，装于 2026-09-24 23:30:13，上次正常运行 2026-09-26 02:12:55
+
+  ⚠ 上一次升级没做完
+    上一次升级没做完：配置已经是 v9.9.9，跑着的还是 v1.2.1，而 v9.9.9 的镜像本机不齐
+    · 配置（.env 与 compose）写的是 v9.9.9
+    · 正在跑的 4 个容器用的是 v1.2.1
+    · v9.9.9 的镜像本机还缺 4 个：web、api、opencode、llm-shim
+    · 所以上一次升级多半是拉镜像时被打断的（强退 / 断电 / 关机）。在你选之前，启动器不会按新配置去起容器 —— 那只会再卡一次。
+    两条出路：继续升到 v9.9.9，或者回退到正在跑的 v1.2.1
+      继续：hunter-launcher --upgrade 9.9.9
+      回退：界面上点「回退到正在跑的 v1.2.1」（只改配置，不动容器）
+
+  逐条证据：
+    · web · running · 健康
+    · api · running · 健康
+    · opencode · running · 健康
+    · llm-shim · running · 健康
+    · postgres · running · 健康
+    · redis · running · 健康
+    · GET http://127.0.0.1:3101/ → HTTP 200
+
+  用时 1913 毫秒（含复查 630 毫秒）
+已把 .env 与 launcher.toml 写回原样

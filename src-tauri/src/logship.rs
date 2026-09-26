@@ -365,7 +365,10 @@ pub fn upload(cfg: &LauncherConfig, p: &Preview) -> AppResult<Outcome> {
             "没有 machineId（拿不到系统随机源），这一次不上传".to_string(),
         ));
     }
-    let local_log_path = redact::mask_home(&crate::paths::launcher_log().to_string_lossy());
+    // **这一条不脱敏。** 它是给用户看的「你的日志在哪」——
+    // 抹成 `<用户目录>/.hunter/logs/launcher.log` 他就找不到那个文件了。
+    // 它不会被上传（`Outcome` 只回给界面），也不会进日志正文。
+    let local_log_path = crate::paths::launcher_log().to_string_lossy().into_owned();
     let payload = build_request(cfg, p);
     crate::linfo!(
         "开始上传日志：{} 字节 · stage={} · code={}",
@@ -387,9 +390,10 @@ pub fn upload(cfg: &LauncherConfig, p: &Preview) -> AppResult<Outcome> {
         Ok(r) => r,
         Err(e) => {
             // 连都没连上。**当场导一个诊断包出来**，别让用户两手空空
+            // 同样不脱敏：这是要让用户在自己的文件管理器里找到的那个文件
             let bundle = feedback::export_bundle()
                 .ok()
-                .map(|p| redact::mask_home(&p.to_string_lossy()));
+                .map(|p| p.to_string_lossy().into_owned());
             crate::lwarn!("上传日志失败（没连上）：{}", e.msg);
             return Ok(Outcome {
                 ok: false,
@@ -473,7 +477,7 @@ pub fn upload(cfg: &LauncherConfig, p: &Preview) -> AppResult<Outcome> {
     let bundle = if want_bundle {
         feedback::export_bundle()
             .ok()
-            .map(|p| redact::mask_home(&p.to_string_lossy()))
+            .map(|p| p.to_string_lossy().into_owned())
     } else {
         None
     };
@@ -502,11 +506,11 @@ pub fn failure_message(status: u16, server_msg: &str, local_log_path: &str) -> (
     match status {
         429 => (
             format!(
-                "今天传得有点多，服务端暂时不收了（同一台机器每小时最多 5 次、每天 20 次）。{tail}过一个小时再点一次就行。{}",
+                "今天传得有点多，服务端暂时不收了（同一台机器每小时最多 5 次、每天 20 次），过一个小时再点一次就行。{}{tail}",
                 if server_msg.is_empty() {
                     String::new()
                 } else {
-                    format!("服务端原话：{server_msg}")
+                    format!("服务端原话：{server_msg}。")
                 }
             ),
             false,
@@ -761,20 +765,21 @@ mod tests {
         let (m429, bundle429) = failure_message(
             429,
             "上传太频繁：这台机器每小时最多 5 次",
-            "~/.hunter/logs/launcher.log",
+            "/home/u/.hunter/logs/launcher.log",
         );
         assert!(m429.contains("每小时最多 5 次"));
+        // **路径要是能用的那一个**，不能抹成 `<用户目录>/…` —— 抹了他就找不到文件了
         assert!(
-            m429.contains("~/.hunter/logs/launcher.log"),
-            "要说清日志在哪"
+            m429.contains("/home/u/.hunter/logs/launcher.log"),
+            "要说清日志在哪：{m429}"
         );
         assert!(!bundle429, "限流没必要再导一个包");
 
-        let (m413, bundle413) = failure_message(413, "", "~/.hunter/logs/launcher.log");
+        let (m413, bundle413) = failure_message(413, "", "/home/u/.hunter/logs/launcher.log");
         assert!(m413.contains("太大"));
         assert!(bundle413);
 
-        let (m500, bundle500) = failure_message(500, "", "~/.hunter/logs/launcher.log");
+        let (m500, bundle500) = failure_message(500, "", "/home/u/.hunter/logs/launcher.log");
         assert!(m500.contains("我们这边"), "服务端的错不要甩给用户：{m500}");
         assert!(bundle500);
     }

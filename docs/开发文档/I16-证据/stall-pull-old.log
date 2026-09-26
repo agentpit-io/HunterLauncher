@@ -1,0 +1,27 @@
+
+Hunter 启动器 · 只拉镜像
+──────────────────────────────────
+工作目录 /home/support/.hunter
+
+[1/4] hunter key
+  从 /home/support/.hunter-launcher-test/key 读到一把 key（hunt_tools_****）
+  ✓ key 有效 · 今日已用 0 / 10,000,000 · 剩 10,000,000 · 每分钟 20 次 · 并发 4
+  可用模型：hunter-chat · hunter-deep
+
+[2/4] 检查 Docker
+  ✓ Docker Engine 29.8.1 · compose v5.5.1 · amd64
+
+[3/4] 准备配置
+  镜像源：自定义 127.0.0.1:5999/agentpit（用户手填，没有做可用性探测）
+  compose：已按 tag v1.2.2 下载并校验（24093 字节）
+  现有的这一套 hunter 正占着端口 [3101, 8101, 3922, 5443, 6480]，这些不算冲突
+  已写 /home/support/.hunter/app/.env（权限 600）与覆盖文件；端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480（全部只绑 127.0.0.1）
+  docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）
+  读不到 manifest，进度条的总量会在拉取过程中逐步补齐
+
+[4/4] 拉取镜像
+    0% 0 B / 0 B · — · 第 1 次尝试
+    0% 0 B / 0 B · — · 第 1 次尝试
+
+✗ E_PULL_STALLED: 从「自定义镜像源」拉了 20 秒 没有任何数据进来（已下载 0 B（总量还没读到））。这个源都试过了，都是连得上、不给数据 —— 这多半是这台机器到镜像仓库的网络被掐在半路上了（运营商、公司网关、代理）。可以换个网络再试（手机热点最快验），或者用离线包安装。
+  日志：/home/support/.hunter/logs/launcher.log
