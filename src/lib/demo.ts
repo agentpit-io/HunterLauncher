@@ -811,6 +811,43 @@ export const demoRuntimeLanExposed: RuntimeStatus = {
 }
 
 /**
+ * **六个容器全都退出了**（I16 · P0-4，截图脚本 `HUNTER_DEMO_PAGE=dashboard-stopped`）。
+ *
+ * 这就是客户 2026-09-26 那台 Windows 上 `ps.txt` 的样子。0.1.15 在这个现场
+ * 顶上写「Hunter 运行中」、下一行写「容器已停止」，自相矛盾；
+ * 而开机判定还说「Hunter 在跑，但 web、api… 还没就绪」——
+ * 把「退出了」说成「还没就绪」，处置方向正好相反。
+ *
+ * 这一页要看的就是**那两行不再打架**：大字「Hunter 已停止」+「v1.2.2 · 容器已停止」。
+ */
+export const demoRuntimeAllStopped: RuntimeStatus = {
+  ...demoRuntime,
+  running: false,
+  uptimeSeconds: 0,
+  webUrl: null,
+  postInstallNotes: [],
+  services: demoRuntime.services.map((s) => ({
+    ...s,
+    state: 'exited',
+    health: 'pending',
+    exitCode: 0,
+  })),
+}
+
+/**
+ * **定时备份根本没挂上**（I16 · P0-3，截图脚本 `HUNTER_DEMO_PAGE=dashboard-schedule-broken`）。
+ *
+ * `scheduleError` 里那句话是客户那台中文 Windows 上 `schtasks` 的原话
+ * ——**按 GBK 解回来之后**的样子。0.1.15 把它当 UTF-8 解，
+ * 日志里只剩 `????: ??????`，而界面上一个字都没有。
+ */
+export const demoBackupScheduleBroken: BackupSettings = {
+  ...demoBackupSettings,
+  scheduleError:
+    'schtasks 三条路都没装上定时备份：/Create /XML 失败：错误: 未指定的错误；先删后建（/XML）还是失败：错误: 未指定的错误；/SC DAILY 也失败：错误: 拒绝访问。',
+}
+
+/**
  * AI 诊断助手的演示态（I4）。
  *
  * 演示的是**规则层**那一半 —— 它不花 token、不联网，演示出来是诚实的。

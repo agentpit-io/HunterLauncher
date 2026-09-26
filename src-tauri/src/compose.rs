@@ -72,6 +72,82 @@ pub fn run(extra: &[&str], timeout: Duration) -> AppResult<proc::Ran> {
     proc::run_timeout(&program, &refs, timeout)
 }
 
+/// 「多久没有任何新进展」算 `up -d` 卡住了。
+///
+/// 比拉镜像那 90 秒短：起容器这一段是本机的活（建网络、建容器、挂卷、起进程），
+/// 不跨网络。正常情况下每一步之间都是亚秒级；真要静默一分钟，
+/// 那是 docker 守护进程自己出问题了，再等下去也没有意义。
+const UP_SILENCE: Duration = Duration::from_secs(60);
+
+/// 跑一条**长跑且有进度流**的 compose 命令（`up -d` / `restart` 这一类）。
+///
+/// 和 [`run`] 的差别：除了总时长上限之外，还认「多久没有任何新进展」
+/// （I16 · P0-1 第三条 —— 那一套静默超时不是只给拉镜像用的）。
+///
+/// 这里的判据就是「管道上有没有字节」：`up -d` 的进度是一行一个新状态，
+/// 不像 `compose pull` 那样会对着一个卡死的连接重复吐同一行。
+fn run_progress(extra: &[&str], total: Duration) -> AppResult<proc::Ran> {
+    let (c, o) = file_paths();
+    let dir = paths::app_dir();
+    let dir_s = dir.to_string_lossy().into_owned();
+    // `--progress plain` 保证卡在哪一步是看得见的（默认那个 TTY 进度条重画同一屏）
+    let mut full: Vec<&str> = vec!["--progress", "plain"];
+    full.extend_from_slice(extra);
+    let (program, args) = full_args(&c, &o, &dir_s, &full);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let opts = proc::StreamOpts {
+        silence: Some(UP_SILENCE),
+        total: Some(total),
+        cwd: Some(dir.as_path()),
+        tail: 400,
+        ..Default::default()
+    };
+    let r = proc::run_streaming(&program, &refs, &opts, |_| proc::Fresh::Yes)?;
+    let status = match r.ended {
+        proc::Ended::Exited(code) => code,
+        // 卡住与超时都归到「非 0 退出」，并**把原因摆在原话里** ——
+        // 上层按原话分类（`classify_up_error`），说不出原因它就只能猜
+        proc::Ended::Stalled { silent_secs } => {
+            crate::lwarn!(
+                "compose {} 卡住：{silent_secs} 秒没有新进展，已杀掉",
+                extra.join(" ")
+            );
+            return Ok(proc::Ran {
+                status: Some(-1),
+                stdout: r.stdout.join("\n"),
+                // **写成一行。** `Ran::err_line()` 取的是最后一条非空行 ——
+                // 分成两行的话用户只会看到后半句，前半句（卡了多久）就丢了
+                stderr: format!(
+                    "{}\n起容器这一步卡住了：{silent_secs} 秒没有任何新进展，已经把它中止。这通常是 Docker 守护进程自己出了问题（重启一次 Docker 多半就好了）。",
+                    r.stderr.join("\n")
+                ),
+            });
+        }
+        proc::Ended::TimedOut { secs } => {
+            return Ok(proc::Ran {
+                status: Some(-1),
+                stdout: r.stdout.join("\n"),
+                stderr: format!(
+                    "{}\n起容器超过 {secs} 秒还没结束，已经中止。",
+                    r.stderr.join("\n")
+                ),
+            });
+        }
+        proc::Ended::Cancelled => {
+            return Ok(proc::Ran {
+                status: Some(-1),
+                stdout: r.stdout.join("\n"),
+                stderr: format!("{}\n已取消。", r.stderr.join("\n")),
+            })
+        }
+    };
+    Ok(proc::Ran {
+        status,
+        stdout: r.stdout.join("\n"),
+        stderr: r.stderr.join("\n"),
+    })
+}
+
 /// 同一条命令的**程序名 + 完整参数（带所有权）**。
 ///
 /// 给需要自己接管子进程 stdin/stdout 的调用方用 —— 目前是 [`crate::backup`]：
@@ -1734,7 +1810,7 @@ pub fn up_services(services: &[&str]) -> AppResult<()> {
     guard_project_owner()?;
     let mut args: Vec<&str> = vec!["up", "-d", "--force-recreate"];
     args.extend_from_slice(services);
-    let r = run(&args, Duration::from_secs(300))?;
+    let r = run_progress(&args, Duration::from_secs(300))?;
     if r.ok() {
         crate::linfo!("docker compose up -d {} 完成", services.join(" "));
         Ok(())
@@ -1759,7 +1835,7 @@ pub fn start_services(services: &[&str]) -> AppResult<()> {
     guard_project_owner()?;
     let mut args: Vec<&str> = vec!["up", "-d", "--no-recreate"];
     args.extend_from_slice(services);
-    let r = run(&args, Duration::from_secs(300))?;
+    let r = run_progress(&args, Duration::from_secs(300))?;
     if r.ok() {
         crate::linfo!(
             "docker compose up -d --no-recreate {} 完成",

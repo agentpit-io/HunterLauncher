@@ -1,0 +1,55 @@
+
+[1m== ① 先看现在的样子（应当 6/6 在跑） ==[0m
+  api running
+  llm-shim running
+  opencode running
+  postgres running
+  redis running
+  web running
+
+[1m== ② 真的把六个容器停下来（docker compose stop，不删容器、不碰卷） ==[0m
+  api exited
+  llm-shim exited
+  opencode exited
+  postgres exited
+  redis exited
+  web exited
+  [32m✓[0m 六个全是 exited
+
+[1m== ③ 开机判定怎么说 ==[0m
+  
+  Hunter 启动器 · 开机判定
+  ──────────────────────────────────
+    现状     Hunter 装好了，但 6 个容器都停着 —— 点「启动」就能用
+    服务     0 / 6 就绪，网页没去探（容器都停着，那个端口上不会有人应答）
+    该进哪   运行面板
+    安装标记 进来时 done=true，现在 done=true
+    记录     启动器 0.1.16，装于 2026-09-26 03:10:50，上次正常运行 2026-09-27 00:29:56
+  
+    升级状态 没有没做完的升级（配置与正在跑的容器对得上）
+  
+    逐条证据：
+      · web · exited · 未启动
+      · api · exited · 未启动
+      · opencode · exited · 未启动
+      · llm-shim · exited · 未启动
+      · postgres · exited · 未启动
+      · redis · exited · 未启动
+      · 6 个容器全部已退出 —— 装是装好了，只是没在跑
+  
+    用时 1871 毫秒（含复查 556 毫秒）
+  [32m✓[0m 说的是「都停着」
+  [32m✓[0m 没有把 exited 说成「还没就绪」
+  [32m✓[0m 没有多报一句「网页打不开」
+  [32m✓[0m 没有 0.1.15 那句「Hunter 在跑，但 … 还没就绪」
+  [32m✓[0m 没去探的事没说成「没应答」
+
+[1m== ④ 恢复现场：把六个容器起回来 ==[0m
+  api running Up About a minute (healthy)
+  llm-shim running Up About a minute (healthy)
+  opencode running Up 20 seconds (healthy)
+  postgres running Up About a minute (healthy)
+  redis running Up About a minute (healthy)
+  web running Up About a minute (healthy)
+
+全部通过

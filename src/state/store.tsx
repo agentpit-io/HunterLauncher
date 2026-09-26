@@ -38,6 +38,10 @@ const DEMO_STATES: Record<string, State> = {
   'uninstall-all': { name: 'Ready' },
   // I7：升级上来的老机器（网页端口还对局域网开着）看到的那条横幅
   'dashboard-lan': { name: 'Ready' },
+  // I16 · P0-4：六个容器全 exited。看的是顶上那行大字与副标题**不再打架**
+  'dashboard-stopped': { name: 'Ready' },
+  // I16 · P0-3：定时备份根本没挂上的那条红横幅
+  'dashboard-schedule-broken': { name: 'Ready' },
   settings: { name: 'Ready' },
   // I7：同一件事在设置页里的样子（只读说明 + 一键收紧）
   'settings-lan': { name: 'Ready' },

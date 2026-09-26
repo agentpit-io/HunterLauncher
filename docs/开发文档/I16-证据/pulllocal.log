@@ -1,0 +1,62 @@
+
+[1m== ① 本机现在有哪些 hunter 镜像 ==[0m
+  ghcr.io/agentpit-io/hunter-community-api:1.2.2
+  ghcr.io/agentpit-io/hunter-community-opencode:1.2.2
+  ghcr.io/agentpit-io/hunter-community-web:1.2.2
+  ghcr.io/agentpit-io/hunter-community-api:1.2.1
+  ghcr.io/agentpit-io/hunter-community-web:1.2.1
+  ghcr.io/agentpit-io/hunter-community-opencode:1.2.1
+  ghcr.io/agentpit-io/hunter-community-web:1.2.0
+  hkccr.ccs.tencentyun.com/agentpit/hunter-community-web:1.2.0
+  ghcr.io/agentpit-io/hunter-community-api:1.2.0
+  hkccr.ccs.tencentyun.com/agentpit/hunter-community-api:1.2.0
+  ghcr.io/agentpit-io/hunter-community-opencode:1.2.0
+  hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode:1.2.0
+  ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.1
+  ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.2
+  ghcr.io/agentpit-io/hunter-community-llm-shim:1.2.0
+  hkccr.ccs.tencentyun.com/agentpit/hunter-community-llm-shim:1.2.0
+  redis:7-alpine
+  hkccr.ccs.tencentyun.com/agentpit/redis:7-alpine
+  postgres:16-alpine
+  hkccr.ccs.tencentyun.com/agentpit/postgres:16-alpine
+
+[1m== ② 对着一套**本机已有**的镜像跑 --pull-only ==[0m
+  
+  Hunter 启动器 · 只拉镜像
+  ──────────────────────────────────
+  工作目录 /home/support/.hunter
+  
+  [1/4] hunter key
+    从 /home/support/.hunter-launcher-test/key 读到一把 key（hunt_tools_****）
+    ✓ key 有效 · 今日已用 0 / 10,000,000 · 剩 10,000,000 · 每分钟 20 次 · 并发 4
+    可用模型：hunter-chat · hunter-deep
+  
+  [2/4] 检查 Docker
+    ✓ Docker Engine 29.8.1 · compose v5.5.1 · amd64
+  
+  [3/4] 准备配置
+    正在测速候选镜像源…
+      可用 GHCR · GitHub · 310 ms
+      可用 腾讯云 · 香港 · 1621 ms
+    选定：GHCR · GitHub
+    compose：已按 tag v1.2.2 下载并校验（24093 字节）
+    现有的这一套 hunter 正占着端口 [3101, 8101, 3922, 5443, 6480]，这些不算冲突
+    已写 /home/support/.hunter/app/.env（权限 600）与覆盖文件；端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480（全部只绑 127.0.0.1）
+    docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）
+    六个镜像合计约 881 MB（linux/amd64 压缩后，来自 manifest）
+  
+  [4/4] 拉取镜像
+    ✓ 6 个镜像本机都已有，没有下载（核对用时 1 秒）
+      hunter-community-web          331 MB  1 秒
+      hunter-community-api          215 MB  1 秒
+      hunter-community-opencode     184 MB  1 秒
+      hunter-community-llm-shim    18.1 MB  1 秒
+      postgres                      116 MB  1 秒
+      redis                        16.2 MB  1 秒
+  
+    只拉镜像模式，不起容器。总用时 18 秒
+  [32m✓[0m 说清楚了「本机都已有」
+  [32m✓[0m 没有谎称「拉取完成」
+
+全部通过

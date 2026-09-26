@@ -229,6 +229,8 @@ export async function runtimeStatus(): Promise<RuntimeStatus> {
     if (p === 'dashboard-quota-exhausted') return demo.demoRuntimeQuotaExhausted
     // I7：升级上来的老机器 —— 网页端口还绑在所有网卡上
     if (p === 'dashboard-lan') return demo.demoRuntimeLanExposed
+    // I16 · P0-4：六个容器全都 exited —— 那两行说法不许再打架
+    if (p === 'dashboard-stopped') return demo.demoRuntimeAllStopped
     return demo.demoRuntime
   }
   return call<RuntimeStatus>('runtime_status')
@@ -493,7 +495,11 @@ export async function restoreBackup(id: string, confirm: string): Promise<Restor
 // ── I13 · R6 备份与恢复 ───────────────────────────────────────────────────
 
 export async function readBackupSettings(): Promise<BackupSettings> {
-  if (DEMO) return demo.demoBackupSettings
+  // I16 · P0-3：定时任务根本没挂上的那条红横幅
+  if (DEMO)
+    return demoPage() === 'dashboard-schedule-broken'
+      ? demo.demoBackupScheduleBroken
+      : demo.demoBackupSettings
   return call<BackupSettings>('read_backup_settings')
 }
 

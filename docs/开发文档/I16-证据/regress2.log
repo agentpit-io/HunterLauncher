@@ -1,0 +1,50 @@
+
+[1m== 守卫越界：每一条都必须被拒 ==[0m
+  [32m✓[0m 空确认词删不了（退出码 1）
+
+[1m== （下面几条走的是 Rust 单测覆盖的守卫，这里再在真二进制上确认一次） ==[0m
+拿来试的别人的卷                       hunter-community_hunter_opencode_data
+一键腾空间（只清本项目旧镜像、悬空卷、过期备份）
+旧镜像 8 个 · 6.5 GB
+悬空卷 0 个 · 0 B
+hunter-community
+enabled
+通过                                         1
+没通过                                      0
+
+===== I13 · 备份列表 =====
+
+备份
+────
+备份目录 /home/support/Hunter-backups
+老目录   /home/support/.hunter/backups（0.1.12 及之前的备份还在这儿，照样恢复得了）
+  2026-09-26 08:00:29 · v1.2.2 · hunter-20260926-0800-v1.2.2 · 定时备份 · 数据库 144 KB · 校验 通过
+  2026-09-26 03:07:00 · v1.2.1 · hunter-20260926-0307-v1.2.1 · 升级前自动备份 · 数据库 144 KB · 校验 通过
+  2026-09-25 08:00:28 · v1.2.1 · hunter-20260925-0800-v1.2.1 · 定时备份 · 数据库 144 KB · 校验 通过
+  2026-09-24 23:34:27 · v1.2.1 · hunter-20260924-2334-v1.2.1 · 升级前自动备份 · 数据库 144 KB · 校验 通过
+  2026-09-24 08:00:28 · v1.2.0 · hunter-20260924-0800-v1.2.0 · 定时备份 · 数据库 144 KB · 校验 通过
+  合计占用 1.1 MB
+
+恢复：hunter-launcher --restore <id 或目录> --confirm 恢复数据 -y
+
+===== I14 · f1-assets =====
+
+[1m== F1 · latest.json 里每个平台取到的是不是它自己那个包 ==[0m
+  清单版本 0.1.15
+  OK linux-x86_64 -> hunter-launcher_0.1.15_amd64.AppImage
+  OK windows-x86_64 -> hunter-launcher_0.1.15_x64-setup.exe
+  OK darwin-x86_64 -> hunter-launcher_0.1.15_universal.app.tar.gz
+  OK darwin-aarch64 -> hunter-launcher_0.1.15_universal.app.tar.gz
+
+[1m== 本机（Linux）--check-update 的原话 ==[0m
+    
+    检查更新
+    ────────
+    Hunter 当前 v1.2.2
+      已经是最新版（最新 v1.2.2）
+    
+    启动器当前 v0.1.16
+      安装形式 unknown
+      已经是最新版（清单来自 hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com，里面是 v0.1.15）
+      这种形式（.deb 等）换包要 root，启动器只会把新包下好再给你一条命令
+      Release 页 https://github.com/agentpit-io/HunterLauncher/releases

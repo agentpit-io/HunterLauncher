@@ -1778,7 +1778,13 @@ fn cmd_upload_logs(st: &AppState, args: &Args) -> AppResult<()> {
     );
     println!("  {}", out.message);
     if !out.ok {
-        return Err(AppError::new(Code::Unknown, out.message));
+        // 限流有自己的错误码。**说「没归类的意外」是在把原因说错**，
+        // 而说错原因比不说更糟（本轮验收时印出来的是 `E_UNKNOWN: 今天传得有点多…`）
+        let code = match out.status {
+            Some(429) => Code::RateLimited,
+            _ => Code::Unknown,
+        };
+        return Err(AppError::new(code, out.message));
     }
     Ok(())
 }
@@ -1917,6 +1923,11 @@ fn cmd_boot_state() -> AppResult<()> {
         rv.total,
         match rv.web_status {
             Some(s) => format!("，网页 HTTP {s}"),
+            // 容器都停着的时候**根本没去探**那个端口（探它只是白等 6 秒）。
+            // 说「没应答」等于报一个没做过的测试的结果（红线 1）——
+            // 2026-09-26 那位 Windows 客户看到的正是这一类话（I16 · P0-4）
+            None if rv.posture == crate::selfcheck::Posture::Stopped =>
+                "，网页没去探（容器都停着，那个端口上不会有人应答）".to_string(),
             None => "，网页这一次没应答".to_string(),
         }
     );
