@@ -166,17 +166,69 @@ pub fn import(tar: &Path, mut note: impl FnMut(&str)) -> AppResult<ImportResult>
     linfo!("离线导入：{path_s}（{bytes} 字节）");
 
     let t0 = Instant::now();
+    // **走静默超时，不是光靠那 30 分钟的总上限**（I16 · P0-1 的第三条）。
+    //
+    // `docker load` 是典型的「长跑 + 有进度流」：几 GB 的 tar 在慢盘上真要几十分钟，
+    // 写死一个总时长要么误杀要么等太久。而「多久没有任何新进展」和盘速无关 ——
+    // 卡在一个坏掉的 tar、一块出问题的盘上，它就是一直不动。
+    // 文件读不动时**一分钟没有新字节**就够判了（比拉镜像那 90 秒短：这里没有网络往返）。
+    // 总上限照旧留着当最后一道兜底。
+    let load_stall = Duration::from_secs(60);
+    let opts = proc::StreamOpts {
+        silence: Some(load_stall),
+        total: Some(LOAD_TIMEOUT),
+        tail: 400,
+        ..Default::default()
+    };
     // 红线 3：参数数组。`-i` 让 docker 自己读文件，不走 shell 重定向
-    let r = proc::run_timeout(&which::docker_bin(), &["load", "-i", &path_s], LOAD_TIMEOUT)?;
-    if !r.ok() {
-        return Err(AppError::new(
-            Code::PullFailed,
-            format!("docker load 失败：{}", r.err_line()),
-        ));
-    }
+    let streamed = proc::run_streaming(
+        &which::docker_bin(),
+        &["load", "-i", &path_s],
+        &opts,
+        // `docker load` 的进度就是「一行一个新状态」，管道上有字节就是有进展
+        |_| proc::Fresh::Yes,
+    )?;
     let seconds = t0.elapsed().as_secs();
+    match streamed.ended {
+        proc::Ended::Exited(Some(0)) => {}
+        proc::Ended::Stalled { silent_secs } => {
+            lwarn!("离线导入卡住：{silent_secs} 秒没有任何新进展，已经把 docker load 杀掉");
+            return Err(AppError::new(
+                Code::PullStalled,
+                format!(
+                    "从 {path_s} 导入镜像时卡住了：{silent_secs} 秒没有任何新进展，已经中止。\
+                     这个 tar 可能是坏的（拷贝没拷完就是最常见的一种），也可能是这块盘读不动了。\
+                     先核对一下文件大小与来源那一头是不是一样，再重来一次。"
+                ),
+            ));
+        }
+        proc::Ended::TimedOut { secs } => {
+            return Err(AppError::new(
+                Code::PullStalled,
+                format!("导入镜像超过 {secs} 秒还没结束，已经中止。"),
+            ));
+        }
+        _ => {
+            let tail = streamed
+                .stderr
+                .iter()
+                .chain(streamed.stdout.iter())
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .cloned()
+                .unwrap_or_else(|| "（docker 一个字都没说）".to_string());
+            return Err(AppError::new(
+                Code::PullFailed,
+                format!("docker load 失败：{tail}"),
+            ));
+        }
+    }
     // docker load 的进度在 stderr，结果行（`Loaded image: …`）在 stdout
-    let loaded = parse_loaded(&format!("{}\n{}", r.stdout, r.stderr));
+    let loaded = parse_loaded(&format!(
+        "{}\n{}",
+        streamed.stdout.join("\n"),
+        streamed.stderr.join("\n")
+    ));
     if loaded.is_empty() {
         return Err(AppError::new(
             Code::PullFailed,

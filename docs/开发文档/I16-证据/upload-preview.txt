@@ -1,0 +1,387 @@
+
+上传日志给我们（不含 key 与口令）
+──────────────────────────────────────
+  接收地址：https://www.agentpit.io/api/v1/launcher/logs
+  machineId：e3893dbd-99f1-47c8-955e-711eebe9f18e（随机 UUID，不含任何硬件信息）
+  阶段 / 错误码：upgrade / E_PULL_STALLED
+  磁盘剩余（GB）: 70
+  这台机器配了网络代理: false
+  镜像源: ghcr (ghcr.io/agentpit-io)
+  正文：31484 字节
+  出口闸：干净（key、口令、邮箱、IP、用户名、主机名都没扫出来）
+
+  ── 将要上传的正文（一字不差就是下面这些） ──
+  | ===== 概要 (summary) =====
+  | 时间: 2026-09-26 01:54:14
+  | 启动器: 0.1.16
+  | 系统: linux x86_64
+  | Docker: DockerEngine · server 29.8.1 · compose v5.5.1
+  | docker 定位: /usr/bin/docker（PATH）
+  | Hunter tag: 1.2.1
+  | 镜像源: ghcr (ghcr.io/agentpit-io)
+  | 端口: web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480
+  | 模型: gateway · —
+  | 遥测: 关 · 上报端点: （无 · 暂未开启上报）
+  | 
+  | ===== docker compose ps (ps) =====
+  | web        running    健康       端口 3101
+  | api        running    健康       端口 8101
+  | opencode   running    健康       端口 3922
+  | llm-shim   running    健康       端口 内部
+  | postgres   running    健康       端口 5443
+  | redis      running    健康       端口 6480
+  | 
+  | ===== .env（只保留白名单四项，其余的值一律移除） (env) =====
+  | AGENT_MODEL_ROUTER=<已移除>
+  | AGENT_MODEL_ROUTE_LITE=<已移除>
+  | AGENT_SUB_EVENT_MODEL=<已移除>
+  | AGENT_SUB_PORT_MODEL=<已移除>
+  | AGENT_SUB_RESEARCH_MODEL=<已移除>
+  | AGENT_SUB_WL_MODEL=<已移除>
+  | API_HOST_PORT=<已移除>
+  | ASSISTANT_MODEL_CHAT=<已移除>
+  | ASSISTANT_MODEL_COMPRESS=<已移除>
+  | ASSISTANT_MODEL_ROUTE=<已移除>
+  | COMPOSE_FILE=<已移除>
+  | COMPOSE_PATH_SEPARATOR=<已移除>
+  | COMPOSE_PROJECT_NAME=<已移除>
+  | DATA_SOURCE_PROVIDER=hunter
+  | HUNTER_API_KEY=<已移除>
+  | HUNTER_INTERNAL_KEY=<已移除>
+  | HUNTER_REGISTRY=<已移除>
+  | HUNTER_SETUP_TOKEN=<已移除>
+  | HUNTER_SINGLE_USER=<已移除>
+  | HUNTER_VERSION=<已移除>
+  | JWT_SECRET=<已移除>
+  | LLM_API_KEY=<已移除>
+  | LLM_BASE_URL=hunter.agentpit.io
+  | LLM_DEFAULT_MODEL=hunter-chat
+  | LLM_PROVIDER=<已移除>
+  | LLM_SCHEMA_SANITIZE=<已移除>
+  | OPENCODE_HOST_PORT=<已移除>
+  | OPENCODE_PASS=<已移除>
+  | OPENCODE_USER=<已移除>
+  | POSTGRES_DB=<已移除>
+  | POSTGRES_HOST_PORT=<已移除>
+  | POSTGRES_PASSWORD=<已移除>
+  | POSTGRES_USER=<已移除>
+  | REDIS_HOST_PORT=<已移除>
+  | SIGNAL_ANALYSIS_MODEL=<已移除>
+  | WEB_HOST_PORT=<已移除>
+  | 
+  | ===== 启动器日志（最近 200 行） (launcher-log) =====
+  | 2026-09-25 00:42:21 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:21 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:21 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:21 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:31 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:42:32 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:42:32 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:42:32 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:32 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:33 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:33 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:33 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:42 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:42:42 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:42:42 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:42:42 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:42 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:42 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:42 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:53 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:42:53 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:42:53 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:42:53 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:42:53 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:42:53 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:53 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:53 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:42:53 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:53 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:42:53 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:05 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:43:06 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:43:06 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:43:06 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:08 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:09 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:09 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:15 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:43:16 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:43:16 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:43:16 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:16 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:16 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:16 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:16 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:26 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:43:27 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:43:27 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:43:27 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:27 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:27 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:27 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:28 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:28 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:37 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:43:37 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:43:37 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:43:37 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:37 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:37 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:37 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:38 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:38 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:38 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:48 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:43:49 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:43:49 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:43:49 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:49 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:49 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:49 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:49 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:49 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:59 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:43:59 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:43:59 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:43:59 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:59 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:59 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:59 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:43:59 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:59 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:43:59 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:09 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:44:10 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:44:10 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:44:10 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:10 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:10 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:10 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:10 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:10 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:20 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:44:20 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:44:20 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:44:20 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:20 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:20 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:20 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:20 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:30 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:44:31 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:44:31 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:44:31 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:31 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:31 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:31 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:31 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:31 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:31 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:41 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:44:42 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:44:42 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:44:42 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:44:42 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:42 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:42 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:42 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:42 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:43 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:43 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:52 [info] 启动器 0.1.14 启动 · linux x86_64
+  | 2026-09-25 00:44:52 [info] 托盘已建立：12 个菜单项
+  | 2026-09-25 00:44:52 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 00:44:52 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:52 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:52 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 00:44:52 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:52 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 00:44:53 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 08:00:27 [info] headless 模式启动，参数 action=Some("backup") registry=None
+  | 2026-09-25 08:00:27 [info] 定时备份开始（--backup --scheduled）
+  | 2026-09-25 08:00:27 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-25 08:00:27 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-25 08:00:27 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-25 08:00:36 [info] 备份完成 hunter-20260925-0800-v1.2.1 · 190196 字节 · 校验 true · 卷 3 个
+  | 2026-09-25 08:00:36 [info] 备份轮换：删掉 3 份，腾出 16.4 KB
+  | 2026-09-26 01:16:39 [info] headless 模式启动，参数 action=None registry=Some("127.0.0.1:5999/agentpit")
+  | 2026-09-26 01:16:40 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-26 01:16:40 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-26 01:16:41 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-26 01:16:41 [info] 已从 raw.githubusercontent 取到 v1.2.2 的 compose（24093 字节 · sha256 66004a2c2b82dae3）
+  | 2026-09-26 01:16:42 [info] 已写 <用户目录>/.hunter/app/.env（权限 600）· JWT_SECRET 沿用已有的
+  | 2026-09-26 01:16:42 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-web:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: received corrupt message of type InvalidContentType
+  | 2026-09-26 01:16:42 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-api:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: received corrupt message of type InvalidContentType
+  | 2026-09-26 01:16:42 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-opencode:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: received corrupt message of type InvalidContentType
+  | 2026-09-26 01:16:42 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-llm-shim:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: received corrupt message of type InvalidContentType
+  | 2026-09-26 01:16:42 [warn] 读不到 127.0.0.1:5999/agentpit/postgres:16-alpine 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: received corrupt message of type InvalidContentType
+  | 2026-09-26 01:16:42 [warn] 读不到 127.0.0.1:5999/agentpit/redis:7-alpine 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: received corrupt message of type InvalidContentType
+  | 2026-09-26 01:16:42 [info] 第 1 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:16:43 [warn] 第 1 次拉取失败：docker compose pull 退出码 1。原话：Error response from daemon: failed to resolve reference "127.0.0.1:5999/agentpit/redis:7-alpine": failed to do request: Head "https://127.0.0.1:5999/v2/agentpit/redis/manifests/7-alpine": tls: first record does not look like a TLS handshake
+  | 2026-09-26 01:16:45 [info] 第 2 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:16:45 [warn] 第 2 次拉取失败：docker compose pull 退出码 1。原话：Error response from daemon: failed to resolve reference "127.0.0.1:5999/agentpit/hunter-community-opencode:1.2.2": failed to do request: Head "https://127.0.0.1:5999/v2/agentpit/hunter-community-opencode/manifests/1.2.2": tls: first record does not look like a TLS handshake
+  | 2026-09-26 01:16:47 [info] 第 3 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:16:47 [warn] 第 3 次拉取失败：docker compose pull 退出码 1。原话：Error response from daemon: failed to resolve reference "127.0.0.1:5999/agentpit/hunter-community-llm-shim:1.2.2": failed to do request: Head "https://127.0.0.1:5999/v2/agentpit/hunter-community-llm-shim/manifests/1.2.2": tls: first record does not look like a TLS handshake
+  | 2026-09-26 01:16:49 [error] headless 失败：docker compose pull 退出码 1。原话：Error response from daemon: failed to resolve reference "127.0.0.1:5999/agentpit/hunter-community-llm-shim:1.2.2": failed to do request: Head "https://127.0.0.1:5999/v2/agentpit/hunter-community-llm-shim/manifests/1.2.2": tls: first record does not look like a TLS handshake
+  | 2026-09-26 01:17:50 [info] headless 模式启动，参数 action=None registry=Some("127.0.0.1:5999/agentpit")
+  | 2026-09-26 01:17:52 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-26 01:17:52 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-26 01:17:52 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-26 01:17:52 [info] 已从 raw.githubusercontent 取到 v1.2.2 的 compose（24093 字节 · sha256 66004a2c2b82dae3）
+  | 2026-09-26 01:17:54 [info] 已写 <用户目录>/.hunter/app/.env（权限 600）· JWT_SECRET 沿用已有的
+  | 2026-09-26 01:17:54 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-web:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:17:54 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-api:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:17:54 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-opencode:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:17:54 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-llm-shim:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:17:54 [warn] 读不到 127.0.0.1:5999/agentpit/postgres:16-alpine 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:17:54 [warn] 读不到 127.0.0.1:5999/agentpit/redis:7-alpine 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:17:54 [info] 第 1 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:17:55 [warn] 第 1 次拉取失败：docker compose pull 退出码 1。原话：failed commit on ref "manifest-sha256:85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b": commit failed: unexpected commit digest sha256:ca4e5e538a3d6d25e6a80041081052c3996d81cf85da9518a939e4a8ac81197c, expected sha256:85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b: failed precondition
+  | 2026-09-26 01:17:57 [info] 第 2 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:17:57 [warn] 第 2 次拉取失败：docker compose pull 退出码 1。原话：failed commit on ref "manifest-sha256:85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b": commit failed: unexpected commit digest sha256:ca4e5e538a3d6d25e6a80041081052c3996d81cf85da9518a939e4a8ac81197c, expected sha256:85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b85d1c4a5e74b935b: failed precondition
+  | 2026-09-26 01:17:59 [info] 第 3 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:17:59 [warn] 第 3 次拉取失败：docker compose pull 退出码 1。原话：failed commit on ref "manifest-sha256:d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2": commit failed: unexpected commit digest sha256:de09e8a59af1a2ac8659571b26a3516d5e573920a886c304054abf3469215ee5, expected sha256:d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2: failed precondition
+  | 2026-09-26 01:18:01 [error] headless 失败：docker compose pull 退出码 1。原话：failed commit on ref "manifest-sha256:d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2": commit failed: unexpected commit digest sha256:de09e8a59af1a2ac8659571b26a3516d5e573920a886c304054abf3469215ee5, expected sha256:d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2d44870781c2ecbd2: failed precondition
+  | 2026-09-26 01:18:31 [info] headless 模式启动，参数 action=None registry=Some("127.0.0.1:5999/agentpit")
+  | 2026-09-26 01:18:32 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-26 01:18:32 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-26 01:18:32 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-26 01:18:33 [info] 已从 raw.githubusercontent 取到 v1.2.2 的 compose（24093 字节 · sha256 66004a2c2b82dae3）
+  | 2026-09-26 01:18:34 [info] 已写 <用户目录>/.hunter/app/.env（权限 600）· JWT_SECRET 沿用已有的
+  | 2026-09-26 01:18:34 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-web:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:18:34 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-api:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:18:34 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-opencode:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:18:34 [warn] 读不到 127.0.0.1:5999/agentpit/hunter-community-llm-shim:1.2.2 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:18:34 [warn] 读不到 127.0.0.1:5999/agentpit/postgres:16-alpine 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:18:34 [warn] 读不到 127.0.0.1:5999/agentpit/redis:7-alpine 的 manifest（进度条分母会退而用观测值）：请求 127.0.0.1:5999 失败：io: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))
+  | 2026-09-26 01:18:34 [info] 第 1 次拉取，镜像源 127.0.0.1:5999/agentpit
+  | 2026-09-26 01:18:55 [warn] 拉取卡住：20 秒没有任何新数据进来，已经把 docker compose pull 杀掉
+  | 2026-09-26 01:18:55 [warn] 第 1 次拉取失败：从「自定义镜像源」拉了 20 秒 没有任何数据进来（已下载 0 B（总量还没读到））
+  | 2026-09-26 01:18:55 [error] headless 失败：从「自定义镜像源」拉了 20 秒 没有任何数据进来（已下载 0 B（总量还没读到））。这个源都试过了，都是连得上、不给数据 —— 这多半是这台机器到镜像仓库的网络被掐在半路上了（运营商、公司网关、代理）。可以换个网络再试（手机热点最快验），或者用离线包安装。
+  | 2026-09-26 01:53:56 [info] headless 模式启动，参数 action=Some("upload-logs") registry=None
+  | 2026-09-26 01:53:56 [info] 第一次要用到 machineId，已生成一个随机 UUID 并写进 launcher.toml
+  | 2026-09-26 01:53:56 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-26 01:53:56 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-26 01:53:57 [info] compose 定位：docker compose 插件 v5.5.1
+  | 2026-09-26 01:54:13 [info] headless 模式启动，参数 action=Some("upload-logs") registry=None
+  | 2026-09-26 01:54:13 [info] docker 定位：/usr/bin/docker（PATH）
+  | 2026-09-26 01:54:13 [info] 子进程 PATH 补了 1 个目录：<用户目录>/.local/bin
+  | 2026-09-26 01:54:14 [info] compose 定位：docker compose 插件 v5.5.1
+  | 
+  | ===== api 容器日志（最近 100 行 · content/text 已整段抹除） (log-api) =====
+  | api-1  | INFO:     127.0.0.1:37560 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:45628 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:45576 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:37622 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:40698 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:41186 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:50200 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:51412 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:34756 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:53440 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:56920 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:56870 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:57670 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:57944 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:50790 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:49392 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:44064 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:35802 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:33940 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:45784 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:36412 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:47836 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:59704 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:51752 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:37364 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:51570 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:47132 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:38950 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:59582 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:42146 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:43466 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:55290 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:40388 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:33608 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:46016 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:43812 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60304 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:33444 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:46700 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:34642 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:37314 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:48976 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:44534 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:54366 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:56190 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:33378 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:32768 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:34268 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:50476 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:52260 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60454 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:38242 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:48540 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:55580 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:50728 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:53424 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:35706 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:48354 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:52676 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:36068 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:48644 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:38532 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:49962 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:49946 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:42940 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:49302 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:56710 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:36426 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:35704 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60686 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:42974 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:37650 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:51834 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:39614 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60536 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:58880 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:58322 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:43260 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:38566 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:57816 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:34764 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:57146 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:43192 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:39914 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:58890 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:50104 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:53098 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:45354 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:45724 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:36014 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:32830 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:32930 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:39686 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:38926 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60674 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:48936 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60378 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:46460 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:38332 - "GET /api/health HTTP/1.1" 200 OK
+  | api-1  | INFO:     127.0.0.1:60944 - "GET /api/health HTTP/1.1" 200 OK
+  | 
+  | ===== opencode 容器日志（最近 100 行 · content/text 已整段抹除） (log-opencode) =====
+  | opencode-1  | [load-secrets] JWT_SECRET 来源=环境变量 长度=64 · HUNTER_INTERNAL_KEY 来源=密钥卷 长度=63
+  | opencode-1  | [boot] opencode 1.18.12 · mcp timeout 180000ms(默认) · provider hunter-llm → https://hunter.agentpit.io/api/saas/llm/v1
+  | opencode-1  | [gen-config] 配置来源:环境变量
+  | opencode-1  | [gen-config]   已写 /opt/opencode-workspace/opencode.json 与 <用户目录>/.config/opencode/opencode.jsonc
+  | opencode-1  | [gen-config]   provider hunter-llm → https://hunter.agentpit.io/api/saas/llm/v1 · model hunter-chat · apiKey 有
+  | opencode-1  | [gen-config]   provider/model 写在项目文件(环境变量锁定,向导改不动)
+  | opencode-1  | opencode server listening on http://0.0.0.0:3901
+  | 
+  ── 正文到此为止 ──
+
+  这一次**什么都没有发出去**。确认没问题就再跑一次，加上 -y。

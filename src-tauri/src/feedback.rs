@@ -582,7 +582,7 @@ pub fn one_click(error_code: &str, error_message: &str) -> AppResult<OneClick> {
 /// `docker info` 的 `Name:` 一行里，而那一行本身是有用的诊断信息，
 /// 所以是**这里**负责在出门前拦住它，而不是把整段扔掉。
 pub fn assert_clean_strict(text: &str) -> Option<String> {
-    assert_clean_strict_with(text, current_user(), hostname())
+    assert_clean_strict_with_names(text, current_user(), hostname())
 }
 
 /// [`assert_clean_strict`] 的纯函数内核 —— 用户名与主机名由调用方给。
@@ -594,7 +594,7 @@ pub fn assert_clean_strict(text: &str) -> Option<String> {
 ///
 /// 闸门本身没问题（那台机器上照样拦住了，只是理由写成「用户名」），
 /// 有问题的是**把机器状态当成测试前提**。拆开之后逻辑可以喂死值去考。
-fn assert_clean_strict_with(
+pub fn assert_clean_strict_with_names(
     text: &str,
     user: Option<String>,
     host: Option<String>,
@@ -854,24 +854,24 @@ mod tests {
         let u = || Some("zhangsan".to_string());
         let h = || Some("zhangsan-macbook".to_string());
 
-        let hit = assert_clean_strict_with("容器名 zhangsan-hunter-web-1", u(), None);
+        let hit = assert_clean_strict_with_names("容器名 zhangsan-hunter-web-1", u(), None);
         assert!(hit.as_deref().unwrap_or("").contains("用户名"), "{hit:?}");
 
-        let hit = assert_clean_strict_with("Name: zhangsan-macbook", None, h());
+        let hit = assert_clean_strict_with_names("Name: zhangsan-macbook", None, h());
         assert!(hit.as_deref().unwrap_or("").contains("主机名"), "{hit:?}");
 
         // 主机名里含着用户名时（GitHub runner 就是这样），**先命中哪一条不重要** ——
         // 重要的是它一定被拦住。这一条以前被写成了「必须报主机名」，那是多余的要求。
-        let hit = assert_clean_strict_with("Name: zhangsan-macbook", u(), h());
+        let hit = assert_clean_strict_with_names("Name: zhangsan-macbook", u(), h());
         assert!(hit.is_some(), "含用户名的主机名也必须被拦住");
 
         // 太短的名字不参与匹配，否则正常词会被误伤
         assert_eq!(
-            assert_clean_strict_with("镜像源测速：ghcr 619 ms", Some("ci".into()), None),
+            assert_clean_strict_with_names("镜像源测速：ghcr 619 ms", Some("ci".into()), None),
             None
         );
         // 取不到用户名 / 主机名时这两档直接跳过，不影响其它档
-        assert_eq!(assert_clean_strict_with("一切正常", None, None), None);
+        assert_eq!(assert_clean_strict_with_names("一切正常", None, None), None);
 
         // key 那一档照旧
         assert!(assert_clean_strict("hunt_tools_abcdefghijklmnopqrstuvwxyz012345").is_some());

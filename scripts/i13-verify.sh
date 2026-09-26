@@ -477,13 +477,18 @@ r7-cleanup)
 guard)
   say "守卫越界：每一条都必须被拒"
   n_pass=0; n_fail=0
+  # I16 修：原来只看输出里有没有「拒绝 / 不在 / 没过」这几个词。
+  # 那是**按措辞判**，而措辞随时会变 —— 「要删除得逐字输入『删除应用和数据』」
+  # 明明就是拒绝，却一个词都没命中，于是这一条从 I13 起一直在报假失败。
+  # 现在**先看退出码**（拒绝一定非 0），措辞只作为补充线索。
   check() { # $1=说明 $2...=命令
     local what="$1"; shift
-    local out; out=$("$@" 2>&1)
-    if echo "$out" | grep -qE '拒绝|不在|没过'; then
-      ok "$what"; n_pass=$((n_pass+1))
+    local out rc
+    out=$("$@" 2>&1); rc=$?
+    if [ $rc -ne 0 ] || echo "$out" | grep -qE '拒绝|不在|没过|逐字输入'; then
+      ok "$what（退出码 $rc）"; n_pass=$((n_pass+1))
     else
-      bad "$what —— 没被拒！$out"; n_fail=$((n_fail+1))
+      bad "$what —— 没被拒！退出码 $rc：$out"; n_fail=$((n_fail+1))
     fi
   }
   # 1) 删应用要逐字输入

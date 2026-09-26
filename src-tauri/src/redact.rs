@@ -75,9 +75,143 @@ fn mask_shapes(input: &str) -> String {
     out = mask_prefixed(&out, "sk-");
     out = mask_prefixed(&out, "hk_");
     out = mask_bearer(&out);
+    out = mask_url_userinfo(&out);
+    out = mask_secret_fields(&out);
     out = mask_email(&out);
     out = mask_phone_cn(&out);
     out = mask_ip_last_octet(&out);
+    out
+}
+
+/// **连接串里的口令**：`postgres://hunter:Sup3rSecret@127.0.0.1:5432/h`
+/// → `postgres://hunter:****@127.0.0.1:5432/h`（I16）。
+///
+/// 这一条和 [`mask_secret_fields`] 是两种形状，都要有：
+/// api 与 opencode 的日志里连数据库失败时打的是**整条 URL**，
+/// 那里面的口令前面没有 `password=` 这种键名，只有一个冒号。
+///
+/// 用户名留着 —— 排查时「它用哪个库账号连的」是有用的，而那不是秘密。
+fn mask_url_userinfo(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find("://") {
+        let (head, tail) = rest.split_at(pos + 3);
+        out.push_str(head);
+        // userinfo 到 `@` 为止，且中间不能跨过 `/`（那就不是 userinfo 了）
+        let end = tail
+            .find(['@', '/', ' ', '"'])
+            .filter(|i| tail.as_bytes()[*i] == b'@');
+        match end {
+            Some(at) => {
+                let userinfo = &tail[..at];
+                match userinfo.split_once(':') {
+                    Some((user, pass)) if !pass.is_empty() && !pass.contains("****") => {
+                        out.push_str(user);
+                        out.push_str(":****");
+                    }
+                    _ => out.push_str(userinfo),
+                }
+                out.push('@');
+                rest = &tail[at + 1..];
+            }
+            None => {
+                rest = tail;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// **`XXX_PASSWORD=…` 这一类形状**（I16）。
+///
+/// 为什么 I16 才补：在这之前「口令不会出门」靠的是另外两道 ——
+/// 诊断包里的 `.env` 只留白名单四项（[`crate::feedback::env_summary`]），
+/// 而启动器自己生成的那几个口令在生成的那一刻就 [`register_secret`] 了。
+/// 两道都管用，但都**只覆盖它们自己那条路**：用户手改过的 `.env`、
+/// 容器日志里打出来的连接串、`docker compose config` 的输出里的口令，
+/// 三道之外都没人管。一键上传日志把这些东西一次性送出门，
+/// 所以这一条补在**形状匹配**这一层 —— 不管它从哪条路来。
+///
+/// 识别 `password` / `passwd` / `pwd` / `secret` / `token` / `api_key` /
+/// `apikey` / `access_key` 这些词（大小写不限，可以是更长键名的一部分，
+/// 例如 `POSTGRES_PASSWORD`）后面跟 `=` 或 `:`，把**值**换成 `****`。
+///
+/// 已经被抹过的值不再动：`<已移除>`（诊断包的白名单占位）与 `****` 原样留着 ——
+/// 把 `POSTGRES_PASSWORD=<已移除>` 再抹成 `POSTGRES_PASSWORD=****`
+/// 只会让读的人少一条信息（那一条是「我们主动删的」而不是「碰巧长得像口令」）。
+fn mask_secret_fields(s: &str) -> String {
+    // `pass` 也在里面：本项目自己的 `.env` 里就有 `OPENCODE_PASS`。
+    // 它看着宽，其实不会误伤 —— 判据要求这个词**紧接着** `=` 或 `:`，
+    // 所以 `passed=true`、`Passing: 3 tests` 都匹配不上（后面跟的是字母）。
+    const KEYS: [&str; 9] = [
+        "password",
+        "passwd",
+        "pwd",
+        "pass",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+    ];
+    let mut out = String::with_capacity(s.len());
+    for (i, line) in s.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&mask_secret_in_line(line, &KEYS));
+    }
+    out
+}
+
+fn mask_secret_in_line(line: &str, keys: &[&str]) -> String {
+    let lower = line.to_ascii_lowercase();
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hit = keys.iter().find(|k| lower[i..].starts_with(**k));
+        if let Some(k) = hit {
+            // key 之后允许引号与空格，然后必须是 `=` 或 `:`
+            let mut j = i + k.len();
+            while j < bytes.len() && matches!(bytes[j], b'"' | b'\'' | b' ') {
+                j += 1;
+            }
+            if j < bytes.len() && matches!(bytes[j], b'=' | b':') {
+                let mut v = j + 1;
+                while v < bytes.len() && matches!(bytes[v], b' ' | b'"' | b'\'') {
+                    v += 1;
+                }
+                // 值吃到空白、引号、逗号、分号为止
+                let mut e = v;
+                while e < bytes.len()
+                    && !matches!(bytes[e], b' ' | b'"' | b'\'' | b',' | b';' | b'\t')
+                {
+                    e += 1;
+                }
+                let val = &line[v..e];
+                // 已经被前面几道抹过的值不再动：
+                // `hunt_tools_****` / `sk-****` 里那个前缀是**有用的信息**
+                // （「这是哪一家的 key」），再抹一遍只会把它一起吃掉；
+                // `<已移除>` 是诊断包白名单主动删的，也该原样留着。
+                let placeholder = val.starts_with('<')
+                    || val.contains("****")
+                    || val.is_empty()
+                    || val.chars().count() < 4;
+                if !placeholder {
+                    out.push_str(&line[i..v]);
+                    out.push_str("****");
+                    // 剩下的继续往后扫：一行里可能有好几对
+                    out.push_str(&mask_secret_in_line(&line[e..], keys));
+                    return out;
+                }
+            }
+        }
+        let ch_len = utf8_len(bytes[i]);
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
+    }
     out
 }
 
@@ -167,6 +301,47 @@ fn mask_win_users(s: &str) -> String {
         i += ch_len;
     }
     out
+}
+
+/// **把用户名与主机名换掉**（I16）。
+///
+/// 和 [`mask_home`] 是两件事：那一条抹的是**路径里的**用户名
+/// （`/Users/zhangsan/.hunter` → `<用户目录>/.hunter`），
+/// 这一条抹的是**任何地方出现的那两个词** —— 容器名前缀、`docker info` 的
+/// `Name:` 一行、compose 项目名跟着目录名走的时候，用户名与主机名都会
+/// 以光秃秃的形态冒出来。
+///
+/// I7 起 [`crate::feedback::assert_clean_strict`] 已经会**发现**它们，
+/// 但发现之后只能拒绝出门。上传日志这条路要的是**抹掉之后照样送得出去** ——
+/// 拒绝上传等于让用户回到「自己导 zip 再发文件」，那正是这一轮要解决的事。
+///
+/// 太短的名字（`u`、`ci`）不处理：那会把正常词切得七零八落，
+/// 判据和 `assert_clean_strict` 保持一致（3 个字符以上）。
+pub fn mask_names(input: &str, user: Option<&str>, host: Option<&str>) -> String {
+    let mut out = input.to_string();
+    // 长的先换：主机名里可能含着用户名（`zhang-mbp` 里有 `zhang`），
+    // 先换短的会把长的切开，第二遍就再也匹配不上了
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    if let Some(u) = user.filter(|v| v.chars().count() >= 3) {
+        pairs.push((u, "<用户名>"));
+    }
+    if let Some(h) = host.filter(|v| v.chars().count() >= 3) {
+        pairs.push((h, "<主机名>"));
+    }
+    pairs.sort_by_key(|(v, _)| std::cmp::Reverse(v.len()));
+    for (v, to) in pairs {
+        out = out.replace(v, to);
+    }
+    out
+}
+
+/// [`mask_names`] 的默认参数版：用这台机器真实的用户名与主机名。
+pub fn mask_names_here(input: &str) -> String {
+    mask_names(
+        input,
+        crate::feedback::current_user().as_deref(),
+        crate::feedback::hostname().as_deref(),
+    )
 }
 
 /// 对话内容的整段抹除（技术方案 §12.3 第三条）。
@@ -556,6 +731,73 @@ mod tests {
         let r = redact("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def");
         assert!(!r.contains("eyJhbGciOiJIUzI1NiJ9"), "{r}");
         assert!(r.contains("Bearer ****"), "{r}");
+    }
+
+    /// **`XXX_PASSWORD=…` 这一类形状**（I16）。
+    ///
+    /// 一键上传日志会把容器日志与 `docker compose config` 的输出一起送出门，
+    /// 那两处都可能带着口令 —— 而它们既不在 `.env` 白名单的管辖范围里，
+    /// 也不一定被 `register_secret` 登记过（用户手改过的口令就不会）。
+    #[test]
+    fn 口令形状被打掉() {
+        for (raw, must_not) in [
+            ("POSTGRES_PASSWORD=Sup3rSecretPw", "Sup3rSecretPw"),
+            ("JWT_SECRET=abcdefghijklmnop", "abcdefghijklmnop"),
+            ("OPENCODE_PASS=hunter-pass-9x", "hunter-pass-9x"),
+            ("\"apiKey\": \"zhipu-0123456789\"", "zhipu-0123456789"),
+            (
+                "postgres://hunter:Sup3rSecretPw@127.0.0.1:5432/h?password=Sup3rSecretPw",
+                "Sup3rSecretPw",
+            ),
+        ] {
+            let r = redact(raw);
+            assert!(!r.contains(must_not), "没抹干净：{r}");
+            assert!(r.contains("****"), "要留下打码痕迹：{r}");
+        }
+    }
+
+    /// 已经抹过的值不能再抹一遍 —— `hunt_tools_****` 里那个前缀是有用的信息。
+    #[test]
+    fn 已经打过码的值不再被二次抹掉() {
+        assert_eq!(
+            redact(&format!("LLM_API_KEY={FAKE}")),
+            "LLM_API_KEY=hunt_tools_****"
+        );
+        assert_eq!(
+            redact("POSTGRES_PASSWORD=<已移除>"),
+            "POSTGRES_PASSWORD=<已移除>",
+            "诊断包白名单主动删掉的占位符要原样留着"
+        );
+    }
+
+    /// 连接串里的口令（前面没有键名，只有一个冒号）也要抹掉，用户名留着。
+    #[test]
+    fn 连接串里的口令被打掉用户名留着() {
+        let r = redact("连不上 postgres://hunter:Sup3rSecretPw@127.0.0.1:5432/hunter");
+        assert!(!r.contains("Sup3rSecretPw"), "{r}");
+        assert!(
+            r.contains("postgres://hunter:****@127.0.0.1:5432/hunter"),
+            "{r}"
+        );
+        // 没有 userinfo 的 URL 一个字都不许动
+        let plain = "https://hunter.agentpit.io/api/saas/llm/quota";
+        assert_eq!(redact(plain), plain);
+        let with_path = "拉 https://ghcr.io/v2/agentpit-io/hunter-community-web/manifests/1.2.0";
+        assert_eq!(redact(with_path), with_path);
+    }
+
+    /// 正常的词不许被误伤：`token` 这个词在日志里到处都是。
+    #[test]
+    fn 口令形状不误伤正常文本() {
+        for s in [
+            "用了 1234 tokens",
+            "docker compose --project-name hunter up -d",
+            "读 manifest：token 换取成功",
+            "6 个服务 passed: 全部就绪",
+            "password: ***",
+        ] {
+            assert_eq!(redact(s), s, "被误伤了：{}", redact(s));
+        }
     }
 
     #[test]

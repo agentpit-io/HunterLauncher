@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { dictOf } from '../i18n'
 import {
   ERROR_CODES,
   INITIAL_STATE,
@@ -517,6 +518,29 @@ describe('M2 新增的两个错误码', () => {
       // 重试回到自动安装那一页从头跑一遍：配置与 compose 文件都是在那一步写的
       expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'AutoInstalling' })
     }
+  })
+})
+
+describe('I16 · 拉着拉着不动了是独立的一档', () => {
+  /**
+   * 客户 2026-09-25 那次：`compose pull` 一个错都没报，界面挂了一个多小时。
+   * 「报错」与「不动」在用户那里是两件事，在错误码上也必须是两条 ——
+   * 说法不同（一个是「源不通」，一个是「连上了不给数据」），
+   * 规则层给的建议也不同。
+   */
+  it('E_PULL_STALLED 在 ERROR_CODES 里，而且不是 E_PULL_FAILED', () => {
+    expect(ERROR_CODES).toContain('E_PULL_STALLED')
+    expect(ERROR_CODES).toContain('E_PULL_FAILED')
+    const err = transition({ name: 'AutoInstalling' }, { type: 'FAIL', code: 'E_PULL_STALLED' })
+    expect(err).toMatchObject({ name: 'Error', code: 'E_PULL_STALLED', from: 'AutoInstalling' })
+    // 重试回到自动安装那一页（换源由 flow::pull 自己做）
+    expect(transition(err, { type: 'RETRY' })).toEqual({ name: 'AutoInstalling' })
+  })
+
+  it('两个码的文案不一样 —— 说错原因比不说更糟', () => {
+    const zh = dictOf('zh-CN').error.codes
+    expect(zh.E_PULL_STALLED.title).not.toBe(zh.E_PULL_FAILED.title)
+    expect(zh.E_PULL_STALLED.hint).not.toBe(zh.E_PULL_FAILED.hint)
   })
 })
 

@@ -37,6 +37,8 @@ export interface BootState {
   /** route === 'data-found' 时，本项目名下还剩几个数据卷 */
   volumeCount: number
   elapsedMs: number
+  /** I16：上一次升级没做完（强退留下的中间态）。null = 没有这回事 */
+  interruptedUpgrade: InterruptedUpgrade | null
 }
 
 // ── 资源监控（I12 · R2）───────────────────────────────────────────────────
@@ -335,6 +337,8 @@ export interface ServiceStatus {
    */
   bind: string | null
   exitCode: number | null
+  /** I16：这个容器**实际在用的镜像**。配置是意图，这一项才是现状（红线 1） */
+  image: string | null
 }
 
 export interface EnvRow {
@@ -435,6 +439,12 @@ export interface LauncherSettings {
   builtinRuntimeRunning: boolean
   /** I7：现在在管理哪一套别人的 Hunter。空 = 没有接管（只读） */
   takeoverProject: string
+  /** I16：**出错时自动上传日志**。默认 false，而且只在出错时才传 */
+  autoUploadLogs: boolean
+  /** I16：最近一次上传拿到的追踪码（只读）。空 = 从来没传过 */
+  lastTraceCode: string
+  /** I16：最近一次上传的时间，上海时间（只读） */
+  lastUploadAt: string
 }
 
 // ── I7 · 内置运行时 ──────────────────────────────────────────────────────
@@ -511,6 +521,66 @@ export interface OneClickFeedback {
   /** 出口闸命中的那一处；null = 干净 */
   scanHit: string | null
   note: string
+}
+
+// ── 一键上传日志（I16 · P0-2） ───────────────────────────────────────────
+
+/**
+ * **将要上传的那一份**。`body` 就是真正送出去的字节 ——
+ * 界面上给用户看的和发出去的是同一串，不存在两套。
+ */
+export interface LogshipPreview {
+  /** 分节预览（和反馈页是同一套 Section、同一套脱敏） */
+  sections: DiagSection[]
+  body: string
+  bodyBytes: number
+  /** 客户端这一侧截过没有（服务端超 1 MB 还会再截一次，从头部截） */
+  truncated: boolean
+  /** 随机 UUID，存在 launcher.toml 里；**不含任何硬件信息** */
+  machineId: string
+  endpoint: string
+  stage: string
+  errorCode: string
+  summary: string
+  /** meta 里那几项，摆成人看得懂的行 */
+  metaLines: string[]
+  /** 出口闸命中的那一处；null = 干净。有值时**不给上传按钮** */
+  scanHit: string | null
+  /** 设置里「出错时自动上传」现在开着没有 */
+  autoOnError: boolean
+}
+
+/** 一次上传的结果。 */
+export interface LogshipOutcome {
+  ok: boolean
+  /** 追踪码，形如 `HL-7K3Q9F`。**只有真的拿到了才有值**（红线 1） */
+  traceCode: string | null
+  truncated: boolean
+  /** 给用户看的一整句话。失败时说清楚东西还在哪 */
+  message: string
+  /** HTTP 状态码；压根没连上时为 null */
+  status: number | null
+  /** 传不上去时当场导出来的诊断包路径 */
+  bundlePath: string | null
+  /** 本机日志文件的路径 */
+  localLogPath: string
+}
+
+// ── 上一次升级没做完（I16 · P1-2） ───────────────────────────────────────
+
+/**
+ * 「配置说的是一版、跑着的是另一版、而新版镜像本机还不齐」的现场。
+ *
+ * 强退会留下它：`.env` 已经写成新版本、镜像还没拉全、回滚没走到。
+ * 这时候**不许默默按新配置 `up`** —— 那会去拉一个还没下完的镜像，
+ * 用户又看到一次「卡住」。界面上给两个按钮：继续升级 / 回退到正在跑的那一版。
+ */
+export interface InterruptedUpgrade {
+  configTag: string
+  runningTag: string
+  missingImages: string[]
+  headline: string
+  lines: string[]
 }
 
 // ── AI 诊断助手（I4 §三） ────────────────────────────────────────────────
@@ -681,6 +751,8 @@ export interface UpgradeResult {
   backupId: string | null
   backupSqlBytes: number | null
   rolledBack: boolean
+  /** I16：是用户自己点的「取消」，不是出了错。界面要把这两件事分开说 */
+  cancelled: boolean
   message: string
 }
 
@@ -763,6 +835,14 @@ export interface BackupSettings {
   diskFreeBytes: number | null
   suggestedDir: string
   externalSuggestions: string[]
+  /**
+   * 上一次挂定时任务时系统报的原话（I16 · P0-3）。空 = 上一次挂成了。
+   *
+   * 非空时运行面板出一条红横幅：客户那台 Windows 上
+   * `schtasks /Create` 每次都失败，0.1.15 只写进日志，
+   * 于是他以为自己有每日自动备份 —— 实际上一次都没跑过。
+   */
+  scheduleError: string
 }
 
 export interface ScheduleStatus {
@@ -1033,8 +1113,13 @@ export interface AssistOutcome {
 
 // ── 现状复查（I11 · U1 / U2）──────────────────────────────────────────────
 
-/** 复查的四种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。 */
-export type Posture = 'absent' | 'incomplete' | 'partial' | 'healthy'
+/**
+ * 复查的五种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。
+ *
+ * `stopped` 是 I16 补的：六个容器都建齐了、但一个在跑的都没有。
+ * 在这之前它被并进 `partial`，界面于是把「容器退出了」说成「还没就绪」。
+ */
+export type Posture = 'absent' | 'incomplete' | 'stopped' | 'partial' | 'healthy'
 
 /**
  * 「Hunter 现在到底在不在跑」的一次只读复查。

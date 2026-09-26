@@ -599,6 +599,7 @@ mod tests {
                 None
             },
             exit_code: None,
+            image: None,
         }
     }
 

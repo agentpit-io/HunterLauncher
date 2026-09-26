@@ -47,6 +47,7 @@ describe('自动备份好像错过了一次', () => {
     includeSkills: true,
     lastOkAt: '',
     lastError: '',
+    scheduleError: '',
     lastRunAt: '',
     failStreak: 0,
     count: 0,

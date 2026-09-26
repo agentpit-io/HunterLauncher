@@ -61,6 +61,12 @@ pub struct AppState {
     /// 0.1.13 时这件事**只写进日志**，界面与命令行上一个字都没有 ——
     /// 于是用户删掉应用重装之后，以为定时备份再也不会回来了，自己去手工装了一遍。
     pub post_install: Mutex<Vec<String>>,
+    /// **上一次给用户看过的那份上传预览**（I16）。
+    ///
+    /// 上传时用的就是它，不重新收集一遍 —— 否则「界面上给他看的」与
+    /// 「真正送出去的」会是两份不同的字节（中间隔着几秒，日志又长了几行）。
+    /// 那种「看到的是一套、发出去的是另一套」正是这一条最不能有的毛病。
+    pub upload_preview: Mutex<Option<crate::logship::Preview>>,
 }
 
 impl Default for AppState {
@@ -88,6 +94,7 @@ impl AppState {
             // 从落盘的配置里读回来 —— `--import-images` 与真正的安装是两个进程
             offline: AtomicBool::new(cfg_offline),
             post_install: Mutex::new(Vec::new()),
+            upload_preview: Mutex::new(None),
         }
     }
 
@@ -523,6 +530,8 @@ pub fn pull(
     let mut last_err: Option<AppError> = None;
     // 上一次「因为哪条原话」换的源。下一次还是同一条 → 与源无关，别再换了（I6）
     let mut switched_from: Option<String> = None;
+    // 已经卡死过的源（I16）。两个源都在这里面 = 换源救不了，别再换（见下面那一段）
+    let mut stalled: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     // 离线包模式：镜像已经在本机了，一个字节都不用下（方案 §9）。
     // 但仍然要**复核一遍六个镜像真在**，不然「跳过拉取」就成了一句空话，
@@ -562,7 +571,8 @@ pub fn pull(
         }
 
         linfo!("第 {attempt} 次拉取，镜像源 {prefix}");
-        let r = compose::pull_streaming(&mut agg, &state.cancel, |p| {
+        let stall = state.config().hunter.pull_stall();
+        let r = compose::pull_streaming(&mut agg, &state.cancel, stall, |p| {
             if let Ok(mut g) = state.pull.lock() {
                 *g = p.clone();
             }
@@ -583,7 +593,9 @@ pub fn pull(
                     *g = snap.clone();
                 }
                 on_progress(&snap);
-                linfo!("拉取完成，用时 {} 秒", agg.elapsed().as_secs());
+                // I16 · P2-5：本机已有的时候不能说「拉取完成，用时 4 秒」——
+                // 849 MB 四秒下完当然不可能，那句话让用户以为下载成功了
+                linfo!("{}", agg.done_line());
                 clear_offline(state);
                 state.tele(
                     "pull_done",
@@ -606,15 +618,65 @@ pub fn pull(
             }
             Err(e) => {
                 lwarn!("第 {attempt} 次拉取失败：{}", e.msg);
+                if state.cancel.load(Ordering::Relaxed) {
+                    let mut snap = agg.snapshot(PullPhase::Failed, Some(e.msg.clone()));
+                    snap.attempt = attempt;
+                    if let Ok(mut g) = state.pull.lock() {
+                        *g = snap.clone();
+                    }
+                    on_progress(&snap);
+                    return Err(e);
+                }
+
+                // ── 卡住（I16） ────────────────────────────────────────
+                //
+                // 「拉不动」和「拉失败」在这里分两条路走：
+                // 失败有原话，可以按原话判断换源有没有用；**卡住没有原话** ——
+                // 它什么都没说，我们只知道这一路不出数据。
+                // 对这一档，唯一讲得通的动作就是换一条路再试；
+                // **两条路都卡死了才算失败**，那时候再换就是在浪费用户的时间。
+                let mut e = e;
+                if e.code == Code::PullStalled {
+                    stalled.insert(prefix.clone());
+                    // 用户点名了源就不给他换到别处去；没点名才去探下一个
+                    let next = if opts.registry.is_none() {
+                        next_registry(&prefix, &opts.tag)
+                    } else {
+                        None
+                    };
+                    let decision = stall_decision(
+                        opts.registry.is_some(),
+                        next.map(|n| n.prefix.as_ref()),
+                        &stalled,
+                    );
+                    match decision {
+                        StallDecision::Switch => {
+                            e.msg = format!(
+                                "{}，换「{}」再试",
+                                e.msg,
+                                next.map(|n| n.label.as_ref()).unwrap_or("另一个源")
+                            );
+                        }
+                        StallDecision::GiveUp => {
+                            e.msg = format!("{}。{}", e.msg, stall_give_up_tail(stalled.len()));
+                            let mut snap = agg.snapshot(PullPhase::Failed, Some(e.msg.clone()));
+                            snap.attempt = attempt;
+                            if let Ok(mut g) = state.pull.lock() {
+                                *g = snap.clone();
+                            }
+                            on_progress(&snap);
+                            return Err(e);
+                        }
+                    }
+                }
+
                 let mut snap = agg.snapshot(PullPhase::Failed, Some(e.msg.clone()));
                 snap.attempt = attempt;
                 if let Ok(mut g) = state.pull.lock() {
                     *g = snap.clone();
                 }
                 on_progress(&snap);
-                if state.cancel.load(Ordering::Relaxed) {
-                    return Err(e);
-                }
+
                 // **与下载源无关的失败，立刻停**（I6）。
                 //
                 // 0.1.5 在用户 Mac 上：凭据助手找不到 → 这里照样换源重试，
@@ -624,9 +686,11 @@ pub fn pull(
                     lwarn!("这条失败与下载源无关（{}），不再换源重试", e.code.as_str());
                     return Err(e);
                 }
-                // 换过一次源，原话一个字都没变 —— 同上，不再换第二次
+                // 换过一次源，原话一个字都没变 —— 同上，不再换第二次。
+                // **卡住那一档不走这条判断**：它上面已经按「哪些源卡过」判完了，
+                // 而它的原话里带着源的名字，指纹本来就不会相同
                 let fp = crate::assist::auto::error_fingerprint(&e.msg);
-                if switched_from.as_deref() == Some(fp.as_str()) {
+                if e.code != Code::PullStalled && switched_from.as_deref() == Some(fp.as_str()) {
                     lwarn!("换过源之后原话没变，判定与下载源无关，不再换源重试");
                     return Err(e);
                 }
@@ -773,6 +837,55 @@ pub fn write_version_file(tag: &str) {
     if std::fs::write(&p, format!("{tag}\n")).is_ok() {
         let _ = paths::chmod_600(&p);
     }
+}
+
+/// 卡住之后该怎么办（I16）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StallDecision {
+    /// 换到另一个源再试一次
+    Switch,
+    /// 没有别的路了，认输
+    GiveUp,
+}
+
+/// **卡住之后换不换源**，做成纯函数。
+///
+/// 拆出来的理由和 `runtime::effective::decide` 一样：判定本身不该需要一台
+/// 「正好连得上但不给数据」的机器才能测。真造那种现场要起一个假 registry
+/// （`scripts/fake-stalling-registry.py`），而它一次只造得出**一个**卡死的源 ——
+/// 「两个源都卡死」这一档在真机上根本摆不出来，只能靠这里考。
+///
+/// 三条规则：
+/// * 用户点名了源 → 不换（他说了算，换到别处去是自作主张）；
+/// * 没有别的源可换 → 不换；
+/// * 下一个源**已经卡过一次**了 → 不换（再换就是在两个死路之间兜圈，
+///   I6 那次「268 秒在两个源之间来回」就是这么来的）。
+pub fn stall_decision(
+    pinned: bool,
+    next_prefix: Option<&str>,
+    stalled: &std::collections::BTreeSet<String>,
+) -> StallDecision {
+    if pinned {
+        return StallDecision::GiveUp;
+    }
+    match next_prefix {
+        Some(p) if !stalled.contains(p) => StallDecision::Switch,
+        _ => StallDecision::GiveUp,
+    }
+}
+
+/// 认输时那句话的后半截。`tried` 是已经卡死过几个源。
+pub fn stall_give_up_tail(tried: usize) -> String {
+    format!(
+        "{} —— 连得上、就是不给数据。\
+         这多半是这台机器到镜像仓库的路被掐在半路上了（运营商、公司网关、代理）。\
+         可以换个网络再试（手机热点最快验），或者用离线包安装。",
+        if tried > 1 {
+            format!("{tried} 个镜像源都试过了")
+        } else {
+            "这个源试过了".to_string()
+        }
+    )
 }
 
 fn next_registry(current_prefix: &str, tag: &str) -> Option<&'static registry::Candidate> {
@@ -1383,6 +1496,64 @@ pub fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 卡住之后换不换源（I16 · P0-1） ──────────────────────────────────
+
+    fn set(items: &[&str]) -> std::collections::BTreeSet<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// 第一个源卡死、另一个还没试过 → 换。
+    #[test]
+    fn 第一个源卡死就换另一个() {
+        assert_eq!(
+            stall_decision(
+                false,
+                Some("hkccr.ccs.tencentyun.com/agentpit"),
+                &set(&["ghcr.io/agentpit-io"])
+            ),
+            StallDecision::Switch
+        );
+    }
+
+    /// **两个源都卡死了才算失败** —— 再换就是在两条死路之间兜圈。
+    /// I6 那次「268 秒在两个源之间来回换了三回合」就是没有这一条。
+    #[test]
+    fn 两个源都卡死就不再换() {
+        let both = set(&["ghcr.io/agentpit-io", "hkccr.ccs.tencentyun.com/agentpit"]);
+        assert_eq!(
+            stall_decision(false, Some("hkccr.ccs.tencentyun.com/agentpit"), &both),
+            StallDecision::GiveUp
+        );
+        // 认输那句话要说清楚「几个源都试过了」
+        let tail = stall_give_up_tail(both.len());
+        assert!(tail.contains("2 个镜像源"), "{tail}");
+        assert!(tail.contains("离线包"), "要给第二条路：{tail}");
+    }
+
+    /// 用户点名了源就别换到别处去 —— 那是自作主张。
+    #[test]
+    fn 用户点名了源就不换() {
+        assert_eq!(
+            stall_decision(true, Some("hkccr.ccs.tencentyun.com/agentpit"), &set(&[])),
+            StallDecision::GiveUp
+        );
+        let tail = stall_give_up_tail(1);
+        assert!(
+            tail.contains("这个源试过了"),
+            "只试过一个源时别说「N 个源」：{tail}"
+        );
+        assert!(!tail.contains("个镜像源都试过了"), "{tail}");
+    }
+
+    /// 压根没有别的源可换时也是认输（而不是原地重试到天荒地老）。
+    #[test]
+    fn 没有别的源可换就认输() {
+        assert_eq!(
+            stall_decision(false, None, &set(&["ghcr.io/agentpit-io"])),
+            StallDecision::GiveUp
+        );
+    }
 
     /// 运行面板每 10 秒刷一次状态。GitHub 对未认证请求的限额是**每小时 60 次** ——
     /// 版本检查不缓存的话，一个用户开着面板十分钟就把额度用光，

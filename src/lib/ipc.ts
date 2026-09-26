@@ -64,6 +64,9 @@ import type {
   TelemetryView,
   UpgradeCheck,
   UpgradeStatus,
+  LogshipPreview,
+  LogshipOutcome,
+  InterruptedUpgrade,
 } from './types'
 import * as demo from './demo'
 
@@ -226,6 +229,8 @@ export async function runtimeStatus(): Promise<RuntimeStatus> {
     if (p === 'dashboard-quota-exhausted') return demo.demoRuntimeQuotaExhausted
     // I7：升级上来的老机器 —— 网页端口还绑在所有网卡上
     if (p === 'dashboard-lan') return demo.demoRuntimeLanExposed
+    // I16 · P0-4：六个容器全都 exited —— 那两行说法不许再打架
+    if (p === 'dashboard-stopped') return demo.demoRuntimeAllStopped
     return demo.demoRuntime
   }
   return call<RuntimeStatus>('runtime_status')
@@ -490,7 +495,11 @@ export async function restoreBackup(id: string, confirm: string): Promise<Restor
 // ── I13 · R6 备份与恢复 ───────────────────────────────────────────────────
 
 export async function readBackupSettings(): Promise<BackupSettings> {
-  if (DEMO) return demo.demoBackupSettings
+  // I16 · P0-3：定时任务根本没挂上的那条红横幅
+  if (DEMO)
+    return demoPage() === 'dashboard-schedule-broken'
+      ? demo.demoBackupScheduleBroken
+      : demo.demoBackupSettings
   return call<BackupSettings>('read_backup_settings')
 }
 
@@ -504,6 +513,12 @@ export async function writeBackupSettings(settings: BackupSettings): Promise<Bac
 export async function backupScheduleStatus(): Promise<ScheduleStatus> {
   if (DEMO) return demo.demoSchedule
   return call<ScheduleStatus>('backup_schedule_status')
+}
+
+/** 重挂定时备份任务（运行面板那条红横幅上的「再试一次」，I16 · P0-3）。 */
+export async function retryBackupSchedule(): Promise<BackupSettings> {
+  if (DEMO) return { ...demo.demoBackupSettings, scheduleError: '' }
+  return call<BackupSettings>('retry_backup_schedule')
 }
 
 export async function restorePreflight(id: string): Promise<RestorePreflight> {
@@ -863,6 +878,61 @@ export async function takeoverLogs(service?: string, lines = 200): Promise<strin
  *
  * **它不发送任何东西**，也不打开浏览器 —— 那是用户看过内容之后另一次点击的事。
  */
+/**
+ * **一键上传日志 · 第一步：看一眼要传什么。**
+ *
+ * 这一步**不发任何请求**。返回的 `body` 会被后端记下来，
+ * 第二步 {@link logshipUpload} 传的就是它 —— 界面上看到的和送出去的
+ * 是同一串字节，不存在「看到的是一套、发出去的是另一套」。
+ */
+export async function logshipPreview(opts?: {
+  stage?: string
+  errorCode?: string
+  summary?: string
+  include?: string[]
+}): Promise<LogshipPreview> {
+  if (DEMO) return demo.demoLogshipPreview
+  return call<LogshipPreview>('logship_preview', {
+    stage: opts?.stage ?? null,
+    errorCode: opts?.errorCode ?? null,
+    summary: opts?.summary ?? null,
+    include: opts?.include ?? null,
+  })
+}
+
+/**
+ * **一键上传日志 · 第二步：真的传。**
+ *
+ * 传的是上一次 {@link logshipPreview} 给用户看过的那一份。
+ * 没有预览过就会报错 —— 不给看就传等于替用户做决定。
+ */
+export async function logshipUpload(): Promise<LogshipOutcome> {
+  if (DEMO) return demo.demoLogshipOutcome
+  return call<LogshipOutcome>('logship_upload', {})
+}
+
+/**
+ * 「上一次升级做完了没有」当场再查一遍（I16 · P1-2）。
+ *
+ * 演示模式下**只有 `dashboard-interrupted` 那一页**才给这张卡片 ——
+ * 否则每一张运行面板的截图上都会顶着一条「上一次升级没做完」，
+ * 而那在真机上是个罕见现场，不该出现在「一切正常」的那几张图里。
+ */
+export async function interruptedUpgrade(): Promise<InterruptedUpgrade | null> {
+  if (DEMO) return demoPage() === 'dashboard-interrupted' ? demo.demoInterruptedUpgrade : null
+  return call<InterruptedUpgrade | null>('interrupted_upgrade', {})
+}
+
+/**
+ * **回退到正在跑的那一版**（中间态的第二个出口）。
+ *
+ * 只把配置写回去，不碰容器、不碰卷、不拉镜像。
+ */
+export async function revertToRunning(tag: string): Promise<string> {
+  if (DEMO) return `已经回到 v${tag}（演示数据）`
+  return call<string>('revert_to_running', { tag })
+}
+
 export async function feedbackOneClick(
   errorCode?: string,
   errorMessage?: string,

@@ -1,6 +1,6 @@
 [package]
 name = "hunter-launcher"
-version = "0.1.15"
+version = "0.1.16"
 description = "Hunter 启动器 · 把 hunter-community 的部署变成「下载 → 填一把 key → 等几分钟」"
 authors = ["agentpit.io"]
 edition = "2021"
@@ -45,6 +45,17 @@ tauri-plugin-dialog = "2"
 # 自己写等于把三套平台代码搬进来。Linux 上它只拖 libc + memchr 两个依赖。
 # 关掉用不上的特性（网络、进程、组件温度、用户列表），只留 system + disk
 sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
+# 子进程输出的解码（I16 · P0-3）。Windows 上 schtasks / net 这些系统自带的命令
+# 按**当前 ANSI 代码页**输出（中文系统是 936/GBK），当成 UTF-8 解就是一串问号 ——
+# 客户 2026-09-26 那份 Windows 诊断包里，`schtasks /Create` 真正的失败原因
+# 我们一次都没看见过（日志里只有 `����: δָ���Ĵ���`）。码表自己写必错，用它。
+#
+# **没有放进 `[target.'cfg(windows)'.dependencies]`**：那样一来
+# 「给一段 GBK 字节流，断言解出来的是中文」这条单测就只能在 Windows 上跑，
+# 而我们手上一台 Windows 都没有 —— 待办池里「Windows 从未真机验证」
+# 挂了这么久，正是因为把能在 Linux 上验的东西也关进了 cfg(windows) 里。
+# 解码本身是纯函数（代码页由调用方给），Linux 上测得了。
+encoding_rs = "0.8"
 # headless 下自己验 updater 清单与安装包的签名（见 selfupdate.rs 的「两条路」一节）。
 # 这个 crate 本来就在依赖树里（tauri-plugin-updater 用它），直接依赖不增加体积
 minisign-verify = "0.2"

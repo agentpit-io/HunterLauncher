@@ -416,6 +416,8 @@ const zhCN = {
     running: 'Hunter 运行中',
     stopped: 'Hunter 已停止',
     starting: 'Hunter 启动中',
+    // I16 · P0-4：还没拿到 docker ps 的结果之前，不许说「运行中」也不许说「已停止」
+    checking: '正在检查 Hunter 状态…',
     subline: (tag: string, uptime: string, url: string) => `${tag} · 已运行 ${uptime} · ${url}`,
     sublineStopped: (tag: string) => `${tag} · 容器已停止`,
     openHunter: '打开 Hunter',
@@ -487,6 +489,13 @@ const zhCN = {
     missedBackup: '自动备份好像错过了一次',
     backupNow: '立即备份一次',
     backingUp: '正在备份…',
+    // I16 · P0-3：定时任务没挂上。**比「某一次备份失败」还严重** ——
+    // 那是「一次都不会跑」，而用户以为自己有每日备份。
+    // 客户那台 Windows 上这件事从装机第一天起就是这样，日志里有、界面上一个字都没有。
+    scheduleBroken: (why: string) =>
+      `每日自动备份没有挂上，这台电脑上它一次都不会跑：${why}`,
+    scheduleRetry: '再挂一次',
+    scheduleRetrying: '正在挂…',
   },
   // ── I13 · R6 备份与恢复 ────────────────────────────────────────────────
   backup: {
@@ -519,6 +528,7 @@ const zhCN = {
     scheduleOff: '自动备份现在是关着的',
     scheduleNext: (s: string) => `下次：${s}`,
     scheduleMech: (s: string) => `用的是 ${s}`,
+    scheduleWhy: (why: string) => `上一次挂它的时候系统说：${why}`,
     scheduleNotInstalled: '定时任务还没装上',
     scheduleUnsupported: '这台机器上没有可用的定时机制，启动器关着的时候备份不会自动跑',
     // 恢复
@@ -730,6 +740,9 @@ const zhCN = {
     monitorCleanup: '看看能腾出多少',
   },
   update: {
+    cancelUpgrade: '取消升级',
+    cancelling: '正在取消…',
+    cancelHint: '点了就停在当前这一步，并把配置写回升级前那一份 —— 正在跑的容器一个都不会动。',
     // ── 启动器自更新（方案 §10） ──
     /** 卡片标题：有新版本时用它 */
     launcherTitle: '启动器有新版本',
@@ -850,6 +863,55 @@ const zhCN = {
     descRequired: '先写一句描述，issue 的标题要用它。',
     redactNote: '这里显示的就是会写进 zip 的原文：key、Bearer、邮箱、手机号、IP 末段、.env 里白名单之外的值、容器日志里的 content/text 都已经抹掉了。导出前还会整包再扫一遍，扫出问题就不给导。',
   },
+  // ── I16 · 一键上传日志 ──────────────────────────────────────────────────
+  logship: {
+    /** 三个入口（错误页 / 设置页 / 运行面板）用的是同一句话 */
+    button: '上传日志给我们（不含 key 与口令）',
+    title: '这些内容会传给我们，先看一眼',
+    intro:
+      '点「确认上传」之后，下面这份文字会发到 www.agentpit.io，我们的排障库里会多一条记录，你会拿到一个追踪码。key、口令、邮箱、手机号、IP 末段、用户名、主机名、对话内容都已经抹掉了 —— 你现在看到的就是会发出去的原文，一字不差。',
+    endpoint: '发到哪里',
+    machineId: '这台机器的标识',
+    machineIdHint: '第一次用时随机生成的一串 UUID，存在 launcher.toml 里。它不含任何硬件信息（网卡地址、序列号、主机名一律没读），删掉 launcher.toml 就会换一个。',
+    stage: '阶段',
+    errorCode: '错误码',
+    summary: '一句话说明',
+    bodyLabel: '正文',
+    bodyBytes: (n: number) => `${n} 字节`,
+    truncated: '正文太长，已经从头部截掉一部分 —— 线索通常在末尾，所以留的是后半截。',
+    metaLabel: '还会附带这几项',
+    confirm: '确认上传',
+    uploading: '正在上传…',
+    scanHit: (what: string) =>
+      `出口闸在要传出去的文字里扫到了敏感内容，已经挡住：${what}。这一份不会上传 —— 请改用「导出诊断包」，自己看过再发给我们。`,
+    /** 传完那一屏 */
+    doneTitle: '传好了',
+    traceLabel: '追踪码',
+    traceHint: '把这个码发给我们，我们就能查到这份日志。它也已经写进了本机日志，关掉这个窗口也找得回来。',
+    copyTrace: '复制追踪码',
+    failTitle: '没能传上去',
+    localLog: '本机日志',
+    bundleSaved: (p: string) => `已经给你把诊断包导到 ${p}，把这个文件发给我们也一样管用。`,
+    lastTrace: (code: string, at: string) => `上一次上传：${code}（${at}）`,
+    lastTraceNever: '还没有上传过',
+    /** 设置页那个开关 */
+    autoLabel: '出错时自动上传日志',
+    autoHint: '默认关。打开之后也只在出错时传，正常安装、正常运行一个字节都不会出门；传的内容和你手动点那一次完全一样（同一套脱敏）。',
+  },
+  // ── I16 · 上一次升级没做完 ──────────────────────────────────────────────
+  interrupted: {
+    title: '上一次升级没做完',
+    badge: '实测',
+    detail: (config: string, running: string) =>
+      `配置里写的是 v${config}，正在跑的容器还是 v${running}，而 v${config} 的镜像在这台机器上还不齐 —— 上一次多半是拉镜像时被打断的（强退 / 断电 / 关机）。`,
+    hint: '在你选之前，启动器不会按新配置去起容器：那会去拉一个还没下完的镜像，你又要看一次「卡住」。',
+    continueUpgrade: (tag: string) => `继续升到 v${tag}`,
+    revert: (tag: string) => `回退到正在跑的 v${tag}`,
+    revertHint: '只把配置写回去，不动正在跑的容器、不动数据、不拉任何镜像。',
+    reverting: '正在写回…',
+    evidence: '看依据',
+    hideEvidence: '收起',
+  },
   error: {
     title: '出错了',
     codeLabel: '错误码',
@@ -894,6 +956,10 @@ const zhCN = {
       E_KEY_INVALID: { title: 'key 无效', hint: '这把 key 网关不认（可能填错了，或者已被吊销）。' },
       E_QUOTA_EXHAUSTED: { title: '今日额度已用完', hint: '明天 00:00（上海）恢复，或者现在切换成自带模型 key。' },
       E_PULL_FAILED: { title: '镜像拉取失败', hint: '已重试 3 次仍然失败。可以换一个镜像源，或者从离线包导入。' },
+      E_PULL_STALLED: {
+        title: '镜像拉着拉着不动了',
+        hint: '不是「连不上」—— 镜像列表都读到了，拉层的时候一个字节都不来。这种连接不会报错，只会一直等下去，所以启动器数到 90 秒没有新数据就主动把它掐了，并换另一个镜像源重试。两个源都这样的话，多半是这台机器到镜像仓库的路被掐在半路上了（运营商、公司网关、代理）—— 换个网络（手机热点最快验证）或者用离线包装。',
+      },
       E_PORT_IN_USE: { title: '端口被占用', hint: '启动器已经自动改用别的端口，不需要你操作。' },
       E_PORT_CONFLICT: { title: 'Docker 说端口已经被占了', hint: '启动器已经重新探过端口并换了一组空闲的。要是还撞上，多半是这台机器上另有程序在抢同一个端口，下面写了它是谁。' },
       E_CRED_HELPER: { title: 'Docker 找不到它自己的凭据助手', hint: '你的 ~/.docker/config.json 里配了 credsStore，而那个 docker-credential-* 程序不在启动器看得到的 PATH 上。拉 Hunter 的公开镜像本来就不需要登录 —— 启动器会给自己另起一份不带凭据助手的配置，你的 ~/.docker/config.json 一个字节都不会被改动。' },

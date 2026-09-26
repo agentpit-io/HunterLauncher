@@ -228,6 +228,9 @@ pub struct BootState {
     pub volume_count: usize,
     /// 这一次判定花了多久（毫秒）。界面上那句「正在检查 Hunter 状态」用它对账
     pub elapsed_ms: u64,
+    /// **上一次升级没做完**（I16 · P1-2）。有值时运行面板要先问一句
+    /// 「继续升级 / 回退到正在跑的那一版」，**不许默默按新配置 `up`**。
+    pub interrupted_upgrade: Option<crate::upgrade::Interrupted>,
 }
 
 /// R1 那张五行表，**做成纯函数**。
@@ -240,8 +243,9 @@ pub fn route_of(posture: crate::selfcheck::Posture, volumes: usize) -> BootRoute
     use crate::selfcheck::Posture;
     match posture {
         // 六个容器都在（跑着、停着、有的不正常都算）→ 这台机器上装过，事实清楚。
-        // **不管 install.done 写的是什么** —— 那正是 0.1.9 那次判错的地方
-        Posture::Healthy | Posture::Partial => BootRoute::Dashboard,
+        // **不管 install.done 写的是什么** —— 那正是 0.1.9 那次判错的地方。
+        // `Stopped`（I16 · P0-4）同样走面板：什么都不缺，只是没跑
+        Posture::Healthy | Posture::Partial | Posture::Stopped => BootRoute::Dashboard,
         // 只装了一半：容器有一部分。**也算装过** ——
         // 回向导只会让用户再装一遍，面板上说清缺哪几个才是对的
         Posture::Incomplete => BootRoute::Dashboard,
@@ -319,6 +323,17 @@ pub async fn boot_state(app: tauri::AppHandle) -> Result<BootState> {
             last_healthy_at: cfg.install.last_healthy_at.clone(),
             volume_count,
             elapsed_ms: t0.elapsed().as_millis() as u64,
+            // 只有「有容器在跑」的机器才值得查这一条（判据里也要求了）。
+            // Absent / DataFound 那两条路上一个容器都没有，查它纯属白花一次 docker 调用
+            interrupted_upgrade: if route == BootRoute::Dashboard {
+                let it = crate::upgrade::interrupted(&cfg);
+                if let Some(i) = &it {
+                    crate::lwarn!("开机自查：{}", i.headline);
+                }
+                it
+            } else {
+                None
+            },
         })
     })
     .await
@@ -572,10 +587,34 @@ pub fn start_install(app: tauri::AppHandle, registry_id: Option<String>) -> Resu
                 .map(|g| g.clone())
                 .unwrap_or_else(|_| compose::PullProgress::empty());
             let _ = handle.emit(EV_PULL, &snap);
+            // I16：设置里开了「出错时自动上传日志」才会走到网络，默认一个字节都不传
+            auto_ship(&st, "install", e.code.as_str(), &e.msg);
         }
         st.busy.store(false, Ordering::SeqCst);
     });
     Ok(())
+}
+
+/// 出错之后那一下自动上传（I16）。**默认关**，判据只有
+/// [`crate::logship::should_auto_upload`] 一处 —— 这里不再自己判一遍，
+/// 免得两处判据日后走岔。
+fn auto_ship(st: &AppState, stage: &str, code: &str, msg: &str) {
+    let cfg = st.config();
+    if !crate::logship::should_auto_upload(&cfg, Some(code)) {
+        return;
+    }
+    let mut cfg = cfg;
+    if crate::logship::ensure_machine_id(&mut cfg) {
+        cfg.save_if(true);
+        st.set_config(cfg.clone());
+    }
+    if let Some(code) = crate::logship::auto_upload(&cfg, stage, code, msg) {
+        let mut c = st.config();
+        c.support.last_trace_code = code;
+        c.support.last_upload_at = crate::timefmt::now_shanghai();
+        c.save_if(true);
+        st.set_config(c);
+    }
 }
 
 #[tauri::command]
@@ -1034,6 +1073,16 @@ pub struct LauncherSettings {
     /// I7：现在在管理哪一套别人的 Hunter。空 = 没有接管（只读）
     #[serde(default)]
     pub takeover_project: String,
+    /// I16：**出错时自动上传日志**。默认 false；打开之后也只在出错时传，
+    /// 正常流程一个字节都不出门（`logship::should_auto_upload` 是唯一的判据）
+    #[serde(default)]
+    pub auto_upload_logs: bool,
+    /// I16：最近一次上传拿到的追踪码（只读）。空 = 从来没传过
+    #[serde(default)]
+    pub last_trace_code: String,
+    /// I16：最近一次上传的时间，上海时间（只读）
+    #[serde(default)]
+    pub last_upload_at: String,
 }
 
 #[tauri::command]
@@ -1123,6 +1172,19 @@ pub async fn write_settings(
             let cand = registry::custom(&settings.registry);
             c.apply_registry(&cand);
         }
+        // I16：出错时自动上传日志。**只有这一个地方能把它打开**，
+        // 而且打开之后 `logship::should_auto_upload` 还要求真的出了错才发请求
+        if settings.auto_upload_logs != c.support.auto_on_error {
+            crate::linfo!(
+                "「出错时自动上传日志」{}",
+                if settings.auto_upload_logs {
+                    "已打开 —— 之后只在出错时传，正常流程不会传任何东西"
+                } else {
+                    "已关闭"
+                }
+            );
+        }
+        c.support.auto_on_error = settings.auto_upload_logs;
         c.assist.allow_install_runtime = settings.allow_install_runtime;
         // 认不得的值落到默认（`builtin`），不是照抄进去
         c.runtime.install_route = crate::config::InstallRoute::parse(&settings.install_route)
@@ -1163,6 +1225,9 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         builtin_runtime_installed: crate::runtime::builtin::is_installed(),
         builtin_runtime_running: crate::runtime::builtin::is_running(),
         takeover_project: c.takeover.project.clone(),
+        auto_upload_logs: c.support.auto_on_error,
+        last_trace_code: c.support.last_trace_code.clone(),
+        last_upload_at: c.support.last_upload_at.clone(),
     }
 }
 
@@ -1588,6 +1653,7 @@ pub fn upgrade_hunter(app: tauri::AppHandle, tag: String) -> Result<()> {
         let r = crate::upgrade::upgrade(&st, &tag, note, move |p| {
             let _ = h_pull.emit(EV_PULL, p);
         });
+        let mut failed: Option<(String, String)> = None;
         if let Ok(mut g) = upgrade_slot().lock() {
             g.running = false;
             match r {
@@ -1595,13 +1661,54 @@ pub fn upgrade_hunter(app: tauri::AppHandle, tag: String) -> Result<()> {
                 Err(e) => {
                     crate::lerror!("升级失败：{}", e.msg);
                     g.error = Some(e.to_string());
+                    failed = Some((e.code.as_str().to_string(), e.msg.clone()));
                 }
             }
+        }
+        if let Some((code, msg)) = failed {
+            auto_ship(&st, "upgrade", &code, &msg);
         }
         st.busy.store(false, Ordering::SeqCst);
         crate::tray::refresh_status(&handle);
     });
     Ok(())
+}
+
+/// 「上一次升级做完了没有」当场再查一遍（I16 · P1-2）。
+///
+/// 开机那一次在 [`boot_state`] 里，这个命令是给「做完动作之后再看一眼」用的 ——
+/// 继续升级成功、或者回退完成之后，界面要靠它确认那张卡片可以撤掉了。
+#[tauri::command]
+pub async fn interrupted_upgrade(
+    app: tauri::AppHandle,
+) -> Result<Option<crate::upgrade::Interrupted>> {
+    blocking(move || {
+        let cfg = state(&app).config();
+        Ok(crate::upgrade::interrupted(&cfg))
+    })
+    .await
+}
+
+/// **回退到正在跑的那一版**（中间态的第二个出口）。
+///
+/// 只把配置写回去，**不碰容器、不碰卷、不拉镜像**。
+#[tauri::command]
+pub async fn revert_to_running(app: tauri::AppHandle, tag: String) -> Result<String> {
+    blocking(move || {
+        let st = state(&app);
+        if st.busy.swap(true, Ordering::SeqCst) {
+            return Err(AppError::new(Code::Unknown, "已经有一次操作在进行中"));
+        }
+        let h = app.clone();
+        let r = crate::upgrade::revert_to_running(&st, &tag, |line| {
+            let line = crate::redact::redact(line);
+            crate::linfo!("回退：{line}");
+            let _ = h.emit(EV_UPGRADE, line);
+        });
+        st.busy.store(false, Ordering::SeqCst);
+        r
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1704,6 +1811,11 @@ pub struct BackupSettings {
     /// 检测到的外接盘上的建议位置（**只建议，不自动选**）
     #[serde(default)]
     pub external_suggestions: Vec<String>,
+    /// **上一次挂定时任务时系统报的原话**（I16 · P0-3）。空 = 上一次挂成了。
+    /// 非空时运行面板出一条红横幅 —— 「以为有每日备份，其实一次没跑过」
+    /// 比备份失败本身更危险。
+    #[serde(default)]
+    pub schedule_error: String,
 }
 
 fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
@@ -1728,6 +1840,7 @@ fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
             .to_string_lossy()
             .into_owned(),
         external_suggestions: crate::backup::external_suggestions(),
+        schedule_error: c.backup.schedule_error.clone(),
     }
 }
 
@@ -1801,6 +1914,10 @@ pub async fn write_backup_settings(
         if let Err(e) = crate::schedule::sync(|t| crate::linfo!("定时备份：{t}")) {
             crate::lwarn!("定时备份任务没装成：{}", e.msg);
         }
+        // `sync` 会把成败写进 `[backup] schedule_error`，**要重新读一遍**再回给界面 ——
+        // 回手上这份旧的等于「刚刚失败了，界面上却什么都没变」
+        let c = crate::config::LauncherConfig::load();
+        st.set_config(c.clone());
         Ok(to_backup_settings(&c))
     })
     .await
@@ -1810,6 +1927,29 @@ pub async fn write_backup_settings(
 #[tauri::command]
 pub async fn backup_schedule_status() -> Result<crate::schedule::Status> {
     blocking(|| Ok(crate::schedule::status())).await
+}
+
+/// 运行面板那条「定时任务没装上」红横幅上的「再试一次」（I16 · P0-3）。
+///
+/// 就是再跑一遍 [`crate::schedule::sync`]，然后把**重新读过的**设置回给界面。
+/// 成了红横幅自己就消失（`schedule_error` 被清空），没成的话横幅上换成新的原话。
+#[tauri::command]
+pub async fn retry_backup_schedule(app: tauri::AppHandle) -> Result<BackupSettings> {
+    blocking(move || {
+        let st = state(&app);
+        match crate::schedule::sync(|t| crate::linfo!("重挂定时备份：{t}")) {
+            Ok(s) => crate::linfo!(
+                "重挂定时备份：已对齐（想要 {} · 系统里 {}）",
+                s.wanted,
+                s.installed
+            ),
+            Err(e) => crate::lwarn!("重挂定时备份：还是没成 —— {}", e.msg),
+        }
+        let c = crate::config::LauncherConfig::load();
+        st.set_config(c.clone());
+        Ok(to_backup_settings(&c))
+    })
+    .await
 }
 
 /// 恢复前的只读体检。
@@ -2509,6 +2649,77 @@ pub async fn feedback_one_click(
             error_code.as_deref().unwrap_or(""),
             error_message.as_deref().unwrap_or(""),
         )
+    })
+    .await
+}
+
+// ── I16 · 一键上传日志 ────────────────────────────────────────────────────
+
+/// 收一份**将要上传的东西**给用户过目。**这一步不发任何请求。**
+///
+/// 返回的 `body` 就是上传时真正送出去的那串字节 —— 它被存进
+/// [`AppState::upload_preview`]，[`logship_upload`] 用的就是它。
+/// 「看到的是一套、发出去的是另一套」在这里不可能发生。
+#[tauri::command]
+pub async fn logship_preview(
+    app: tauri::AppHandle,
+    stage: Option<String>,
+    error_code: Option<String>,
+    summary: Option<String>,
+    include: Option<Vec<String>>,
+) -> Result<crate::logship::Preview> {
+    blocking(move || {
+        let st = state(&app);
+        let mut cfg = st.config();
+        if crate::logship::ensure_machine_id(&mut cfg) {
+            cfg.save_if(true);
+            st.set_config(cfg.clone());
+        }
+        let p = crate::logship::preview(
+            &cfg,
+            stage.as_deref().unwrap_or(""),
+            error_code.as_deref().unwrap_or(""),
+            summary.as_deref().unwrap_or(""),
+            include.as_deref(),
+        )?;
+        if let Ok(mut g) = st.upload_preview.lock() {
+            *g = Some(p.clone());
+        }
+        Ok(p)
+    })
+    .await
+}
+
+/// 把**刚才给用户看过的那一份**传上去。
+///
+/// 没有预览过就不给传（`E_UNKNOWN: 还没有可上传的内容`）—— 这不是防御性编程，
+/// 是这条路的设计：不给看就传等于替用户做决定。
+#[tauri::command]
+pub async fn logship_upload(app: tauri::AppHandle) -> Result<crate::logship::Outcome> {
+    blocking(move || {
+        let st = state(&app);
+        let p = st
+            .upload_preview
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .ok_or_else(|| {
+                AppError::new(
+                    Code::Unknown,
+                    "还没有可上传的内容 —— 先看一眼要传什么，再决定传不传".to_string(),
+                )
+            })?;
+        let cfg = st.config();
+        let out = crate::logship::upload(&cfg, &p)?;
+        // 追踪码记进配置：用户过两天回来问「上次那个码是什么」还答得出来
+        if let Some(code) = &out.trace_code {
+            let mut c = st.config();
+            c.support.last_trace_code = code.clone();
+            c.support.last_upload_at = crate::timefmt::now_shanghai();
+            c.save_if(true);
+            st.set_config(c);
+        }
+        Ok(out)
     })
     .await
 }

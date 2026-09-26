@@ -34,6 +34,9 @@ import type {
   MissingEndpoint,
   OfflineImport,
   OneClickFeedback,
+  LogshipPreview,
+  LogshipOutcome,
+  InterruptedUpgrade,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
@@ -64,7 +67,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.15'
+export const DEMO_LAUNCHER_VERSION = '0.1.16'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -209,6 +212,7 @@ export const demoBootState: BootState = {
   lastHealthyAt: '',
   volumeCount: 0,
   elapsedMs: 264,
+  interruptedUpgrade: null,
 }
 
 export const demoOwnKeyCheck: OwnKeyCheck = {
@@ -301,12 +305,12 @@ export const demoRuntime: RuntimeStatus = {
   // 免费版只允许本机访问（I7），演示数据也照这个来
   webLanExposed: false,
   services: [
-    { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null },
-    { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
-    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null },
-    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
-    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
-    { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
+    { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-web:${DEMO_HUNTER_TAG}` },
+    { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-api:${DEMO_HUNTER_TAG}` },
+    { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-opencode:${DEMO_HUNTER_TAG}` },
+    { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-llm-shim:${DEMO_HUNTER_TAG}` },
+    { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null , image: `docker.io/library/postgres:16-alpine` },
+    { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null , image: `docker.io/library/redis:7-alpine` },
   ],
   upstream: {
     reachable: true,
@@ -346,13 +350,13 @@ export const demoRuntime: RuntimeStatus = {
 }
 
 export const demoStartingServices: RuntimeStatus['services'] = [
-  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
-  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
-  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
-  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
-  { service: 'opencode', state: 'running', health: 'starting', port: 3921, bind: '127.0.0.1', exitCode: null },
+  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null , image: `docker.io/library/postgres:16-alpine` },
+  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null , image: `docker.io/library/redis:7-alpine` },
+  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-llm-shim:${DEMO_HUNTER_TAG}` },
+  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-api:${DEMO_HUNTER_TAG}` },
+  { service: 'opencode', state: 'running', health: 'starting', port: 3921, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-opencode:${DEMO_HUNTER_TAG}` },
   // 还没创建出来的容器 docker 报不出绑定地址 —— 那就是 null，不猜（红线 1）
-  { service: 'web', state: 'created', health: 'pending', port: 3100, bind: null, exitCode: null },
+  { service: 'web', state: 'created', health: 'pending', port: 3100, bind: null, exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-web:${DEMO_HUNTER_TAG}` },
 ]
 
 export const demoSettings: LauncherSettings = {
@@ -384,6 +388,9 @@ export const demoSettings: LauncherSettings = {
   builtinRuntimeInstalled: false,
   builtinRuntimeRunning: false,
   takeoverProject: '',
+  autoUploadLogs: false,
+  lastTraceCode: '',
+  lastUploadAt: '',
 }
 
 /** 内置运行时的演示态：**没装**（默认就是没装，别编一个装好的样子出来）。 */
@@ -628,6 +635,7 @@ export const demoBackupSettings: BackupSettings = {
   diskFreeBytes: 76_836_319_232,
   suggestedDir: '/home/user/Hunter-backups',
   externalSuggestions: ['/media/user/T7/Hunter 备份'],
+  scheduleError: '',
 }
 
 export const demoSchedule: ScheduleStatus = {
@@ -800,6 +808,43 @@ export const demoRuntimeLanExposed: RuntimeStatus = {
   services: demoRuntime.services.map((s) =>
     s.service === 'web' ? { ...s, bind: '0.0.0.0' } : s,
   ),
+}
+
+/**
+ * **六个容器全都退出了**（I16 · P0-4，截图脚本 `HUNTER_DEMO_PAGE=dashboard-stopped`）。
+ *
+ * 这就是客户 2026-09-26 那台 Windows 上 `ps.txt` 的样子。0.1.15 在这个现场
+ * 顶上写「Hunter 运行中」、下一行写「容器已停止」，自相矛盾；
+ * 而开机判定还说「Hunter 在跑，但 web、api… 还没就绪」——
+ * 把「退出了」说成「还没就绪」，处置方向正好相反。
+ *
+ * 这一页要看的就是**那两行不再打架**：大字「Hunter 已停止」+「v1.2.2 · 容器已停止」。
+ */
+export const demoRuntimeAllStopped: RuntimeStatus = {
+  ...demoRuntime,
+  running: false,
+  uptimeSeconds: 0,
+  webUrl: null,
+  postInstallNotes: [],
+  services: demoRuntime.services.map((s) => ({
+    ...s,
+    state: 'exited',
+    health: 'pending',
+    exitCode: 0,
+  })),
+}
+
+/**
+ * **定时备份根本没挂上**（I16 · P0-3，截图脚本 `HUNTER_DEMO_PAGE=dashboard-schedule-broken`）。
+ *
+ * `scheduleError` 里那句话是客户那台中文 Windows 上 `schtasks` 的原话
+ * ——**按 GBK 解回来之后**的样子。0.1.15 把它当 UTF-8 解，
+ * 日志里只剩 `????: ??????`，而界面上一个字都没有。
+ */
+export const demoBackupScheduleBroken: BackupSettings = {
+  ...demoBackupSettings,
+  scheduleError:
+    'schtasks 三条路都没装上定时备份：/Create /XML 失败：错误: 未指定的错误；先删后建（/XML）还是失败：错误: 未指定的错误；/SC DAILY 也失败：错误: 拒绝访问。',
 }
 
 /**
@@ -1288,12 +1333,12 @@ export const demoAutoNeedUser: AssistAutoSnapshot = {
 // ── 现状复查（I11 · U1）──────────────────────────────────────────────────
 
 const DEMO_SERVICES: ServiceStatus[] = [
-  { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null },
-  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null },
-  { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null },
-  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null },
-  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null },
-  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null },
+  { service: 'web', state: 'running', health: 'healthy', port: 3100, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-web:${DEMO_HUNTER_TAG}` },
+  { service: 'api', state: 'running', health: 'healthy', port: 8100, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-api:${DEMO_HUNTER_TAG}` },
+  { service: 'opencode', state: 'running', health: 'healthy', port: 3921, bind: '127.0.0.1', exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-opencode:${DEMO_HUNTER_TAG}` },
+  { service: 'llm-shim', state: 'running', health: 'healthy', port: null, bind: null, exitCode: null , image: `ghcr.io/agentpit-io/hunter-community-llm-shim:${DEMO_HUNTER_TAG}` },
+  { service: 'postgres', state: 'running', health: 'healthy', port: 5442, bind: '127.0.0.1', exitCode: null , image: `docker.io/library/postgres:16-alpine` },
+  { service: 'redis', state: 'running', health: 'healthy', port: 6479, bind: '127.0.0.1', exitCode: null , image: `docker.io/library/redis:7-alpine` },
 ]
 
 /**
@@ -1461,4 +1506,62 @@ export function demoStackOp(action: 'stop' | 'start' | 'restart'): StackOpResult
     total: 6,
     elapsedMs: action === 'start' ? 34_120 : 7_410,
   }
+}
+
+/**
+ * 一键上传日志的演示态（I16）。
+ *
+ * **正文里一个真东西都没有**：key 是打过码的形状、路径以 `~` 开头、
+ * 用户名与主机名换成了占位符 —— 演示数据也要长成「脱敏之后」的样子，
+ * 否则这一屏就教会了用户「原来它会把这些发出去」。
+ */
+export const demoLogshipPreview: LogshipPreview = {
+  sections: demoDiagSections,
+  body:
+    '===== 概要 (summary) =====\n' +
+    '时间: 2026-09-25 10:12:03\n启动器: 0.1.16\n系统: macos aarch64\n' +
+    'Docker: OrbStack · server 29.8.1 · compose 5.5.1\nHunter tag: 1.2.0\n' +
+    '镜像源: tencent (hkccr.ccs.tencentyun.com/agentpit)\n\n' +
+    '===== 启动器日志（最近 200 行） (launcher-log) =====\n' +
+    '10:05:41 [info] 第 1 次拉取，镜像源 hkccr.ccs.tencentyun.com/agentpit\n' +
+    '10:07:11 [warn] 拉取卡住：90 秒没有任何新数据进来，已经把 docker compose pull 杀掉\n',
+  bodyBytes: 512,
+  truncated: false,
+  machineId: '11111111-2222-4333-8444-555555555555',
+  endpoint: 'https://www.agentpit.io/api/v1/launcher/logs',
+  stage: 'upgrade',
+  errorCode: 'E_PULL_STALLED',
+  summary: '升级时从腾讯云香港拉镜像 90 秒没有数据进来',
+  metaLines: [
+    '镜像源: tencent (hkccr.ccs.tencentyun.com/agentpit)',
+    '这台机器配了网络代理: false',
+    '磁盘剩余（GB）: 42',
+  ],
+  scanHit: null,
+  autoOnError: false,
+}
+
+/** 上传成功之后那一屏（演示态）。追踪码是编的，界面上有「演示数据」角标。 */
+export const demoLogshipOutcome: LogshipOutcome = {
+  ok: true,
+  traceCode: 'HL-DEMO01',
+  truncated: false,
+  message: '已上传。追踪码 HL-DEMO01，把它发给我们，我们就能查到这份日志。',
+  status: 200,
+  bundlePath: null,
+  localLogPath: '~/.hunter/logs/launcher.log',
+}
+
+/** 「上一次升级没做完」的演示态 —— 就是客户 2026-09-25 强退之后那个现场。 */
+export const demoInterruptedUpgrade: InterruptedUpgrade = {
+  configTag: '1.2.2',
+  runningTag: '1.2.0',
+  missingImages: ['web', 'api', 'opencode'],
+  headline: '上一次升级没做完：配置已经是 v1.2.2，跑着的还是 v1.2.0，而 v1.2.2 的镜像本机不齐',
+  lines: [
+    '配置（.env 与 compose）写的是 v1.2.2',
+    '正在跑的 4 个容器用的是 v1.2.0',
+    'v1.2.2 的镜像本机还缺 3 个：web、api、opencode',
+    '所以上一次升级多半是拉镜像时被打断的（强退 / 断电 / 关机）。在你选之前，启动器不会按新配置去起容器 —— 那只会再卡一次。',
+  ],
 }

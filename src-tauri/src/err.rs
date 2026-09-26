@@ -24,6 +24,19 @@ pub enum Code {
     KeyInvalid,
     QuotaExhausted,
     PullFailed,
+    /// **拉着拉着不动了**（I16）。和 `PullFailed` 分开，因为这两个现场
+    /// 从判据到处置都不一样：
+    ///
+    /// | | `E_PULL_FAILED` | `E_PULL_STALLED` |
+    /// |---|---|---|
+    /// | 怎么发现的 | compose 自己退出并报错 | **它不报错**，是我们数「多久没有新进展」数出来的 |
+    /// | 现场 | 源不通 / 认证不过 / 磁盘满 | TCP 连上了、进程活着、一个字节都不传 |
+    /// | 处置 | 按原话分类，多半换源 | 杀掉它，换另一个源重来；两个源都卡才算失败 |
+    ///
+    /// 客户 Mac 上 0.1.15 那次（2026-09-25）就是后者：manifest 全读到了
+    /// （界面真的算出了「合计约 748 MB」），拉层那一步挂了一个多小时，
+    /// 而既有的「报错 → 换源重试」**一次都没触发** —— 因为压根没有错。
+    PullStalled,
     PortInUse,
     /// **起容器时** Docker 自己报的端口冲突（I5）。原话形如
     /// `Bind for 0.0.0.0:8100 failed: port is already allocated`。
@@ -107,6 +120,7 @@ impl Code {
             Code::KeyInvalid => "E_KEY_INVALID",
             Code::QuotaExhausted => "E_QUOTA_EXHAUSTED",
             Code::PullFailed => "E_PULL_FAILED",
+            Code::PullStalled => "E_PULL_STALLED",
             Code::PortInUse => "E_PORT_IN_USE",
             Code::PortConflict => "E_PORT_CONFLICT",
             Code::CredHelper => "E_CRED_HELPER",
@@ -135,6 +149,7 @@ impl Code {
             Code::KeyInvalid => "这把 key 网关不认",
             Code::QuotaExhausted => "今日免费额度已用完",
             Code::PullFailed => "镜像拉取失败",
+            Code::PullStalled => "镜像拉着拉着不动了",
             Code::PortInUse => "端口被占用",
             Code::PortConflict => "Docker 说端口已经被占了",
             Code::CredHelper => "Docker 找不到它自己的凭据助手",
@@ -176,6 +191,7 @@ impl Code {
         Code::QuotaExhausted,
         Code::RateLimited,
         Code::PullFailed,
+        Code::PullStalled,
         Code::PortInUse,
         Code::PortConflict,
         Code::CredHelper,

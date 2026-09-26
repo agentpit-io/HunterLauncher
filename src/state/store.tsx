@@ -38,6 +38,10 @@ const DEMO_STATES: Record<string, State> = {
   'uninstall-all': { name: 'Ready' },
   // I7：升级上来的老机器（网页端口还对局域网开着）看到的那条横幅
   'dashboard-lan': { name: 'Ready' },
+  // I16 · P0-4：六个容器全 exited。看的是顶上那行大字与副标题**不再打架**
+  'dashboard-stopped': { name: 'Ready' },
+  // I16 · P0-3：定时备份根本没挂上的那条红横幅
+  'dashboard-schedule-broken': { name: 'Ready' },
   settings: { name: 'Ready' },
   // I7：同一件事在设置页里的样子（只读说明 + 一键收紧）
   'settings-lan': { name: 'Ready' },
@@ -62,6 +66,21 @@ const DEMO_STATES: Record<string, State> = {
     from: 'AutoInstalling',
     detail: 'opencode 在 180 秒内没有变成 healthy（docker compose ps 的 Health 字段一直是 starting）',
   },
+  // I16：**拉着拉着不动了**（客户 Mac 上 0.1.15 那次的现场）。
+  // 和 error（E_START_TIMEOUT）分开截一张：这一档的说法完全不同 ——
+  // 不是「源不通」，是「连上了不给数据」，而且错误页上多一个「上传日志给我们」
+  'error-stalled': {
+    name: 'Error',
+    code: 'E_PULL_STALLED',
+    from: 'AutoInstalling',
+    detail:
+      '从「腾讯云 · 香港」拉了 1 分 30 秒，已下载 12.4 MB / 共 748 MB。这个源试过了 —— 连得上、就是不给数据。',
+  },
+  // I16：一键上传日志的两屏（预览 / 传完拿到追踪码），从运行面板的诊断区点开
+  'upload-preview': { name: 'Ready' },
+  'upload-done': { name: 'Ready' },
+  // I16：强退之后留下的中间态 —— 运行面板顶上那张「上一次升级没做完」
+  'dashboard-interrupted': { name: 'Ready' },
   // I9：上一次没装成功留下的内置运行时残骸（用户 Mac 上 0.1.8 那次的现场）。
   // 这一页同时也是「启动器已经替你做了这几步」那一块的样子
   'error-builtin': {

@@ -178,6 +178,12 @@ export function BackupPanel() {
             {sc?.supported && !sc.installed && sc.wanted && (
               <div className="text-amber-text">{t.backup.scheduleNotInstalled}</div>
             )}
+            {/* I16 · P0-3：上一次挂它的时候系统到底说了什么。
+                0.1.15 只把这句话写进日志，界面上只有一句「还没装上」——
+                用户既不知道为什么，也不知道该找谁 */}
+            {s?.scheduleError && (
+              <div className="break-all text-danger">{t.backup.scheduleWhy(s.scheduleError)}</div>
+            )}
             {sc?.nextRun && (
               <div className="tnum break-all leading-[1.5]">{t.backup.scheduleNext(sc.nextRun)}</div>
             )}

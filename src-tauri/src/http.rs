@@ -18,6 +18,30 @@ pub struct Resp {
     pub body: String,
 }
 
+/// 和 [`Resp`] 一样，只是正文是**字节**。
+///
+/// 为什么要有它（I16 追加，真机上撞出来的）：[`get`] 用
+/// `read_to_string().unwrap_or_default()` 读正文 —— 对着一个 gzip 压缩的镜像层，
+/// 那一行永远返回**空串**。于是 `registry::probe_data_plane` 里那句
+/// 「连上了，但一个字节都没给」对**每一个真实镜像源**都成立，
+/// 选源会判定「所有候选源都拉不到」，一台干净机器上什么都装不了。
+///
+/// 现场：测试机 2026-09-26，`curl -r 0-262143` 从 ghcr 取同一层是
+/// `http=206 size=32`（一个 32 字节的 gzip 空层），启动器却说一个字节都没给。
+pub struct RespBytes {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+impl RespBytes {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(|s| s.as_str())
+    }
+}
+
 impl Resp {
     pub fn ok(&self) -> bool {
         (200..300).contains(&self.status)
@@ -120,6 +144,52 @@ pub fn get(url: &str, headers: &[(&str, &str)], timeout: Duration) -> AppResult<
             req = req.header(*k, *v);
         }
         finish(req.call(), url)
+    })
+}
+
+/// **按字节**取一段（探层数据用）。带自定义请求头，上限由调用方给。
+///
+/// 和 [`get`] 的差别只有一处，但那一处是要命的：正文读成 `Vec<u8>`。
+/// 二进制内容用 [`get`] 取，正文会静悄悄变成空串（见 [`RespBytes`] 的注释）。
+///
+/// 非 2xx **不算错误** —— registry 的 401 challenge 要读状态码与响应头来换 token。
+pub fn get_bytes_headers(
+    url: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+    max: u64,
+) -> AppResult<RespBytes> {
+    try_direct_then_proxy(url, timeout, |a| {
+        let mut req = a.get(url);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let mut resp = req.call().map_err(|e| {
+            AppError::new(Code::Unknown, format!("请求 {} 失败：{e}", host_of(url)))
+        })?;
+        let status = resp.status().as_u16();
+        let mut hs = HashMap::new();
+        for (k, v) in resp.headers().iter() {
+            if let Ok(s) = v.to_str() {
+                hs.insert(k.as_str().to_ascii_lowercase(), s.to_string());
+            }
+        }
+        let body = resp
+            .body_mut()
+            .with_config()
+            .limit(max)
+            .read_to_vec()
+            .map_err(|e| {
+                AppError::new(
+                    Code::Unknown,
+                    format!("读 {} 的响应体失败：{e}", host_of(url)),
+                )
+            })?;
+        Ok(RespBytes {
+            status,
+            headers: hs,
+            body,
+        })
     })
 }
 

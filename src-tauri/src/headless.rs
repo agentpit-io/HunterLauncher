@@ -111,6 +111,15 @@ pub struct Args {
     pub with_images: bool,
     pub with_runtime: bool,
     pub backup_first: bool,
+
+    // ── I16 ─────────────────────────────────────────────────────────────
+    /// `--upload-logs`：把脱敏后的日志传给我们，换一个追踪码。
+    ///
+    /// 不带 `-y` 只**打印将要上传的内容**（和界面上那一屏预览是同一份字节），
+    /// 一个请求都不发。带 `-y` 才真的传。
+    /// `--stage` / `--code` / `--summary` 是可选的上下文。
+    pub stage: Option<String>,
+    pub summary: Option<String>,
 }
 
 /// 手写参数解析。为这几个开关拖一个 clap 进来不划算，而且 Tauri 的可执行文件
@@ -148,6 +157,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         with_images: false,
         with_runtime: false,
         backup_first: false,
+        stage: None,
+        summary: None,
     };
     let v: Vec<String> = argv.into_iter().collect();
     let mut i = 0;
@@ -243,6 +254,28 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
             "--feedback" => {
                 a.action = Some("feedback".into());
                 a.headless = true;
+            }
+            // I16：一键上传日志。不带 -y 只打印要传什么，不发请求
+            "--upload-logs" => {
+                a.action = Some("upload-logs".into());
+                a.headless = true;
+            }
+            // I16：强退之后的中间态，回退到正在跑的那一版（只改配置，不动容器）
+            "--revert-to-running" => {
+                a.action = Some("revert-to-running".into());
+                a.tag = v.get(i + 1).filter(|x| !x.starts_with('-')).cloned();
+                if a.tag.is_some() {
+                    i += 1;
+                }
+                a.headless = true;
+            }
+            "--stage" => {
+                a.stage = v.get(i + 1).cloned();
+                i += 1;
+            }
+            "--summary" => {
+                a.summary = v.get(i + 1).cloned();
+                i += 1;
             }
             "--code" => {
                 a.code = v.get(i + 1).cloned();
@@ -356,6 +389,11 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --takeover stop|start|restart   动它（每一次都要 -y 再确认一遍）
   hunter-launcher --takeover release      不再管理它（它原地不动）
   hunter-launcher --feedback              生成脱敏诊断包 + 预填 issue 链接（**不发送**）
+  hunter-launcher --upload-logs           打印「将要上传给我们的那份日志」（**不发送**）
+  hunter-launcher --upload-logs -y        真的传，换回一个追踪码（不含 key 与口令）
+  hunter-launcher --revert-to-running [版本] -y
+       上一次升级没做完时，把配置写回正在跑的那一版（不动容器、不动数据、不拉镜像）
+       可选：--stage upgrade --code E_PULL_STALLED --summary 一句话说明
   hunter-launcher --check-net           查「虚拟机有没有 DNS」与「容器连不连得上模型网关」（I10）
   hunter-launcher --boot-state          打开启动器时会走的那一次判定：该进哪一页、装没装过（I12 · R1）
   hunter-launcher --monitor             三层资源：这台电脑 / Hunter 运行环境 / Hunter 各服务（I12 · R2）
@@ -427,6 +465,8 @@ pub fn run(args: &Args) -> i32 {
         Some("review") => cmd_review(&st, args),
         Some("takeover") => cmd_takeover(args),
         Some("feedback") => cmd_feedback(args),
+        Some("upload-logs") => cmd_upload_logs(&st, args),
+        Some("revert-to-running") => cmd_revert_to_running(&st, args),
         Some("assist-replay") => match args.assist_replay.as_deref() {
             Some(p) => cmd_assist_replay(p),
             None => Err(AppError::new(
@@ -464,8 +504,36 @@ pub fn run(args: &Args) -> i32 {
             eprintln!("\n✗ {e}");
             eprintln!("  日志：{}", paths::launcher_log().display());
             crate::lerror!("headless 失败：{}", e.msg);
+            // I16：设置里开了「出错时自动上传日志」才会走到网络。
+            // 命令行这条路和界面版共用同一个判据（`should_auto_upload`），
+            // 不另起一套 —— 两套判据迟早会走岔。
+            auto_ship_on_error(&st, args.action.as_deref().unwrap_or("install"), &e);
             1
         }
+    }
+}
+
+/// 失败之后那一下自动上传（I16）。**默认关**，而且上传本身失败不影响退出码 ——
+/// 「日志没传上去」不该盖住用户真正撞上的那个问题。
+fn auto_ship_on_error(st: &AppState, action: &str, e: &AppError) {
+    let mut cfg = st.config();
+    if !crate::logship::should_auto_upload(&cfg, Some(e.code.as_str())) {
+        return;
+    }
+    if crate::logship::ensure_machine_id(&mut cfg) {
+        cfg.save_if(true);
+        st.set_config(cfg.clone());
+    }
+    match crate::logship::auto_upload(&cfg, action, e.code.as_str(), &e.msg) {
+        Some(code) => {
+            eprintln!("  已按你的设置自动上传了这次的日志，追踪码 {code}");
+            let mut c = st.config();
+            c.support.last_trace_code = code;
+            c.support.last_upload_at = crate::timefmt::now_shanghai();
+            c.save_if(true);
+            st.set_config(c);
+        }
+        None => eprintln!("  「出错时自动上传日志」开着，但这一次没传成（原因见日志）"),
     }
 }
 
@@ -797,7 +865,21 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
         .lock()
         .map(|g| g.clone())
         .unwrap_or_else(|_| compose::PullProgress::empty());
-    println!("  ✓ 拉取完成，用时 {}", human_secs(pull_secs));
+    // I16 · P2-5：`net_bytes` 是这一次真的过了网络的字节。一个字节都没过网时
+    // 说「拉取完成」是在骗人 —— 那六个镜像本来就在本机
+    if snap.net_bytes == 0 {
+        println!(
+            "  ✓ {} 个镜像本机都已有，没有下载（核对用时 {}）",
+            snap.images.len(),
+            human_secs(pull_secs)
+        );
+    } else {
+        println!(
+            "  ✓ 拉取完成，用时 {}，实际下载 {}",
+            human_secs(pull_secs),
+            human_bytes(snap.net_bytes)
+        );
+    }
     for i in &snap.images {
         println!(
             "    {:<26} {:>9}  {}",
@@ -1611,6 +1693,135 @@ fn cmd_feedback(args: &Args) -> AppResult<()> {
     Ok(())
 }
 
+/// `--upload-logs`（I16）。
+///
+/// **不带 `-y` 时一个请求都不发**：只把将要上传的那份字节原样打出来。
+/// 这和界面上那一屏预览是同一个 [`crate::logship::preview`]、同一份 `body` ——
+/// 命令行这条路也不许「不给看就传」。
+fn cmd_upload_logs(st: &AppState, args: &Args) -> AppResult<()> {
+    title("上传日志给我们（不含 key 与口令）");
+    let mut cfg = st.config();
+    if crate::logship::ensure_machine_id(&mut cfg) {
+        cfg.save_if(true);
+        st.set_config(cfg.clone());
+    }
+    let p = crate::logship::preview(
+        &cfg,
+        args.stage.as_deref().unwrap_or(""),
+        args.code.as_deref().unwrap_or(""),
+        args.summary.as_deref().unwrap_or(""),
+        None,
+    )?;
+    println!("  接收地址：{}", p.endpoint);
+    println!(
+        "  machineId：{}（随机 UUID，不含任何硬件信息）",
+        p.machine_id
+    );
+    println!(
+        "  阶段 / 错误码：{} / {}",
+        if p.stage.is_empty() { "—" } else { &p.stage },
+        if p.error_code.is_empty() {
+            "—"
+        } else {
+            &p.error_code
+        }
+    );
+    for l in &p.meta_lines {
+        println!("  {l}");
+    }
+    println!(
+        "  正文：{} 字节{}",
+        p.body_bytes,
+        if p.truncated { "（已截断）" } else { "" }
+    );
+    println!(
+        "  出口闸：{}",
+        match &p.scan_hit {
+            None => "干净（key、口令、邮箱、IP、用户名、主机名都没扫出来）".to_string(),
+            Some(h) => format!("**命中，已挡下**：{h}"),
+        }
+    );
+    println!();
+    println!("  ── 将要上传的正文（一字不差就是下面这些） ──");
+    for l in p.body.lines() {
+        println!("  | {l}");
+    }
+    println!("  ── 正文到此为止 ──");
+    println!();
+    if !args.yes {
+        println!("  这一次**什么都没有发出去**。确认没问题就再跑一次，加上 -y。");
+        return Ok(());
+    }
+    if p.scan_hit.is_some() {
+        return Err(AppError::new(
+            Code::Unknown,
+            "出口闸命中，不上传。".to_string(),
+        ));
+    }
+    let out = crate::logship::upload(&cfg, &p)?;
+    if let Some(code) = &out.trace_code {
+        let mut c = st.config();
+        c.support.last_trace_code = code.clone();
+        c.support.last_upload_at = crate::timefmt::now_shanghai();
+        c.save_if(true);
+        st.set_config(c);
+        println!("  ✓ 追踪码：{code}");
+        println!("    把这个码发给我们，我们就能查到这份日志。");
+    } else {
+        println!("  ✗ 没有拿到追踪码");
+    }
+    println!(
+        "  HTTP {}",
+        out.status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "（没连上）".into())
+    );
+    println!("  {}", out.message);
+    if !out.ok {
+        // 限流有自己的错误码。**说「没归类的意外」是在把原因说错**，
+        // 而说错原因比不说更糟（本轮验收时印出来的是 `E_UNKNOWN: 今天传得有点多…`）
+        let code = match out.status {
+            Some(429) => Code::RateLimited,
+            _ => Code::Unknown,
+        };
+        return Err(AppError::new(code, out.message));
+    }
+    Ok(())
+}
+
+/// `--revert-to-running [版本]`（I16 · P1-2 的第二个出口）。
+///
+/// 只把配置写回去，**不碰容器、不碰卷、不拉镜像**。不给版本号就用
+/// 「正在跑的那一版」（判定本身给得出来）。要 `-y` —— 它改的是配置文件。
+fn cmd_revert_to_running(st: &AppState, args: &Args) -> AppResult<()> {
+    title("回退到正在跑的那一版");
+    let cfg = st.config();
+    let it = crate::upgrade::interrupted(&cfg);
+    let tag = match (args.tag.clone(), &it) {
+        (Some(t), _) => t,
+        (None, Some(i)) => i.running_tag.clone(),
+        (None, None) => {
+            println!("  配置与正在跑的容器对得上，没有要回退的东西。");
+            return Ok(());
+        }
+    };
+    if let Some(i) = &it {
+        println!("  {}", i.headline);
+    }
+    println!("  要把配置写回：v{tag}");
+    if !args.yes {
+        println!("\n  这一次**什么都没有改**。确认没问题就再跑一次，加上 -y。");
+        return Ok(());
+    }
+    crate::upgrade::revert_to_running(st, &tag, |l| println!("  {l}"))?;
+    // 复核一遍：说「已回退」之前先看一眼判定还在不在（红线 1）
+    match crate::upgrade::interrupted(&st.config()) {
+        Some(x) => println!("\n  ⚠ 写回之后判定还在：{}", x.headline),
+        None => println!("\n  ✓ 复核：配置与正在跑的容器已经对得上了"),
+    }
+    Ok(())
+}
+
 fn cmd_assist_replay(path: &str) -> AppResult<()> {
     title("动作白名单 · 离线回放");
     let raw = std::fs::read_to_string(path)
@@ -1712,6 +1923,11 @@ fn cmd_boot_state() -> AppResult<()> {
         rv.total,
         match rv.web_status {
             Some(s) => format!("，网页 HTTP {s}"),
+            // 容器都停着的时候**根本没去探**那个端口（探它只是白等 6 秒）。
+            // 说「没应答」等于报一个没做过的测试的结果（红线 1）——
+            // 2026-09-26 那位 Windows 客户看到的正是这一类话（I16 · P0-4）
+            None if rv.posture == crate::selfcheck::Posture::Stopped =>
+                "，网页没去探（容器都停着，那个端口上不会有人应答）".to_string(),
             None => "，网页这一次没应答".to_string(),
         }
     );
@@ -1741,6 +1957,29 @@ fn cmd_boot_state() -> AppResult<()> {
         blank_dash(&cfg.install.at),
         blank_dash(&cfg.install.last_healthy_at)
     );
+    // I16 · P1-2：强退之后留下的中间态。界面上这一条是一张卡片 + 两个按钮，
+    // 命令行上同样要说出来 —— 不然「用 --boot-state 看看这台机器怎么了」
+    // 会漏掉最要紧的那一条
+    match crate::upgrade::interrupted(&cfg) {
+        Some(it) => {
+            println!("\n  ⚠ 上一次升级没做完");
+            println!("    {}", it.headline);
+            for l in &it.lines {
+                println!("    · {l}");
+            }
+            println!(
+                "    两条出路：继续升到 v{}，或者回退到正在跑的 v{}",
+                it.config_tag, it.running_tag
+            );
+            println!("      继续：hunter-launcher --upgrade {}", it.config_tag);
+            println!(
+                "      回退：界面上点「回退到正在跑的 v{}」（只改配置，不动容器）",
+                it.running_tag
+            );
+        }
+        None => println!("\n  升级状态 没有没做完的升级（配置与正在跑的容器对得上）"),
+    }
+
     println!("\n  逐条证据：");
     for l in &rv.lines {
         println!("    · {l}");

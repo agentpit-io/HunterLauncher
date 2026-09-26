@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.50s
+     Running unittests src/lib.rs (target/debug/deps/hunter_launcher_lib-aeab768f54b8a789)
+
+running 1 test
+ghcr    → ProbeResult { id: "ghcr", label: "GHCR · GitHub", prefix: "ghcr.io/agentpit-io", available: false, elapsed_ms: 443, detail: Some("元数据能拿到，但层数据下不来：请求 ghcr.io 失败：timeout: global（层数据常常不在 manifest 那个主机上 —— GHCR 的层在 pkg-containers.githubusercontent.com，manifest 通不代表层通）"), data_ok: false, data_ms: None, data_detail: Some("请求 ghcr.io 失败：timeout: global（层数据常常不在 manifest 那个主机上 —— GHCR 的层在 pkg-containers.githubusercontent.com，manifest 通不代表层通）") }
+tencent → ProbeResult { id: "tencent", label: "腾讯云 · 香港", prefix: "hkccr.ccs.tencentyun.com/agentpit", available: true, elapsed_ms: 1704, detail: None, data_ok: true, data_ms: Some(6205), data_detail: None }
+test registry::tests::probe_真机_层数据下不来的源要判不可用并且选另一个 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 720 filtered out; finished in 58.01s
+
