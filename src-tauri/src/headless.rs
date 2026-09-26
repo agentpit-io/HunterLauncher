@@ -865,7 +865,21 @@ fn cmd_install(st: &AppState, args: &Args) -> AppResult<()> {
         .lock()
         .map(|g| g.clone())
         .unwrap_or_else(|_| compose::PullProgress::empty());
-    println!("  ✓ 拉取完成，用时 {}", human_secs(pull_secs));
+    // I16 · P2-5：`net_bytes` 是这一次真的过了网络的字节。一个字节都没过网时
+    // 说「拉取完成」是在骗人 —— 那六个镜像本来就在本机
+    if snap.net_bytes == 0 {
+        println!(
+            "  ✓ {} 个镜像本机都已有，没有下载（核对用时 {}）",
+            snap.images.len(),
+            human_secs(pull_secs)
+        );
+    } else {
+        println!(
+            "  ✓ 拉取完成，用时 {}，实际下载 {}",
+            human_secs(pull_secs),
+            human_bytes(snap.net_bytes)
+        );
+    }
     for i in &snap.images {
         println!(
             "    {:<26} {:>9}  {}",
@@ -1942,9 +1956,15 @@ fn cmd_boot_state() -> AppResult<()> {
             for l in &it.lines {
                 println!("    · {l}");
             }
-            println!("    两条出路：继续升到 v{}，或者回退到正在跑的 v{}", it.config_tag, it.running_tag);
+            println!(
+                "    两条出路：继续升到 v{}，或者回退到正在跑的 v{}",
+                it.config_tag, it.running_tag
+            );
             println!("      继续：hunter-launcher --upgrade {}", it.config_tag);
-            println!("      回退：界面上点「回退到正在跑的 v{}」（只改配置，不动容器）", it.running_tag);
+            println!(
+                "      回退：界面上点「回退到正在跑的 v{}」（只改配置，不动容器）",
+                it.running_tag
+            );
         }
         None => println!("\n  升级状态 没有没做完的升级（配置与正在跑的容器对得上）"),
     }

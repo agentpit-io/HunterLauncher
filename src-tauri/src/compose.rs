@@ -528,6 +528,56 @@ impl PullAggregator {
         )
     }
 
+    /// 这一次**真的走了网络**的字节数。
+    ///
+    /// 和 `snapshot().net_bytes` 是同一个量，只是不需要先做一次快照。
+    /// 「拉取完成，用时 4 秒」这种话就靠它分辨：客户 2026-09-26 那台 Windows
+    /// 上本来就装过一套 Hunter，849 MB 一个字节都没过网 ——
+    /// 那句话让他以为「下载成功了」，于是后面升级真要下载时卡住就显得莫名其妙。
+    pub fn net_bytes(&self) -> u64 {
+        self.layers
+            .values()
+            .filter(|l| l.downloaded)
+            .map(|l| l.current)
+            .sum()
+    }
+
+    /// 这一次**真的下了东西**的镜像有几个（其余的是本机已有）。
+    pub fn images_downloaded(&self) -> usize {
+        let mut n = 0;
+        for i in 0..self.images.len() {
+            if self
+                .layers
+                .iter()
+                .any(|((idx, _), l)| *idx == i && l.downloaded && l.current > 0)
+            {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// 拉完之后那一句话。**本机已有就说本机已有，别把它说成「下载完成」**（I16 · P2-5）。
+    pub fn done_line(&self) -> String {
+        let secs = self.elapsed().as_secs();
+        let n = self.images.len();
+        let got = self.images_downloaded();
+        let net = self.net_bytes();
+        if got == 0 || net == 0 {
+            format!("{n} 个镜像本机都已有，没有下载（核对用时 {secs} 秒）")
+        } else if got < n {
+            format!(
+                "拉取完成，用时 {secs} 秒：{got} / {n} 个镜像下载了 {}，其余本机已有",
+                crate::flow::human_bytes(net)
+            )
+        } else {
+            format!(
+                "拉取完成，用时 {secs} 秒：{n} 个镜像共下载 {}",
+                crate::flow::human_bytes(net)
+            )
+        }
+    }
+
     /// 每个镜像各花了多久（成果文档要记这个）——按「首次出现」到「Pulled」的时间差没有记，
     /// 这里给的是最终每镜像下载的字节数，耗时由调用方按整体计时。
     pub fn per_image_bytes(&self) -> Vec<(String, u64, u64)> {
@@ -2154,10 +2204,7 @@ mod tests {
 
     fn agg_for(tag: &str, sizes: &[(&str, u64)]) -> PullAggregator {
         let specs = config::images("ghcr.io/agentpit-io", "docker.io/library", tag);
-        let m: BTreeMap<String, u64> = sizes
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), *v))
-            .collect();
+        let m: BTreeMap<String, u64> = sizes.iter().map(|(k, v)| ((*k).to_string(), *v)).collect();
         PullAggregator::new(&specs, &m, "ghcr.io/agentpit-io", "GHCR · GitHub")
     }
 
@@ -2492,6 +2539,44 @@ mod tests {
         agg.feed("Get https://x/?token=hunt_tools_q6sKaaaaaaaaaaaaaaaaaaaaaaaaQMo2 failed");
         let s = agg.snapshot(PullPhase::Pulling, None);
         assert!(s.log.iter().all(|l| !l.contains("q6sK")), "{:?}", s.log);
+    }
+
+    /// **「拉取完成，用时 4 秒」不许出现在「一个字节都没下」的现场**（I16 · P2-5）。
+    ///
+    /// 客户 2026-09-26 那台 Windows 首装时日志里就是这一句：849 MB 四秒拉完
+    /// 当然不可能 —— 他机器上本来就装过一套 Hunter，镜像是现成的。
+    /// 可那句话让他以为「下载成功了」，于是后面升级真要下载时卡住，就显得莫名其妙。
+    #[test]
+    fn 本机已有的时候不许说下载完成() {
+        let specs = specs();
+        let mut agg = PullAggregator::new(&specs, &BTreeMap::new(), "ghcr.io/x", "GHCR");
+        let img = &specs[0].reference;
+        // 只有 Already exists，没有一行 Downloading
+        for id in ["l1", "l2"] {
+            agg.feed(&format!(
+                r#"{{"id":"{id}","parent_id":"{img}","text":"Already exists"}}"#
+            ));
+        }
+        agg.feed(&format!(r#"{{"id":"{img}","text":"Pulled"}}"#));
+        assert_eq!(agg.net_bytes(), 0, "一个字节都没过网");
+        assert_eq!(agg.images_downloaded(), 0);
+        let line = agg.done_line();
+        assert!(line.contains("本机都已有"), "{line}");
+        assert!(!line.contains("拉取完成"), "不许说「拉取完成」：{line}");
+
+        // 对照：真的下了东西，就该报用时与字节数
+        let mut agg2 = PullAggregator::new(&specs, &BTreeMap::new(), "ghcr.io/x", "GHCR");
+        agg2.feed(&format!(
+            r#"{{"id":"l1","parent_id":"{img}","text":"Downloading","current":1048576,"total":1048576}}"#
+        ));
+        assert_eq!(agg2.net_bytes(), 1_048_576);
+        assert_eq!(agg2.images_downloaded(), 1);
+        let l2 = agg2.done_line();
+        assert!(l2.contains("拉取完成"), "{l2}");
+        assert!(
+            l2.contains("MB") || l2.contains("KB"),
+            "要报真实字节数：{l2}"
+        );
     }
 
     /// 本机已经有的层（`Already exists`）会瞬间「完成」。

@@ -243,8 +243,9 @@ pub fn route_of(posture: crate::selfcheck::Posture, volumes: usize) -> BootRoute
     use crate::selfcheck::Posture;
     match posture {
         // 六个容器都在（跑着、停着、有的不正常都算）→ 这台机器上装过，事实清楚。
-        // **不管 install.done 写的是什么** —— 那正是 0.1.9 那次判错的地方
-        Posture::Healthy | Posture::Partial => BootRoute::Dashboard,
+        // **不管 install.done 写的是什么** —— 那正是 0.1.9 那次判错的地方。
+        // `Stopped`（I16 · P0-4）同样走面板：什么都不缺，只是没跑
+        Posture::Healthy | Posture::Partial | Posture::Stopped => BootRoute::Dashboard,
         // 只装了一半：容器有一部分。**也算装过** ——
         // 回向导只会让用户再装一遍，面板上说清缺哪几个才是对的
         Posture::Incomplete => BootRoute::Dashboard,
@@ -1810,6 +1811,11 @@ pub struct BackupSettings {
     /// 检测到的外接盘上的建议位置（**只建议，不自动选**）
     #[serde(default)]
     pub external_suggestions: Vec<String>,
+    /// **上一次挂定时任务时系统报的原话**（I16 · P0-3）。空 = 上一次挂成了。
+    /// 非空时运行面板出一条红横幅 —— 「以为有每日备份，其实一次没跑过」
+    /// 比备份失败本身更危险。
+    #[serde(default)]
+    pub schedule_error: String,
 }
 
 fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
@@ -1834,6 +1840,7 @@ fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
             .to_string_lossy()
             .into_owned(),
         external_suggestions: crate::backup::external_suggestions(),
+        schedule_error: c.backup.schedule_error.clone(),
     }
 }
 
@@ -1907,6 +1914,10 @@ pub async fn write_backup_settings(
         if let Err(e) = crate::schedule::sync(|t| crate::linfo!("定时备份：{t}")) {
             crate::lwarn!("定时备份任务没装成：{}", e.msg);
         }
+        // `sync` 会把成败写进 `[backup] schedule_error`，**要重新读一遍**再回给界面 ——
+        // 回手上这份旧的等于「刚刚失败了，界面上却什么都没变」
+        let c = crate::config::LauncherConfig::load();
+        st.set_config(c.clone());
         Ok(to_backup_settings(&c))
     })
     .await
@@ -1916,6 +1927,29 @@ pub async fn write_backup_settings(
 #[tauri::command]
 pub async fn backup_schedule_status() -> Result<crate::schedule::Status> {
     blocking(|| Ok(crate::schedule::status())).await
+}
+
+/// 运行面板那条「定时任务没装上」红横幅上的「再试一次」（I16 · P0-3）。
+///
+/// 就是再跑一遍 [`crate::schedule::sync`]，然后把**重新读过的**设置回给界面。
+/// 成了红横幅自己就消失（`schedule_error` 被清空），没成的话横幅上换成新的原话。
+#[tauri::command]
+pub async fn retry_backup_schedule(app: tauri::AppHandle) -> Result<BackupSettings> {
+    blocking(move || {
+        let st = state(&app);
+        match crate::schedule::sync(|t| crate::linfo!("重挂定时备份：{t}")) {
+            Ok(s) => crate::linfo!(
+                "重挂定时备份：已对齐（想要 {} · 系统里 {}）",
+                s.wanted,
+                s.installed
+            ),
+            Err(e) => crate::lwarn!("重挂定时备份：还是没成 —— {}", e.msg),
+        }
+        let c = crate::config::LauncherConfig::load();
+        st.set_config(c.clone());
+        Ok(to_backup_settings(&c))
+    })
+    .await
 }
 
 /// 恢复前的只读体检。

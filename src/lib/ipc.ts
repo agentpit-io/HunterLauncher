@@ -509,6 +509,12 @@ export async function backupScheduleStatus(): Promise<ScheduleStatus> {
   return call<ScheduleStatus>('backup_schedule_status')
 }
 
+/** 重挂定时备份任务（运行面板那条红横幅上的「再试一次」，I16 · P0-3）。 */
+export async function retryBackupSchedule(): Promise<BackupSettings> {
+  if (DEMO) return { ...demo.demoBackupSettings, scheduleError: '' }
+  return call<BackupSettings>('retry_backup_schedule')
+}
+
 export async function restorePreflight(id: string): Promise<RestorePreflight> {
   if (DEMO) return demo.demoPreflight
   return call<RestorePreflight>('restore_preflight', { id })

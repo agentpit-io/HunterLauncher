@@ -21,13 +21,22 @@
 //! 一次本机 HTTP GET、（深查时）一个 `--rm` 的一次性容器。
 //! 本项目的容器、卷、配置文件一个字节都不碰。
 //!
-//! ## 四种结论，对应四种做法
+//! ## 五种结论，对应五种做法
+//!
+//! **`Stopped` 是 I16 补的，来自客户 2026-09-26 那份 Windows 诊断包。**
+//! 他那台机器上 `docker compose ps` 六个容器全是 `exited`，
+//! 0.1.15 却判成 `Partial` 并且说「Hunter 在跑，但 web、api…还没就绪、网页打不开」。
+//! `exited`（退出了）和「起来了但健康检查没过」是两回事，**处置也完全不同**：
+//! 前者该点「启动」，后者该等一等或者看日志。把前者说成后者，
+//! 等于把用户往错误的方向引 —— 而界面上还同时出现了
+//! 「Hunter 运行中」＋「v1.2.2 · 容器已停止」这种自相矛盾的一屏。
 //!
 //! | 结论 | 现场 | 该做什么 |
 //! |---|---|---|
 //! | [`Posture::Absent`] | 本项目一个容器都没有 | 完整安装 |
 //! | [`Posture::Incomplete`] | 六个服务只有一部分建出来过 | 完整安装（镜像本机已有的话拉取那步是空跑） |
-//! | [`Posture::Partial`] | 六个容器都在，但有的没就绪 / web 打不开 | **只修不正常的那部分** |
+//! | [`Posture::Stopped`] | 六个容器都建齐了，但一个在跑的都没有 | **点「启动」就行**（不用装、不用拉、不用修） |
+//! | [`Posture::Partial`] | 有容器在跑，但有的没就绪 / web 打不开 | **只修不正常的那部分** |
 //! | [`Posture::Healthy`] | 6/6 就绪、web 打得开（深查时还要容器连得上网关） | **什么都不做**，直接用 |
 
 use std::time::{Duration, Instant};
@@ -51,7 +60,9 @@ pub enum Posture {
     Absent,
     /// 存在，但六个服务没建齐 —— 上一次装到一半
     Incomplete,
-    /// 六个都在，但有的不正常
+    /// 六个容器都建齐了，**但一个在跑的都没有**（I16 · P0-4）
+    Stopped,
+    /// 六个都在、至少有一个在跑，但有的不正常
     Partial,
     /// 全好
     Healthy,
@@ -62,6 +73,7 @@ impl Posture {
         match self {
             Posture::Absent => "这台机器上还没有 Hunter",
             Posture::Incomplete => "上一次只装了一半",
+            Posture::Stopped => "装好了，但容器都停着",
             Posture::Partial => "Hunter 在跑，但有服务不正常",
             Posture::Healthy => "Hunter 已经在正常运行",
         }
@@ -114,6 +126,84 @@ impl Review {
     pub fn services_all_ready(&self) -> bool {
         self.total > 0 && self.ready == self.total && self.missing.is_empty()
     }
+}
+
+/// 这个容器状态算不算「跑过、然后停了」。
+///
+/// compose 报的状态就那么几种：`running` / `exited` / `created` / `restarting` /
+/// `paused` / `dead` / `removing`。`created` 由上面「装到一半的残骸」那一档先接走；
+/// `restarting` **不算** —— 那是正在挣扎，不是停着，处置也不同（要看日志）。
+pub fn is_down(state: &str) -> bool {
+    matches!(state, "exited" | "dead")
+}
+
+/// 六个容器都在的前提下，**光看容器状态**能得出的三种结论。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByContainers {
+    /// 有容器「建出来过但一次都没跑起来」—— 上一次装到一半留下的残骸
+    Stale,
+    /// 一个在跑的都没有（全 `exited` / `dead`）
+    AllDown,
+    /// 其余：至少有一个在跑
+    Mixed,
+}
+
+/// [`judge_containers`] 的结果。名单都带出来，界面要逐个说。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerVerdict {
+    pub kind: ByContainers,
+    /// `created`（建出来过但没跑过）的那几个
+    pub stale: Vec<String>,
+    /// 退出了的那几个
+    pub down: Vec<String>,
+    /// 没就绪的那几个（**包含** `down` 里的）
+    pub unready: Vec<String>,
+}
+
+/// 光看容器状态判一次。**做成纯函数**，理由和 `commands::route_of` 一样：
+/// 「六个全 exited」这种现场在开发机与测试机上要造出来很麻烦，
+/// 而它正是客户 2026-09-26 那台 Windows 上的真实样子。
+///
+/// 三档的顺序不能换：
+///
+/// 1. `created` 先接走（I5 §六.5）—— 那些容器身上冻着**上一次那组端口**，
+///    当成「只差起一下」去 `up`，起来的还是旧端口，照样撞车；
+/// 2. 再看「一个在跑的都没有」（I16 · P0-4）；
+/// 3. 剩下的才是「有在跑的，但有的不正常」。
+pub fn judge_containers(ours: &[ServiceStatus]) -> ContainerVerdict {
+    let stale: Vec<String> = ours
+        .iter()
+        .filter(|s| s.state == "created")
+        .map(|s| s.service.clone())
+        .collect();
+    let down: Vec<String> = ours
+        .iter()
+        .filter(|s| is_down(&s.state))
+        .map(|s| s.service.clone())
+        .collect();
+    let unready: Vec<String> = ours
+        .iter()
+        .filter(|s| !compose::service_ready(s))
+        .map(|s| s.service.clone())
+        .collect();
+    let kind = if !stale.is_empty() {
+        ByContainers::Stale
+    } else if !ours.is_empty() && down.len() == ours.len() {
+        ByContainers::AllDown
+    } else {
+        ByContainers::Mixed
+    };
+    ContainerVerdict {
+        kind,
+        stale,
+        down,
+        unready,
+    }
+}
+
+/// 配置里记的 web 端口。容器全停着的时候 docker 不报端口，只能退回配置。
+fn cfg_web_port() -> u16 {
+    LauncherConfig::load().hunter.ports.web
 }
 
 /// 磁盘上有没有这一套的配置。两份文件缺一个就不算「装过」。
@@ -216,30 +306,46 @@ pub fn review(deep: bool) -> Review {
         );
     }
 
-    // **「已创建但一次都没跑起来」的容器不算一套装好的 Hunter**（I5 §六.5）。
-    //
-    // 那是上一次起到一半被打断留下的残骸（用户 Mac 上 0.1.4 的现场就有 3 个），
-    // 它们身上冻着的是**当时那一组端口**。把它们当成「只差起一下」去 `up`，
-    // 起来的仍然是旧端口，照样撞车。这一档要走完整流程：
-    // 清残骸 → 重新算端口 → 重新起（这条路 I5 起就有，别绕过它）。
-    let stale: Vec<String> = ours
-        .iter()
-        .filter(|s| s.state == "created")
-        .map(|s| s.service.clone())
-        .collect();
-    if !stale.is_empty() {
-        lines.push(format!(
-            "这几个容器建出来过但一次都没跑起来（上一次装到一半留下的）：{}",
-            stale.join("、")
-        ));
-        return finish(Posture::Incomplete, ours, None, None, lines, t0, deep, None);
+    // 六个容器都在了，**光看容器状态**能得出什么结论 —— 见 [`judge_containers`]
+    let verdict = judge_containers(&ours);
+    let unready = verdict.unready.clone();
+    match verdict.kind {
+        ByContainers::Stale => {
+            lines.push(format!(
+                "这几个容器建出来过但一次都没跑起来（上一次装到一半留下的）：{}",
+                verdict.stale.join("、")
+            ));
+            return finish(Posture::Incomplete, ours, None, None, lines, t0, deep, None);
+        }
+        ByContainers::AllDown => {
+            lines.push(format!(
+                "{} 个容器全部已退出 —— 装是装好了，只是没在跑",
+                ours.len()
+            ));
+            // 这一档**不去探 web**：那个端口上本来就不会有人应答，
+            // 探它只是白等 6 秒，再多报一句「网页打不开」把话说重了
+            return finish_full(
+                Posture::Stopped,
+                ours,
+                None,
+                None,
+                lines,
+                t0,
+                deep,
+                missing,
+                unready,
+                Some(cfg_web_port()),
+            );
+        }
+        ByContainers::Mixed => {
+            if !verdict.down.is_empty() {
+                lines.push(format!(
+                    "这几个容器退出了（不是「还没就绪」）：{}",
+                    verdict.down.join("、")
+                ));
+            }
+        }
     }
-
-    let unready: Vec<String> = ours
-        .iter()
-        .filter(|s| !compose::service_ready(s))
-        .map(|s| s.service.clone())
-        .collect();
 
     // ③ web 打得开吗。端口以 docker 报的为准（配置只是意图）
     let cfg = LauncherConfig::load();
@@ -345,6 +451,8 @@ fn finish_full(
     // 深查：容器连得上模型网关吗。六个绿灯 + 容器上不了网 = 用户一句话都问不出来
     let mut container_net = None;
     if deep && matches!(posture, Posture::Healthy | Posture::Partial) {
+        // 注意：`Stopped` 不在这里 —— 容器都停着的时候起一个一次性容器去探网关，
+        // 探出来的既不是「Hunter 能不能上网」也不是用户此刻关心的事
         let o = crate::runtime::netcheck::probe();
         lines.push(o.one_line());
         if !o.ok && o.fail != crate::runtime::netcheck::Fail::NotRun {
@@ -353,8 +461,9 @@ fn finish_full(
         container_net = Some(o);
     }
 
+    // 停着的时候不给地址：那个端口上没有人应答，给出去就是一个点不开的链接
     let web_url = web_port
-        .filter(|_| !matches!(posture, Posture::Absent))
+        .filter(|_| !matches!(posture, Posture::Absent | Posture::Stopped))
         .map(|p| format!("http://localhost:{p}"));
 
     let headline = match posture {
@@ -363,10 +472,29 @@ fn finish_full(
             "上一次装到一半就断了：容器建出来过，但一次都没跑起来".to_string()
         }
         Posture::Incomplete => format!("上一次只装了一半：{} 还没有容器", missing.join("、")),
+        Posture::Stopped => format!(
+            "Hunter 装好了，但 {} 个容器都停着 —— 点「启动」就能用",
+            services.len()
+        ),
         Posture::Partial => {
             let mut what: Vec<String> = Vec::new();
-            if !unready.is_empty() {
-                what.push(format!("{} 还没就绪", unready.join("、")));
+            // **停着的和没就绪的分开说**（I16 · P0-4）。混在一起说成「还没就绪」，
+            // 用户会去等、去翻日志，而他实际上只要点一下「启动」
+            let down: Vec<&str> = services
+                .iter()
+                .filter(|s| is_down(&s.state))
+                .map(|s| s.service.as_str())
+                .collect();
+            let not_ready: Vec<&str> = unready
+                .iter()
+                .map(String::as_str)
+                .filter(|n| !down.contains(n))
+                .collect();
+            if !down.is_empty() {
+                what.push(format!("{} 停着（需要启动）", down.join("、")));
+            }
+            if !not_ready.is_empty() {
+                what.push(format!("{} 还没就绪", not_ready.join("、")));
             }
             if web_status.is_none() {
                 what.push("网页打不开".into());
@@ -522,6 +650,129 @@ mod tests {
             .iter()
             .map(|n| svc(n, "running", compose::Health::Healthy, Some(3100)))
             .collect()
+    }
+
+    /// 三种现场，**三种说法必须互不相同**（I16 · P0-4）。
+    ///
+    /// 客户 2026-09-26 那台 Windows 上六个容器全是 `exited`，
+    /// 0.1.15 说的却是「Hunter 在跑，但 web、api、opencode、llm-shim、postgres、redis
+    /// 还没就绪、网页打不开」—— 把「退出了」说成了「还没就绪」，
+    /// 而这两件事该做的动作完全不同（前者点启动，后者等一等或看日志）。
+    #[test]
+    fn 全_exited_与_一半_exited_与_全健康_要说三种话() {
+        let all_exit: Vec<ServiceStatus> = EXPECTED
+            .iter()
+            .map(|n| svc(n, "exited", compose::Health::Pending, None))
+            .collect();
+        let v = judge_containers(&all_exit);
+        assert_eq!(
+            v.kind,
+            ByContainers::AllDown,
+            "六个全 exited 就是「都停着」"
+        );
+        assert_eq!(v.down.len(), 6);
+
+        let mut half = all_healthy();
+        for i in 0..3 {
+            half[i] = svc(EXPECTED[i], "exited", compose::Health::Pending, None);
+        }
+        let v2 = judge_containers(&half);
+        assert_eq!(
+            v2.kind,
+            ByContainers::Mixed,
+            "还有三个在跑，就不是「都停着」"
+        );
+        assert_eq!(v2.down.len(), 3);
+
+        let v3 = judge_containers(&all_healthy());
+        assert_eq!(v3.kind, ByContainers::Mixed);
+        assert!(v3.down.is_empty() && v3.unready.is_empty());
+
+        // 三句话
+        let say = |posture, services: Vec<ServiceStatus>, unready: Vec<String>, web| {
+            finish_full(
+                posture,
+                services,
+                web,
+                None,
+                Vec::new(),
+                Instant::now(),
+                false,
+                Vec::new(),
+                unready,
+                Some(3100),
+            )
+            .headline
+        };
+        let a = say(Posture::Stopped, all_exit.clone(), v.unready.clone(), None);
+        let b = say(
+            Posture::Partial,
+            half.clone(),
+            v2.unready.clone(),
+            Some(200),
+        );
+        let c = say(Posture::Healthy, all_healthy(), Vec::new(), Some(200));
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+        assert!(a.contains("都停着"), "全停着要说「都停着」：{a}");
+        assert!(
+            !a.contains("还没就绪") && !a.contains("网页打不开"),
+            "全停着不该说成「还没就绪 / 网页打不开」：{a}"
+        );
+        assert!(
+            b.contains("停着（需要启动）") && b.contains("web"),
+            "一半停着要点名说哪几个停了：{b}"
+        );
+        assert!(c.contains("已经在正常运行"), "{c}");
+    }
+
+    /// `restarting` 不是「停着」——它正在挣扎，处置是看日志，不是点启动。
+    #[test]
+    fn restarting_不算停着() {
+        assert!(!is_down("restarting"));
+        assert!(is_down("exited") && is_down("dead"));
+        let v = judge_containers(
+            &EXPECTED
+                .iter()
+                .map(|n| svc(n, "restarting", compose::Health::Pending, None))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(v.kind, ByContainers::Mixed);
+    }
+
+    /// `created` 那一档要**排在**「全停着」前面：那些容器身上冻着上一次那组端口。
+    #[test]
+    fn created_的残骸优先于全停着() {
+        let mut v: Vec<ServiceStatus> = EXPECTED
+            .iter()
+            .map(|n| svc(n, "exited", compose::Health::Pending, None))
+            .collect();
+        v[0] = svc("web", "created", compose::Health::Pending, None);
+        assert_eq!(judge_containers(&v).kind, ByContainers::Stale);
+    }
+
+    /// 全停着的时候**不给网页地址** —— 那个端口上没有人应答。
+    #[test]
+    fn 全停着不给一个点不开的网址() {
+        let all_exit: Vec<ServiceStatus> = EXPECTED
+            .iter()
+            .map(|n| svc(n, "exited", compose::Health::Pending, None))
+            .collect();
+        let r = finish_full(
+            Posture::Stopped,
+            all_exit,
+            None,
+            None,
+            Vec::new(),
+            Instant::now(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            Some(3100),
+        );
+        assert!(r.web_url.is_none(), "{:?}", r.web_url);
+        assert!(!r.all_good());
     }
 
     #[test]

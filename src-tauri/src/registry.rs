@@ -231,12 +231,32 @@ fn probe_data_plane(c: &Candidate, tag: &str, timeout: Duration) -> AppResult<()
     let url = format!("https://{}/v2/{}/blobs/{}", c.host, c.probe_repo, digest);
     let range = format!("bytes=0-{}", PROBE_RANGE_BYTES - 1);
 
-    let first = crate::http::get(&url, &[("Range", &range)], timeout)?;
+    // **必须按字节读**（I16 追加，真机上撞出来的）。
+    //
+    // 原来这里用的是 `http::get`，它把正文读成 `String`
+    // （`read_to_string().unwrap_or_default()`）—— 镜像层是 gzip 二进制，
+    // 那一行永远返回空串，于是下面那句 `body.is_empty()` 对
+    // **每一个真实镜像源**都成立：`probe` 判两个源全不可用、
+    // `choose` 报「所有候选镜像源上都拉不到」，一台干净机器什么都装不上。
+    //
+    // 测试机 2026-09-26 的实测：同一层 `curl -r 0-262143` 是
+    // `http=206 size=32`（32 字节的 gzip 空层），启动器却说「一个字节都没给」。
+    // **单测发现不了它** —— 这一条只有真的连一次真 registry 才看得见
+    // （`scripts/i16-probe-test.sh` 就是为此加的）。
+    let cap = PROBE_RANGE_BYTES + 4096;
+    let first = crate::http::get_bytes_headers(&url, &[("Range", &range)], timeout, cap)
+        .map_err(layer_err)?;
     let resp = if first.status == 401 {
         let challenge = first.header("www-authenticate").unwrap_or("").to_string();
         let token = fetch_token(&c.host, &c.probe_repo, &challenge, timeout)?;
         let auth = format!("Bearer {token}");
-        crate::http::get(&url, &[("Range", &range), ("Authorization", &auth)], timeout)?
+        crate::http::get_bytes_headers(
+            &url,
+            &[("Range", &range), ("Authorization", &auth)],
+            timeout,
+            cap,
+        )
+        .map_err(layer_err)?
     } else {
         first
     };
@@ -255,6 +275,23 @@ fn probe_data_plane(c: &Candidate, tag: &str, timeout: Duration) -> AppResult<()
         ));
     }
     Ok(())
+}
+
+/// 层那一侧的错误，**要说清楚它和 manifest 不是同一个主机**。
+///
+/// 不加这一句的话，原话是「请求 ghcr.io 失败：timeout: global」——
+/// 可 ghcr.io 明明刚刚 378 毫秒就把 manifest 给了，这句话会把人引到错的方向。
+/// 真正超时的是那个 307 跳过去的地址（`pkg-containers.githubusercontent.com`），
+/// `http` 那一层报的却是原始 URL 的主机名。
+fn layer_err(e: AppError) -> AppError {
+    AppError::new(
+        e.code,
+        format!(
+            "{}（层数据常常不在 manifest 那个主机上 —— \
+             GHCR 的层在 pkg-containers.githubusercontent.com，manifest 通不代表层通）",
+            e.msg
+        ),
+    )
 }
 
 /// 挑这个镜像里**最小的一层**的 digest。探数据面用，越小越省事。
@@ -300,12 +337,14 @@ fn smallest_layer_digest(
             .and_then(|m| m.get("digest"))
             .and_then(|d| d.as_str())
             .ok_or_else(|| {
-                AppError::new(Code::PullFailed, format!("这个镜像没有 linux/{arch} 的版本"))
+                AppError::new(
+                    Code::PullFailed,
+                    format!("这个镜像没有 linux/{arch} 的版本"),
+                )
             })?;
         let sub = get_manifest(host, repo, digest, timeout)?;
-        let sv: serde_json::Value = serde_json::from_str(&sub).map_err(|e| {
-            AppError::new(Code::PullFailed, format!("子 manifest 不是 JSON：{e}"))
-        })?;
+        let sv: serde_json::Value = serde_json::from_str(&sub)
+            .map_err(|e| AppError::new(Code::PullFailed, format!("子 manifest 不是 JSON：{e}")))?;
         layers_owned = sv
             .get("layers")
             .and_then(|l| l.as_array())
@@ -838,5 +877,65 @@ mod tests {
         // 只断言映射表本身，不断言跑在哪台机器上
         assert!(matches!(oci_arch(), "amd64" | "arm64" | "arm" | _));
         assert_eq!(std::env::consts::ARCH == "x86_64", oci_arch() == "amd64");
+    }
+    // ── I16 追加：选源探测的真机验收 ─────────────────────────────────
+    //
+    // 这一条**默认不跑**（`#[ignore]`）：它要求这台机器上
+    // `pkg-containers.githubusercontent.com`（GHCR 放层数据的地方）连不上，
+    // 而 `ghcr.io`（放 manifest 的地方）照常通 —— 那正是 2026-09-26
+    // 那位 Windows 用户的现场。`scripts/i16-probe-test.sh` 负责造这个现场
+    // （往 /etc/hosts 加一行黑洞地址，退出时写回）。
+    //
+    // 为什么不做成普通单测：`probe()` 走的是真 TLS、真 HTTP、真 307 跳转。
+    // 把它 mock 掉就等于不测 —— 而「探的东西和真正要下载的东西不是同一样东西」
+    // 恰恰是 mock 永远发现不了的那一类问题。本轮真机跑这一条时当场撞出了
+    // 一个更要命的 bug：`probe_data_plane` 原来用 `http::get` 读层数据，
+    // 而那个函数把正文读成 `String` —— gzip 二进制永远读成空串，
+    // 于是**每一个真实镜像源**都被判成「连上了，但一个字节都没给」。
+    // 13 条单测全绿，一台干净机器却什么都装不上。
+
+    /// **元数据通、层数据下不来的源，必须判不可用；另一个源要被选中。**
+    #[test]
+    #[ignore = "要先用 scripts/i16-probe-test.sh 把 GHCR 的层那一侧堵掉"]
+    fn probe_真机_层数据下不来的源要判不可用并且选另一个() {
+        assert!(
+            std::env::var("HL_BLOCKED_LAYER_HOST").is_ok(),
+            "这条测试要求先造好现场，直接跑没有意义 —— 用 scripts/i16-probe-test.sh"
+        );
+        let t = Duration::from_secs(20);
+        let ghcr = probe(by_id("ghcr").expect("没有 ghcr 这个候选"), "1.2.2", t);
+        let tencent = probe(by_id("tencent").expect("没有 tencent 这个候选"), "1.2.2", t);
+        eprintln!("ghcr    → {ghcr:?}");
+        eprintln!("tencent → {tencent:?}");
+
+        // ① 元数据那一侧是通的 —— 不然这条测试测的就不是我们要测的东西
+        assert!(
+            ghcr.elapsed_ms > 0,
+            "manifest 那一步都没走到，现场没造对：{ghcr:?}"
+        );
+        // ② 层数据下不来 → 判不可用，而且原因要说清楚卡在哪一面
+        assert!(!ghcr.available, "层数据下不来却判成可用：{ghcr:?}");
+        assert!(!ghcr.data_ok);
+        assert!(
+            ghcr.data_ms.is_none(),
+            "没测成就不该给一个耗时数字（红线 1）"
+        );
+        let detail = ghcr.detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("元数据能拿到，但层数据下不来"),
+            "原因要说清楚卡在哪一面：{detail}"
+        );
+        // ③ 另一个源照常可用，而且 data_ms 是实测值
+        assert!(
+            tencent.available && tencent.data_ok,
+            "对照那个源该是通的（它通不了就没法比）：{tencent:?}"
+        );
+        assert!(tencent.data_ms.is_some());
+        // ④ 排序与选源：下不动的那个不许排第一
+        let mut all = vec![ghcr.clone(), tencent.clone()];
+        all.sort_by_key(|r| (!r.available, r.data_ms.unwrap_or(u64::MAX), r.elapsed_ms));
+        assert_eq!(all[0].id, "tencent", "选源选错了：{all:?}");
+        let (chosen, _) = choose("1.2.2", t).expect("还有一个源可用，不该整体失败");
+        assert_eq!(chosen.id, "tencent", "choose 该躲开下不动的那个源");
     }
 }

@@ -835,6 +835,14 @@ export interface BackupSettings {
   diskFreeBytes: number | null
   suggestedDir: string
   externalSuggestions: string[]
+  /**
+   * 上一次挂定时任务时系统报的原话（I16 · P0-3）。空 = 上一次挂成了。
+   *
+   * 非空时运行面板出一条红横幅：客户那台 Windows 上
+   * `schtasks /Create` 每次都失败，0.1.15 只写进日志，
+   * 于是他以为自己有每日自动备份 —— 实际上一次都没跑过。
+   */
+  scheduleError: string
 }
 
 export interface ScheduleStatus {
@@ -1105,8 +1113,13 @@ export interface AssistOutcome {
 
 // ── 现状复查（I11 · U1 / U2）──────────────────────────────────────────────
 
-/** 复查的四种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。 */
-export type Posture = 'absent' | 'incomplete' | 'partial' | 'healthy'
+/**
+ * 复查的五种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。
+ *
+ * `stopped` 是 I16 补的：六个容器都建齐了、但一个在跑的都没有。
+ * 在这之前它被并进 `partial`，界面于是把「容器退出了」说成「还没就绪」。
+ */
+export type Posture = 'absent' | 'incomplete' | 'stopped' | 'partial' | 'healthy'
 
 /**
  * 「Hunter 现在到底在不在跑」的一次只读复查。

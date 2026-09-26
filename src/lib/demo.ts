@@ -635,6 +635,7 @@ export const demoBackupSettings: BackupSettings = {
   diskFreeBytes: 76_836_319_232,
   suggestedDir: '/home/user/Hunter-backups',
   externalSuggestions: ['/media/user/T7/Hunter 备份'],
+  scheduleError: '',
 }
 
 export const demoSchedule: ScheduleStatus = {

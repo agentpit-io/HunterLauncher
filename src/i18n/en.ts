@@ -407,6 +407,7 @@ const en: Dict = {
     running: 'Hunter is running',
     stopped: 'Hunter is stopped',
     starting: 'Hunter is starting',
+    checking: 'Checking Hunter…',
     subline: (tag: string, uptime: string, url: string) => `${tag} · up ${uptime} · ${url}`,
     sublineStopped: (tag: string) => `${tag} · containers stopped`,
     openHunter: 'Open Hunter',
@@ -472,6 +473,10 @@ const en: Dict = {
     missedBackup: 'A scheduled backup seems to have been missed',
     backupNow: 'Back up now',
     backingUp: 'Backing up…',
+    scheduleBroken: (why: string) =>
+      `The daily automatic backup is not scheduled — it will never run on this computer: ${why}`,
+    scheduleRetry: 'Schedule it again',
+    scheduleRetrying: 'Scheduling…',
   },
   backup: {
     title: 'Backup & restore',
@@ -503,6 +508,7 @@ const en: Dict = {
     scheduleOff: 'Automatic backup is off',
     scheduleNext: (s: string) => `Next: ${s}`,
     scheduleMech: (s: string) => `Using ${s}`,
+    scheduleWhy: (why: string) => `Last time we tried to schedule it the system said: ${why}`,
     scheduleNotInstalled: 'The scheduled task is not installed yet',
     scheduleUnsupported: 'This machine has no usable scheduler, so backups will not run while the launcher is closed',
     restoreTitle: 'Restore data',

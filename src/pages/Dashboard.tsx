@@ -63,6 +63,7 @@ export function Dashboard() {
     () => ipc.demoPage() === 'uninstall' || ipc.demoPage() === 'uninstall-all',
   )
   const [backupNonce, setBackupNonce] = useState(0)
+  const [schedRetrying, setSchedRetrying] = useState(false)
   const bk = useAsync<BackupSettings>(() => ipc.readBackupSettings(), [backupNonce])
   const [backingUp, setBackingUp] = useState(false)
   const d = rt.data
@@ -138,6 +139,17 @@ export function Dashboard() {
   }
 
   /** 面板上那条「立即备份一次」。做完刷新那一行，失败就把原话摆出来。 */
+  // I16 · P0-3：红横幅上的「再挂一次」。成了横幅自己消失，没成就换成新的原话
+  async function retrySchedule() {
+    setSchedRetrying(true)
+    try {
+      await ipc.retryBackupSchedule()
+    } finally {
+      setSchedRetrying(false)
+      setBackupNonce((v) => v + 1)
+    }
+  }
+
   async function backupNow() {
     setBackingUp(true)
     setNote(null)
@@ -181,8 +193,19 @@ export function Dashboard() {
         <div className="flex items-center gap-[11px]">
           <StatusDot health={running ? 'healthy' : 'pending'} size={12} />
           <div>
-            <h1 className="text-3xl font-semibold leading-none text-ink">
-              {state.name === 'Stopped' ? t.dashboard.stopped : state.name === 'Upgrading' ? t.dashboard.starting : t.dashboard.running}
+            {/* I16 · P0-4：**大标题跟着「现在到底有没有在跑」走，不跟状态机的名字走。**
+                0.1.15 只在 `state.name === 'Stopped'` 时才写「已停止」，
+                于是客户那台 Windows 上（状态机停在 Ready、六个容器全 exited）
+                出现了「Hunter 运行中」＋下一行「v1.2.2 · 容器已停止」这种自相矛盾的一屏。
+                还没拿到数据的那几秒说「正在检查」—— 那时候说「已停止」是冤枉自己。 */}
+            <h1 className="text-3xl font-semibold leading-none text-ink" data-testid="dash-title">
+              {state.name === 'Upgrading'
+                ? t.dashboard.starting
+                : !d
+                  ? t.dashboard.checking
+                  : running
+                    ? t.dashboard.running
+                    : t.dashboard.stopped}
             </h1>
             <div className="tnum mt-[14px] text-md leading-none text-body">
               {d
@@ -322,6 +345,34 @@ export function Dashboard() {
       {/* I13 · R7：硬盘 / 内存 / 服务异常的提醒。排在资源卡之前 ——
           有问题的时候，用户要先看到结论，再去看那一堆数字 */}
       <AlertBanner />
+
+      {/* I16 · P0-3：**定时任务根本没挂上**。排在「上一次备份失败」之前 ——
+          「某一次没成」和「一次都不会跑」是两件事，后者严重得多。
+          客户那台 Windows（0.1.15）从装机第一天起就是这样，
+          日志里两行 `schtasks /Create 失败`，界面上一个字都没有。 */}
+      {bk.data && bk.data.enabled && bk.data.scheduleError && (
+        <div
+          className="mt-[14px] flex shrink-0 items-center justify-between gap-4 rounded-md border border-danger/45 bg-danger-soft px-4 py-2.5"
+          data-testid="schedule-banner"
+        >
+          <span className="min-w-0 text-sm leading-[1.45] text-danger">
+            {t.dashboard.scheduleBroken(bk.data.scheduleError)}
+          </span>
+          <div className="flex shrink-0 gap-[10px]">
+            <Button
+              size="sm"
+              data-testid="schedule-retry"
+              disabled={schedRetrying}
+              onClick={() => void retrySchedule()}
+            >
+              {schedRetrying ? t.dashboard.scheduleRetrying : t.dashboard.scheduleRetry}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setOverlay('backup')}>
+              {t.dashboard.openBackup}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* I13 · R6：上一次自动备份失败了，或者它好像错过了一次。
           这条只在**真的出事**时出现；一切正常时面板上一个字都不多 */}

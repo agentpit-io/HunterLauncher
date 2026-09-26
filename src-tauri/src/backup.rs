@@ -645,8 +645,10 @@ fn pipe_capture(
             Err(e) => return Err(AppError::new(Code::UpdateFailed, format!("等 {what}：{e}"))),
         }
     };
-    let out = String::from_utf8_lossy(&ho.join().unwrap_or_default()).into_owned();
-    let err = String::from_utf8_lossy(&he.join().unwrap_or_default()).into_owned();
+    // 解码走 `proc::decode_output`（I16 · P0-3）：Windows 上 docker / pg_dump
+    // 报的错可能是 GBK，当 UTF-8 解出来是一串问号，等于把原因扔了
+    let out = crate::proc::decode_output(&ho.join().unwrap_or_default());
+    let err = crate::proc::decode_output(&he.join().unwrap_or_default());
     Ok((status, out, err))
 }
 

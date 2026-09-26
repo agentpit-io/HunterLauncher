@@ -194,6 +194,7 @@ pub fn run() {
             commands::read_backup_settings,
             commands::write_backup_settings,
             commands::backup_schedule_status,
+            commands::retry_backup_schedule,
             commands::restore_preflight,
             commands::restore_confirm_text,
             commands::backups_in_dir,

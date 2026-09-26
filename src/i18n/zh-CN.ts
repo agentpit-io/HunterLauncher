@@ -416,6 +416,8 @@ const zhCN = {
     running: 'Hunter 运行中',
     stopped: 'Hunter 已停止',
     starting: 'Hunter 启动中',
+    // I16 · P0-4：还没拿到 docker ps 的结果之前，不许说「运行中」也不许说「已停止」
+    checking: '正在检查 Hunter 状态…',
     subline: (tag: string, uptime: string, url: string) => `${tag} · 已运行 ${uptime} · ${url}`,
     sublineStopped: (tag: string) => `${tag} · 容器已停止`,
     openHunter: '打开 Hunter',
@@ -487,6 +489,13 @@ const zhCN = {
     missedBackup: '自动备份好像错过了一次',
     backupNow: '立即备份一次',
     backingUp: '正在备份…',
+    // I16 · P0-3：定时任务没挂上。**比「某一次备份失败」还严重** ——
+    // 那是「一次都不会跑」，而用户以为自己有每日备份。
+    // 客户那台 Windows 上这件事从装机第一天起就是这样，日志里有、界面上一个字都没有。
+    scheduleBroken: (why: string) =>
+      `每日自动备份没有挂上，这台电脑上它一次都不会跑：${why}`,
+    scheduleRetry: '再挂一次',
+    scheduleRetrying: '正在挂…',
   },
   // ── I13 · R6 备份与恢复 ────────────────────────────────────────────────
   backup: {
@@ -519,6 +528,7 @@ const zhCN = {
     scheduleOff: '自动备份现在是关着的',
     scheduleNext: (s: string) => `下次：${s}`,
     scheduleMech: (s: string) => `用的是 ${s}`,
+    scheduleWhy: (why: string) => `上一次挂它的时候系统说：${why}`,
     scheduleNotInstalled: '定时任务还没装上',
     scheduleUnsupported: '这台机器上没有可用的定时机制，启动器关着的时候备份不会自动跑',
     // 恢复

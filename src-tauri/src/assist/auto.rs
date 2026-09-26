@@ -481,6 +481,9 @@ impl Orchestrator {
         match r.posture {
             crate::selfcheck::Posture::Healthy => Preflight::Reuse(r),
             crate::selfcheck::Posture::Partial => Preflight::FixOnly(r),
+            // 六个容器都建齐了、只是停着（I16 · P0-4）：**起一下就行**。
+            // 走完整安装会重新取 compose、重写配置、重拉镜像 —— 一件都不需要
+            crate::selfcheck::Posture::Stopped => Preflight::FixOnly(r),
             _ => Preflight::FullInstall,
         }
     }

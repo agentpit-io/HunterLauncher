@@ -593,7 +593,9 @@ pub fn pull(
                     *g = snap.clone();
                 }
                 on_progress(&snap);
-                linfo!("拉取完成，用时 {} 秒", agg.elapsed().as_secs());
+                // I16 · P2-5：本机已有的时候不能说「拉取完成，用时 4 秒」——
+                // 849 MB 四秒下完当然不可能，那句话让用户以为下载成功了
+                linfo!("{}", agg.done_line());
                 clear_offline(state);
                 state.tele(
                     "pull_done",
@@ -1505,7 +1507,11 @@ mod tests {
     #[test]
     fn 第一个源卡死就换另一个() {
         assert_eq!(
-            stall_decision(false, Some("hkccr.ccs.tencentyun.com/agentpit"), &set(&["ghcr.io/agentpit-io"])),
+            stall_decision(
+                false,
+                Some("hkccr.ccs.tencentyun.com/agentpit"),
+                &set(&["ghcr.io/agentpit-io"])
+            ),
             StallDecision::Switch
         );
     }
@@ -1533,14 +1539,20 @@ mod tests {
             StallDecision::GiveUp
         );
         let tail = stall_give_up_tail(1);
-        assert!(tail.contains("这个源试过了"), "只试过一个源时别说「N 个源」：{tail}");
+        assert!(
+            tail.contains("这个源试过了"),
+            "只试过一个源时别说「N 个源」：{tail}"
+        );
         assert!(!tail.contains("个镜像源都试过了"), "{tail}");
     }
 
     /// 压根没有别的源可换时也是认输（而不是原地重试到天荒地老）。
     #[test]
     fn 没有别的源可换就认输() {
-        assert_eq!(stall_decision(false, None, &set(&["ghcr.io/agentpit-io"])), StallDecision::GiveUp);
+        assert_eq!(
+            stall_decision(false, None, &set(&["ghcr.io/agentpit-io"])),
+            StallDecision::GiveUp
+        );
     }
 
     /// 运行面板每 10 秒刷一次状态。GitHub 对未认证请求的限额是**每小时 60 次** ——

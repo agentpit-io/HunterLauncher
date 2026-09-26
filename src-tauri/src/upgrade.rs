@@ -473,6 +473,25 @@ fn do_upgrade(
     };
     note("正在拉取新版本的镜像…");
     flow::pull(state, &prep, &opts, on_pull)?;
+    // I16 · P2-5：**拉完要说清到底下了没有。** 客户那台 Windows 上本机已经有
+    // 一整套镜像，首装时那句「拉取完成，用时 4 秒」让他以为下载成功了，
+    // 于是后面升级真要下载时卡住就显得莫名其妙
+    note(&{
+        let p = state
+            .pull
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| compose::PullProgress::empty());
+        if p.net_bytes == 0 {
+            format!("{} 个镜像本机都已有，没有下载", p.images.len())
+        } else {
+            format!(
+                "镜像拉好了：{} 个镜像共下载 {}",
+                p.images.len(),
+                flow::human_bytes(p.net_bytes)
+            )
+        }
+    });
 
     // ⑥ 起容器 + 等健康
     note("正在用新镜像重建容器…");

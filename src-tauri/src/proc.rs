@@ -31,6 +31,98 @@ use std::time::{Duration, Instant};
 
 use crate::err::{AppError, AppResult, Code};
 
+// ── 子进程输出的解码（I16 · P0-3） ────────────────────────────────────────
+
+/// 把子进程的一段输出字节解成字符串。
+///
+/// **不能一律 `String::from_utf8_lossy`。** 客户 2026-09-26 的 Windows 诊断包里，
+/// 定时备份装不上那一行长这样：
+///
+/// ```text
+/// 装完挂定时备份没成（不影响安装）：schtasks /Create 失败：����: δָ���Ĵ���
+/// ```
+///
+/// 那串东西不是乱码而已 —— 它是 GBK 字节被当成 UTF-8 解的结果。
+/// 把它按 GBK 解回来是 **`错误: 未指定的错误`**
+/// （`b4 ed ce f3 3a 20 ce b4 d6 b8 b6 a8 b5 c4 b4 ed ce f3`，
+/// 单测 `gbk_的_schtasks_报错要解成中文` 逐字节钉住了这件事）。
+///
+/// 后果有两层，第二层更严重：真正的原因我们**从来没看见过**；
+/// 而客户以为自己有每日自动备份，**实际上一次都没跑过**。
+///
+/// 规则（按平台走，不猜）：
+///
+/// 1. 先按 UTF-8 严格解。成了就用它 —— docker / git / 我们自己的程序都吐 UTF-8；
+/// 2. 解不动，才按这台机器的控制台代码页重解一遍（中文 Windows 是 936/GBK）；
+/// 3. 代码页不认识（例如 OEM 437，`encoding_rs` 只实现 WHATWG 那套编码）
+///    就退回 `from_utf8_lossy` —— **退回去也要退得明明白白**，不自己编码表。
+pub fn decode_output(bytes: &[u8]) -> String {
+    decode_console(bytes, ansi_codepage())
+}
+
+/// [`decode_output`] 的**纯函数**版：代码页由调用方给。
+///
+/// 拆出来只为一件事 —— 让「给一段 GBK 字节流，断言解出来是中文」这条单测
+/// 能在 Linux 上跑。我们手上一台 Windows 都没有，
+/// 把这段逻辑关进 `cfg(windows)` 就等于永远不测它。
+pub fn decode_console(bytes: &[u8], codepage: Option<u32>) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    match codepage.and_then(encoding_of_codepage) {
+        Some(enc) => enc.decode(bytes).0.into_owned(),
+        None => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+/// 代码页号 → `encoding_rs` 的编码。认不出来返回 `None`（退回 lossy，不瞎猜）。
+fn encoding_of_codepage(cp: u32) -> Option<&'static encoding_rs::Encoding> {
+    Some(match cp {
+        936 | 54936 => encoding_rs::GBK, // 简体中文（客户那台就是它）
+        950 => encoding_rs::BIG5,        // 繁体中文
+        932 => encoding_rs::SHIFT_JIS,   // 日文
+        949 => encoding_rs::EUC_KR,      // 韩文
+        874 => encoding_rs::WINDOWS_874, // 泰文
+        1250 => encoding_rs::WINDOWS_1250,
+        1251 => encoding_rs::WINDOWS_1251,
+        1252 => encoding_rs::WINDOWS_1252,
+        1253 => encoding_rs::WINDOWS_1253,
+        1254 => encoding_rs::WINDOWS_1254,
+        1255 => encoding_rs::WINDOWS_1255,
+        1256 => encoding_rs::WINDOWS_1256,
+        1257 => encoding_rs::WINDOWS_1257,
+        1258 => encoding_rs::WINDOWS_1258,
+        65001 => encoding_rs::UTF_8,
+        _ => return None,
+    })
+}
+
+/// 这台机器上「非 UTF-8 的那一路」该按哪个代码页解。非 Windows 一律 `None`。
+///
+/// 先问**控制台输出代码页**（子进程真正用来写 stdout/stderr 的那个），
+/// 问不到（GUI 程序没有控制台时 `GetConsoleOutputCP` 会返回 0）再问 ANSI 代码页。
+#[cfg(windows)]
+fn ansi_codepage() -> Option<u32> {
+    extern "system" {
+        fn GetConsoleOutputCP() -> u32;
+        fn GetACP() -> u32;
+    }
+    // SAFETY: 两个都是 kernel32 里无参数、无副作用、返回一个整数的函数
+    let cp = unsafe { GetConsoleOutputCP() };
+    if cp != 0 {
+        return Some(cp);
+    }
+    let cp = unsafe { GetACP() };
+    (cp != 0).then_some(cp)
+}
+
+#[cfg(not(windows))]
+fn ansi_codepage() -> Option<u32> {
+    // macOS 与 Linux 上子进程的输出就是 UTF-8（locale 再怪也不会是 GBK 的双字节流），
+    // 真解不动时 lossy 是对的：那说明它吐的是二进制，不是另一种文字编码
+    None
+}
+
 #[derive(Debug)]
 pub struct Ran {
     pub status: Option<i32>,
@@ -69,8 +161,8 @@ pub fn run_with_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> AppRe
         .map_err(|e| AppError::new(Code::Unknown, format!("无法执行 {program}：{e}")))?;
     Ok(Ran {
         status: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        stdout: decode_output(&out.stdout),
+        stderr: decode_output(&out.stderr),
     })
 }
 
@@ -202,8 +294,8 @@ fn run_cmd_timeout(
     let stderr = h_err.join().unwrap_or_default();
     Ok(Ran {
         status: status.code(),
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stdout: decode_output(&stdout),
+        stderr: decode_output(&stderr),
     })
 }
 
@@ -353,11 +445,29 @@ pub fn run_streaming(
         let collected: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&collected);
         let h = std::thread::spawn(move || {
-            let reader: Box<dyn BufRead> = match stream {
+            let mut reader: Box<dyn BufRead> = match stream {
                 Pipe::Out(s) => Box::new(BufReader::new(s)),
                 Pipe::Err(s) => Box::new(BufReader::new(s)),
             };
-            for line in reader.lines().map_while(Result::ok) {
+            // **按字节读，自己切行，再按 [`decode_output`] 解**（I16 · P0-3）。
+            //
+            // 原先是 `reader.lines().map_while(Result::ok)`：`Lines` 只吐
+            // `io::Result<String>`，碰到一行不是合法 UTF-8 就返回 `Err`，
+            // 而 `map_while(Result::ok)` 见 `Err` 即**整条流就此停读** ——
+            // 在中文 Windows 上，子进程随便吐一句 GBK 的错误提示，
+            // 后面所有输出（包括拉取进度）就全丢了，而且丢得悄无声息。
+            let mut buf: Vec<u8> = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+                while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+                    buf.pop();
+                }
+                let line = decode_output(&buf);
                 if let Ok(mut g) = sink.lock() {
                     g.push(line.clone());
                     if g.len() > tail {
@@ -859,5 +969,98 @@ mod tests {
         };
         assert_eq!(r.status, Some(0));
         assert!(r.stderr.len() > 1_000_000, "只读到 {} 字节", r.stderr.len());
+    }
+    // ── 子进程输出的解码（I16 · P0-3） ────────────────────────────────────
+
+    /// 客户 2026-09-26 那台中文 Windows 上真实发生过的一行。
+    ///
+    /// `schtasks` 用 GBK 吐了 `错误: 未指定的错误`，0.1.15 把它当 UTF-8 解，
+    /// 于是日志里只剩 `����: δָ���Ĵ���` —— 真正的原因我们一次都没看见过。
+    /// 这条单测**两个方向都钉住**：按 936 解得回中文，按 UTF-8 lossy 解就是那串东西。
+    #[test]
+    fn gbk_的_schtasks_报错要解成中文() {
+        // “错误: 未指定的错误” 的 GBK 字节，逐字节写死，不靠运行环境的 locale
+        let gbk: &[u8] = &[
+            0xb4, 0xed, 0xce, 0xf3, 0x3a, 0x20, 0xce, 0xb4, 0xd6, 0xb8, 0xb6, 0xa8, 0xb5, 0xc4,
+            0xb4, 0xed, 0xce, 0xf3,
+        ];
+        assert_eq!(
+            decode_console(gbk, Some(936)),
+            "错误: 未指定的错误",
+            "按 936（GBK）要解得回中文"
+        );
+        // 对照：0.1.15 的做法。这串就是客户诊断包里那一行的原文
+        assert_eq!(
+            String::from_utf8_lossy(gbk),
+            "����: δָ���Ĵ���",
+            "这是 0.1.15 的结果 —— 诊断包里一字不差就是它"
+        );
+        // 解出来的东西必须是**能看的**：一个替换字符都不许剩
+        assert!(!decode_console(gbk, Some(936)).contains('\u{FFFD}'));
+    }
+
+    /// UTF-8 的输出一个字节都不许动（docker / git / 我们自己的程序都吐 UTF-8）。
+    #[test]
+    fn utf8_的输出不走回退() {
+        let s = "六个镜像合计约 748 MB · ok";
+        assert_eq!(decode_console(s.as_bytes(), Some(936)), s);
+        assert_eq!(decode_console(s.as_bytes(), None), s);
+    }
+
+    /// 代码页不认识（例如 OEM 437，`encoding_rs` 没有它）就退回 lossy，**不瞎猜**。
+    #[test]
+    fn 认不出来的代码页退回_lossy() {
+        let gbk: &[u8] = &[0xb4, 0xed];
+        assert_eq!(decode_console(gbk, Some(437)), "��");
+        assert_eq!(decode_console(gbk, None), "��");
+    }
+
+    /// 非 Windows 上一律不做代码页回退。
+    #[test]
+    fn 非_windows_不猜代码页() {
+        if cfg!(windows) {
+            return;
+        }
+        assert_eq!(ansi_codepage(), None);
+    }
+
+    /// **一行不是合法 UTF-8，不许把整条流读断**（I16 · P0-3）。
+    ///
+    /// 原先 `reader.lines().map_while(Result::ok)` 见到 `Err` 就停：
+    /// 中文 Windows 上子进程随便吐一句 GBK，后面所有输出（含拉取进度）全没了，
+    /// 而且没有任何迹象。
+    #[test]
+    fn 中间夹一行非_utf8_后面的行照样收得到() {
+        if cfg!(windows) {
+            return;
+        }
+        let mut got: Vec<String> = Vec::new();
+        let r = run_streaming(
+            "/usr/bin/env",
+            &[
+                "sh",
+                "-c",
+                // 第二行是 GBK 的“错误”两个字，第三行必须照样收到
+                // 八进制转义：dash 的 printf 不认 \\xHH，认 \\nnn
+                "echo one; printf '\\264\\355\\316\\363\\n'; echo three",
+            ],
+            &StreamOpts {
+                silence: Some(Duration::from_secs(30)),
+                ..Default::default()
+            },
+            |ev| {
+                if let Ev::Line { text, .. } = ev {
+                    got.push(text.to_string());
+                }
+                Fresh::Yes
+            },
+        )
+        .expect("起不来");
+        assert!(r.ended.ok(), "{:?}", r.ended);
+        assert_eq!(
+            got,
+            vec!["one".to_string(), "����".to_string(), "three".to_string()],
+            "第三行丢了就说明又被 map_while 截断了"
+        );
     }
 }

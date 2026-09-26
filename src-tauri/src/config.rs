@@ -383,6 +383,14 @@ pub struct BackupSection {
     /// 「装没装」的真值一律现查系统，不读这一项，红线 1）
     #[serde(default)]
     pub schedule_installed: bool,
+    /// **上一次装定时任务时系统报的原话**（I16 · P0-3）。空 = 上一次装成了。
+    ///
+    /// 这一项不是「现状」而是「上一次发生过的事」，所以记它不违红线 1。
+    /// 运行面板上那条「自动备份的定时任务没装上」的红横幅就靠它 ——
+    /// 0.1.15 在客户那台 Windows 上只把这句话写进了日志，
+    /// 界面上一个字都没有，用户以为自己有每日备份，实际一次都没跑过。
+    #[serde(default)]
+    pub schedule_error: String,
 }
 
 impl Default for BackupSection {
@@ -399,6 +407,7 @@ impl Default for BackupSection {
             last_run_at: String::new(),
             fail_streak: 0,
             schedule_installed: false,
+            schedule_error: String::new(),
         }
     }
 }

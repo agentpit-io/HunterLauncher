@@ -885,6 +885,24 @@ pub fn argv_schedule(argv: &[String]) -> AppResult<()> {
         },
         "schtasks" => match rest.as_slice() {
             ["/Create", "/TN", t, "/XML", _, "/F"] => *t == crate::schedule::TASK,
+            // 不用 XML 的兜底路（I16 · P0-3）。`/TR` 那一项是**一个** argv 元素，
+            // 而且必须真的是「启动器自己 + --backup --scheduled」——
+            // 这道门在这里的意义就是：任务计划里能被我们建出来的命令只有那一条
+            ["/Create", "/TN", t, "/TR", tr, "/SC", "DAILY", "/ST", st, "/F"] => {
+                *t == crate::schedule::TASK
+                    && tr.ends_with(&format!(" {}", crate::schedule::TASK_ARGS))
+                    && !tr.contains('&')
+                    && !tr.contains('|')
+                    && st.len() == 5
+                    && st.as_bytes()[2] == b':'
+                    && st.chars().enumerate().all(|(i, c)| {
+                        if i == 2 {
+                            c == ':'
+                        } else {
+                            c.is_ascii_digit()
+                        }
+                    })
+            }
             ["/Delete", "/TN", t, "/F"] => *t == crate::schedule::TASK,
             ["/Query", "/TN", t, "/FO", "LIST"] => *t == crate::schedule::TASK,
             _ => false,
