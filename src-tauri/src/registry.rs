@@ -40,6 +40,9 @@ pub struct Candidate {
     pub probe_repo: Cow<'static, str>,
 }
 
+/// 数据面探测取多少字节。256 KB：够区分「给数据」和「不给数据」，又不至于让探测本身变慢。
+const PROBE_RANGE_BYTES: u64 = 256 * 1024;
+
 /// 两个候选源。顺序即「其它条件相同时的偏好」。
 ///
 /// 是 `static` 而不是 `const`：`Cow` 带 drop glue，`const X: &[T]` 那种写法要靠
@@ -141,18 +144,31 @@ pub struct ProbeResult {
     pub id: String,
     pub label: String,
     pub prefix: String,
-    /// manifest 真的探到了才是 true
+    /// **元数据与数据面都探通了**才是 true。
+    ///
+    /// I16 之前这里只看 manifest。2026-09-26 一位 Windows 用户踩到了那个坑：
+    /// 他机器上 GHCR 的 manifest 又快又通（于是被选中），可层数据在
+    /// `pkg-containers.githubusercontent.com` 上一个字节都下不来，
+    /// 升级因此卡了一个多小时。**探的东西必须和真正要下载的东西是同一样东西。**
     pub available: bool,
     /// 毫秒。探不到时也给耗时（它本身说明了链路状况）
     pub elapsed_ms: u64,
     /// 探不到的原因（HTTP 状态或网络错误），如实写
     pub detail: Option<String>,
+    /// 层数据真的下下来了吗
+    pub data_ok: bool,
+    /// 下那一小段层数据花了多少毫秒。**这是实测值**，没测成就是 None
+    pub data_ms: Option<u64>,
+    /// 数据面下不来的原因
+    pub data_detail: Option<String>,
 }
 
 /// 对全部候选源逐个探测，返回结果列表（按「可用优先、耗时升序」排好）。
 pub fn probe_all(tag: &str, timeout: Duration) -> Vec<ProbeResult> {
     let mut out: Vec<ProbeResult> = CANDIDATES.iter().map(|c| probe(c, tag, timeout)).collect();
-    out.sort_by_key(|r| (!r.available, r.elapsed_ms));
+    // 排序按「能不能用 → 层数据下得多快 → 元数据多快」。
+    // 中间那一项是 I16 加的：只比 manifest 的快慢，会把「元数据飞快、层下不动」的源排到第一。
+    out.sort_by_key(|r| (!r.available, r.data_ms.unwrap_or(u64::MAX), r.elapsed_ms));
     out
 }
 
@@ -160,7 +176,26 @@ pub fn probe(c: &Candidate, tag: &str, timeout: Duration) -> ProbeResult {
     let t0 = Instant::now();
     let r = fetch_manifest(&c.host, &c.probe_repo, tag, timeout);
     let elapsed_ms = t0.elapsed().as_millis() as u64;
-    match r {
+
+    if let Err(e) = r {
+        return ProbeResult {
+            id: c.id.to_string(),
+            label: c.label.to_string(),
+            prefix: c.prefix.to_string(),
+            available: false,
+            elapsed_ms,
+            detail: Some(e.msg),
+            data_ok: false,
+            data_ms: None,
+            data_detail: None,
+        };
+    }
+
+    // manifest 通了只说明「元数据这条路通」。层数据往往在另一个域名上
+    // （GHCR 的层在 pkg-containers.githubusercontent.com），那条路单独会断。
+    // 所以再真下一小段层数据，下得来才算这个源可用。
+    let d0 = Instant::now();
+    match probe_data_plane(c, tag, timeout) {
         Ok(()) => ProbeResult {
             id: c.id.to_string(),
             label: c.label.to_string(),
@@ -168,6 +203,9 @@ pub fn probe(c: &Candidate, tag: &str, timeout: Duration) -> ProbeResult {
             available: true,
             elapsed_ms,
             detail: None,
+            data_ok: true,
+            data_ms: Some(d0.elapsed().as_millis() as u64),
+            data_detail: None,
         },
         Err(e) => ProbeResult {
             id: c.id.to_string(),
@@ -175,9 +213,119 @@ pub fn probe(c: &Candidate, tag: &str, timeout: Duration) -> ProbeResult {
             prefix: c.prefix.to_string(),
             available: false,
             elapsed_ms,
-            detail: Some(e.msg),
+            detail: Some(format!("元数据能拿到，但层数据下不来：{}", e.msg)),
+            data_ok: false,
+            data_ms: None,
+            data_detail: Some(e.msg),
         },
     }
+}
+
+/// 数据面探测：**真的下一小段层数据**。
+///
+/// 只取前 `PROBE_RANGE_BYTES` 个字节（Range 请求）—— 目的是区分
+/// 「连得上、也给数据」和「连得上、就是不给数据」，不是测带宽，所以不必下整层。
+/// 挑**最小的那一层**，省流量也省时间。
+fn probe_data_plane(c: &Candidate, tag: &str, timeout: Duration) -> AppResult<()> {
+    let digest = smallest_layer_digest(&c.host, &c.probe_repo, tag, oci_arch(), timeout)?;
+    let url = format!("https://{}/v2/{}/blobs/{}", c.host, c.probe_repo, digest);
+    let range = format!("bytes=0-{}", PROBE_RANGE_BYTES - 1);
+
+    let first = crate::http::get(&url, &[("Range", &range)], timeout)?;
+    let resp = if first.status == 401 {
+        let challenge = first.header("www-authenticate").unwrap_or("").to_string();
+        let token = fetch_token(&c.host, &c.probe_repo, &challenge, timeout)?;
+        let auth = format!("Bearer {token}");
+        crate::http::get(&url, &[("Range", &range), ("Authorization", &auth)], timeout)?
+    } else {
+        first
+    };
+
+    // 206 是按 Range 给的那一段；有些 registry 不认 Range，整层回 200，也算通
+    if resp.status != 200 && resp.status != 206 {
+        return Err(AppError::new(
+            Code::PullFailed,
+            format!("取层数据 → HTTP {}", resp.status),
+        ));
+    }
+    if resp.body.is_empty() {
+        return Err(AppError::new(
+            Code::PullFailed,
+            "取层数据 → 连上了，但一个字节都没给".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// 挑这个镜像里**最小的一层**的 digest。探数据面用，越小越省事。
+fn smallest_layer_digest(
+    host: &str,
+    repo: &str,
+    tag: &str,
+    arch: &str,
+    timeout: Duration,
+) -> AppResult<String> {
+    let body = get_manifest(host, repo, tag, timeout)?;
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| AppError::new(Code::PullFailed, format!("manifest 不是 JSON：{e}")))?;
+
+    // 单架构 manifest 直接有 layers；多架构要先挑出本机这一份
+    let layers_owned;
+    let layers = if let Some(l) = v.get("layers").and_then(|l| l.as_array()) {
+        l
+    } else {
+        let list = v
+            .get("manifests")
+            .and_then(|m| m.as_array())
+            .ok_or_else(|| {
+                AppError::new(
+                    Code::PullFailed,
+                    "manifest 里既没有 layers 也没有 manifests".to_string(),
+                )
+            })?;
+        let digest = list
+            .iter()
+            .find(|m| {
+                let p = m.get("platform");
+                let os = p
+                    .and_then(|p| p.get("os"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                let a = p
+                    .and_then(|p| p.get("architecture"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                os == "linux" && a == arch
+            })
+            .and_then(|m| m.get("digest"))
+            .and_then(|d| d.as_str())
+            .ok_or_else(|| {
+                AppError::new(Code::PullFailed, format!("这个镜像没有 linux/{arch} 的版本"))
+            })?;
+        let sub = get_manifest(host, repo, digest, timeout)?;
+        let sv: serde_json::Value = serde_json::from_str(&sub).map_err(|e| {
+            AppError::new(Code::PullFailed, format!("子 manifest 不是 JSON：{e}"))
+        })?;
+        layers_owned = sv
+            .get("layers")
+            .and_then(|l| l.as_array())
+            .cloned()
+            .ok_or_else(|| {
+                AppError::new(Code::PullFailed, "子 manifest 里没有 layers".to_string())
+            })?;
+        &layers_owned
+    };
+
+    layers
+        .iter()
+        .filter_map(|l| {
+            let d = l.get("digest")?.as_str()?;
+            let size = l.get("size")?.as_u64()?;
+            Some((size, d.to_string()))
+        })
+        .min_by_key(|(size, _)| *size)
+        .map(|(_, d)| d)
+        .ok_or_else(|| AppError::new(Code::PullFailed, "这个镜像一层都没有".to_string()))
 }
 
 /// 挑一个源：可用的里面最快的。一个都探不到时返回 `Err`，**不偷偷退回某个源**
@@ -560,35 +708,44 @@ mod tests {
         assert_eq!(c.base_prefix, "registry.example.com/team");
     }
 
+    /// 造一个探测结果。`data_ms` 给 `None` 表示数据面没探成。
+    fn pr(id: &str, available: bool, elapsed_ms: u64, data_ms: Option<u64>) -> ProbeResult {
+        ProbeResult {
+            id: id.into(),
+            label: id.into(),
+            prefix: id.into(),
+            available,
+            elapsed_ms,
+            detail: None,
+            data_ok: data_ms.is_some(),
+            data_ms,
+            data_detail: None,
+        }
+    }
+
+    /// I16 的那个坑：GHCR 的 manifest 又快又通，层数据却一个字节都下不来。
+    /// 光比 manifest 的快慢会把它排到第一，于是每次都选中它、每次都卡死。
+    #[test]
+    fn 元数据再快_层下不来也不能排第一() {
+        let mut v = [
+            // 元数据 20 毫秒就回了，但层数据没探成 —— 就是客户那台 Windows 上的 GHCR
+            pr("ghcr", false, 20, None),
+            // 元数据慢得多，可层是真下得下来
+            pr("tencent", true, 800, Some(1200)),
+        ];
+        v.sort_by_key(|r| (!r.available, r.data_ms.unwrap_or(u64::MAX), r.elapsed_ms));
+        assert_eq!(v[0].id, "tencent", "层下得下来的那个必须排第一");
+        assert!(!v[1].available, "层下不来的源不算可用");
+    }
+
     #[test]
     fn 排序把可用的排前面再按耗时() {
         let mut v = [
-            ProbeResult {
-                id: "a".into(),
-                label: "a".into(),
-                prefix: "a".into(),
-                available: false,
-                elapsed_ms: 10,
-                detail: None,
-            },
-            ProbeResult {
-                id: "b".into(),
-                label: "b".into(),
-                prefix: "b".into(),
-                available: true,
-                elapsed_ms: 900,
-                detail: None,
-            },
-            ProbeResult {
-                id: "c".into(),
-                label: "c".into(),
-                prefix: "c".into(),
-                available: true,
-                elapsed_ms: 300,
-                detail: None,
-            },
+            pr("a", false, 10, None),
+            pr("b", true, 900, Some(900)),
+            pr("c", true, 300, Some(300)),
         ];
-        v.sort_by_key(|r| (!r.available, r.elapsed_ms));
+        v.sort_by_key(|r| (!r.available, r.data_ms.unwrap_or(u64::MAX), r.elapsed_ms));
         assert_eq!(
             v.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             vec!["c", "b", "a"]
