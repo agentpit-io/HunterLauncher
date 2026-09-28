@@ -835,6 +835,53 @@ export const demoRuntimeAllStopped: RuntimeStatus = {
 }
 
 /**
+ * **磁盘上装过，但运行时问不出来**（R1，截图脚本
+ * `HUNTER_DEMO_PAGE=dashboard-runtime-down`）。
+ *
+ * 现场就是用户 2026-09-28 报的那一幕：没起 Docker，打开启动器。
+ * `docker compose ps` 一个服务都答不上来，所以 `services` 是**空的** ——
+ * 这一页要看的就是「面板上不再说『N 个容器都停着』」（那是编的，
+ * 我们根本不知道有几个），而是说「装过、只是运行时没在跑」，
+ * 主按钮换成「启动运行时」。
+ */
+export const demoRuntimeDown: RuntimeStatus = {
+  ...demoRuntime,
+  running: false,
+  uptimeSeconds: 0,
+  webUrl: null,
+  postInstallNotes: [],
+  // ps 问不出来 ⇒ 一个服务都拿不到
+  services: [],
+  // 运行时都没在跑，额度、上游这两个往返自然也读不到
+  quota: null,
+  dataSource: null,
+  dataSourceSub: '',
+  upstream: {
+    reachable: false,
+    apiKeyConfigured: null,
+    llmSource: null,
+    llmModel: null,
+    builtinQuota: null,
+    dataSupplyConfigured: null,
+    reason: 'docker compose ps 问不出来',
+  },
+  // Docker 那一行如实说读不到（红线 1），别照抄一份版本号上去
+  env: demoRuntime.env.map((e) => (e.key === 'docker' ? { ...e, value: null } : e)),
+}
+
+/** R1 那一屏的开机判定：装过（磁盘上有），但运行时问不出来。 */
+export const demoBootStateRuntimeDown: BootState = {
+  ...demoBootState,
+  installed: true,
+  running: false,
+  route: 'dashboard',
+  posture: 'runtime-down',
+  headline: 'Hunter 装在这台电脑上，只是运行时没在跑 —— 不用重新安装，也不用重新填 key',
+  adopted: false,
+  volumeCount: 0,
+}
+
+/**
  * **定时备份根本没挂上**（I16 · P0-3，截图脚本 `HUNTER_DEMO_PAGE=dashboard-schedule-broken`）。
  *
  * `scheduleError` 里那句话是客户那台中文 Windows 上 `schtasks` 的原话

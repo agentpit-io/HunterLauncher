@@ -112,7 +112,14 @@ export async function appInfo(): Promise<AppInfo> {
 }
 
 export async function bootState(): Promise<BootState> {
-  if (DEMO) return demo.demoBootState
+  // R1：装过但运行时问不出来的那一屏（截图脚本
+  // HUNTER_DEMO_PAGE=dashboard-runtime-down）。**路由是 dashboard**，
+  // 不是 welcome —— 这正是这一轮修的那件事。
+  if (DEMO) {
+    return demoPage() === 'dashboard-runtime-down'
+      ? demo.demoBootStateRuntimeDown
+      : demo.demoBootState
+  }
   return call<BootState>('boot_state')
 }
 
@@ -231,6 +238,8 @@ export async function runtimeStatus(): Promise<RuntimeStatus> {
     if (p === 'dashboard-lan') return demo.demoRuntimeLanExposed
     // I16 · P0-4：六个容器全都 exited —— 那两行说法不许再打架
     if (p === 'dashboard-stopped') return demo.demoRuntimeAllStopped
+    // R1：运行时问不出来 —— 一个服务都拿不到（`docker compose ps` 报了错）
+    if (p === 'dashboard-runtime-down') return demo.demoRuntimeDown
     return demo.demoRuntime
   }
   return call<RuntimeStatus>('runtime_status')

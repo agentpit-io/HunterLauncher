@@ -40,6 +40,9 @@ const DEMO_STATES: Record<string, State> = {
   'dashboard-lan': { name: 'Ready' },
   // I16 · P0-4：六个容器全 exited。看的是顶上那行大字与副标题**不再打架**
   'dashboard-stopped': { name: 'Ready' },
+  // R1：装过但运行时问不出来 —— 顶上那块说清「装过、不用重装」，
+  // 主按钮是「启动运行时」（**不是**「重新安装」）
+  'dashboard-runtime-down': { name: 'Ready' },
   // I16 · P0-3：定时备份根本没挂上的那条红横幅
   'dashboard-schedule-broken': { name: 'Ready' },
   settings: { name: 'Ready' },
@@ -132,11 +135,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    *   Idle →（BOOT）→ Booting「正在检查 Hunter 状态」→ 按后端给的 route 跳
    *
    * 三条路对应后端 `BootRoute` 的三个值，判据在 Rust 侧（现状优先，见 `boot_state`）。
-   * 演示模式不做这一步（截图脚本要能定到任意一页）。
+   *
+   * 演示模式**不跳转**（截图脚本要能定到任意一页），但那份判定还是要拿：
+   * 运行面板要读它的 `posture` 与 `headline`（R1 那一屏就是这么来的）。
    */
   useEffect(() => {
-    if (DEMO || demoPage()) return
     let alive = true
+    if (DEMO || demoPage()) {
+      void ipc.bootState().then((b) => {
+        if (alive) setBoot(b)
+      })
+      return () => {
+        alive = false
+      }
+    }
     void ipc
       .bootState()
       .then((b) => {

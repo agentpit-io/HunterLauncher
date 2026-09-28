@@ -1114,12 +1114,23 @@ export interface AssistOutcome {
 // ── 现状复查（I11 · U1 / U2）──────────────────────────────────────────────
 
 /**
- * 复查的五种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。
+ * 复查的六种结论。和 Rust 侧 `selfcheck::Posture` 一一对应。
  *
  * `stopped` 是 I16 补的：六个容器都建齐了、但一个在跑的都没有。
  * 在这之前它被并进 `partial`，界面于是把「容器退出了」说成「还没就绪」。
+ *
+ * `runtime-down` 是 R1 补的：**磁盘上装过，但运行时问不出来**（内置虚拟机 /
+ * Docker Desktop 当时没在跑）。在这之前它被并进 `absent`，于是「装过、只是没起来」
+ * 的机器会被当成从没装过 —— 再走一遍安装流程、重新填一次 key。
+ * **它绝不能退化成 `absent`**：`absent` 的下游是完整安装，而这一档一个字节都不该动。
  */
-export type Posture = 'absent' | 'incomplete' | 'stopped' | 'partial' | 'healthy'
+export type Posture =
+  | 'absent'
+  | 'incomplete'
+  | 'stopped'
+  | 'runtime-down'
+  | 'partial'
+  | 'healthy'
 
 /**
  * 「Hunter 现在到底在不在跑」的一次只读复查。

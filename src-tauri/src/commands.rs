@@ -200,9 +200,14 @@ pub enum BootRoute {
 /// |---|---|---|
 /// | 6/6 健康 | 运行面板 | `done=false` 就**补写**，并记 `adopted_from_running=true` |
 /// | 容器都在但停着 / 有的不正常 | 运行面板 | 同上（装过是事实，只是没跑好） |
+/// | **磁盘上装过但运行时问不出来** | 运行面板 | **不写安装记录**；面板上给「启动运行时」 |
 /// | 只装了一半 | 运行面板 | 面板上会显示缺哪几个；**不回向导** |
 /// | 本项目没有容器，但数据卷还在 | 「检测到上次的数据」 | — |
-/// | 什么都没有 | 欢迎页 | — |
+/// | 磁盘上都没有 | 欢迎页 | — |
+///
+/// 倒数第二第三行那两档（含 R1 新增的「运行时问不出来」）踩的是同一个坑：
+/// 0.1.16 之前它们都被并进最后一行，于是「装过、只是没起来」的机器会再走一遍安装。
+/// 判据的根子在 [`crate::selfcheck::posture_before_containers`]。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootState {
@@ -246,6 +251,13 @@ pub fn route_of(posture: crate::selfcheck::Posture, volumes: usize) -> BootRoute
         // **不管 install.done 写的是什么** —— 那正是 0.1.9 那次判错的地方。
         // `Stopped`（I16 · P0-4）同样走面板：什么都不缺，只是没跑
         Posture::Healthy | Posture::Partial | Posture::Stopped => BootRoute::Dashboard,
+        // **磁盘上装过、只是运行时问不出来（R1）**：一样走面板。
+        //
+        // 这一行是这一轮的重点。用户 2026-09-28 报的「不起 Docker 打开软件，
+        // 会重复进入安装界面」，根子就在这里 —— 那时候复查给的是 `Absent`，
+        // 而 `Absent` 落到下面两行，一头扎进完整安装。**装过是磁盘说的事实，
+        // 运行时没在跑不改变这个事实**，所以它绝不能落到 `Absent` 那两行上。
+        Posture::RuntimeDown => BootRoute::Dashboard,
         // 只装了一半：容器有一部分。**也算装过** ——
         // 回向导只会让用户再装一遍，面板上说清缺哪几个才是对的
         Posture::Incomplete => BootRoute::Dashboard,
@@ -279,10 +291,24 @@ pub async fn boot_state(app: tauri::AppHandle) -> Result<BootState> {
             0
         };
         let route = route_of(rv.posture, volumes);
-        let adopted = route == BootRoute::Dashboard && !cfg.install.done;
-        if route == BootRoute::Dashboard {
+        // **R1：`RuntimeDown` 这一档不写安装记录。**
+        //
+        // 写安装记录的依据是「现状说它装好了」——磁盘上有、而且我们**看见**了。
+        // 运行时问不出来的机器上，后半句不成立。具体两处都不成立：
+        //   · `adopted_from_running=true` 会让面板上挂一条绿横幅说
+        //     「Hunter 已经在正常运行」，而它明明没在跑；
+        //   · 项目名冲突那一支连我们这个工作目录下有没有文件都没确认过，
+        //     写「装于今天」等于记了一条假账（红线 1）。
+        // 等它真的 6/6 健康了，`selfcheck::note_healthy` 会自己补写 ——
+        // 那才是「这台机器上装好了」这句话的成立条件。
+        let adopted = route == BootRoute::Dashboard
+            && !cfg.install.done
+            && rv.posture != crate::selfcheck::Posture::RuntimeDown;
+        if route == BootRoute::Dashboard && rv.posture != crate::selfcheck::Posture::RuntimeDown {
             cfg.mark_installed(adopted);
             dirty = true;
+        }
+        if route == BootRoute::Dashboard {
             // 「上一次好好的是什么时候」—— 只有真的 6/6 健康才刷，
             // 不健康的时候刷它就是在记一个假时间（红线 1）
             if rv.posture == crate::selfcheck::Posture::Healthy {
@@ -2286,6 +2312,34 @@ mod tests {
         assert_eq!(route_of(Posture::Absent, 1), BootRoute::DataFound);
         // ⑤ 什么都没有 → 欢迎页
         assert_eq!(route_of(Posture::Absent, 0), BootRoute::Welcome);
+    }
+
+    /// **R1：装过但运行时问不出来 ⇒ 进运行面板，绝不触发完整安装。**
+    ///
+    /// 用户 2026-09-28 报的就是这一条不成立时的样子：不起 Docker 打开软件，
+    /// 被判成「没装过」，于是又走一遍安装、重新填 key。
+    /// 这里逐个数据卷数试一遍 —— 关键不是「进哪一页」，
+    /// 而是**无论数据卷有几个都不许落到 Welcome / DataFound 那两条安装路上**。
+    #[test]
+    fn 运行时问不出来时绝不触发完整安装() {
+        for vols in [0, 1, 6] {
+            let route = route_of(Posture::RuntimeDown, vols);
+            assert_eq!(
+                route,
+                BootRoute::Dashboard,
+                "数据卷 {vols} 个时该进运行面板"
+            );
+            assert_ne!(
+                route,
+                BootRoute::Welcome,
+                "★ 绝不许回欢迎页（那 = 从头装一遍）"
+            );
+            assert_ne!(
+                route,
+                BootRoute::DataFound,
+                "★ 也不许走「检测到上次的数据」（那也会进安装向导）"
+            );
+        }
     }
 
     /// 「补写安装标记」只在**该进运行面板**而且标记确实是假的时候发生。
