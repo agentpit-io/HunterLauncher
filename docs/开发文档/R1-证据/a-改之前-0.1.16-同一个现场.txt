@@ -1,0 +1,34 @@
+# 改之前（0.1.16，基线 6f41acc）在「装过、Docker 没起」这个现场上怎么判
+# 命令：HUNTER_HOME=/tmp/r1-A DOCKER_HOST=tcp://127.0.0.1:1 <bin> --boot-state
+# 时间：2026-09-29 00:59:16
+
+
+Hunter 启动器 · 开机判定
+──────────────────────────────────
+  现状     这台机器上还没有装过 Hunter
+  服务     0 / 6 就绪，网页这一次没应答
+  该进哪   欢迎页（全新安装）
+  安装标记 进来时 done=false，现在 done=false
+  记录     启动器 0.1.16，装于 —，上次正常运行 —
+
+  升级状态 没有没做完的升级（配置与正在跑的容器对得上）
+
+  逐条证据：
+    · docker compose ps 问不出来：docker compose ps 失败：Cannot connect to the Docker daemon at tcp://127.0.0.1:1. Is the docker daemon running?
+
+  用时 406 毫秒（含复查 254 毫秒）
+
+# launcher.toml 的 [install] 段：
+[install]
+done = false
+at = ""
+offline = false
+launcher_version = "0.1.16"
+hunter_tag = ""
+project = ""
+app_dir = ""
+runtime = ""
+last_healthy_at = ""
+adopted_from_running = false
+stopped_by_user = false
+

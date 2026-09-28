@@ -1,0 +1,34 @@
+# 反向保险：磁盘上真的什么都没有时，仍然走全新安装
+# 命令：HUNTER_HOME=/tmp/r1-C DOCKER_HOST=tcp://127.0.0.1:1 <bin> --boot-state
+# 时间：2026-09-29 00:59:17
+
+
+Hunter 启动器 · 开机判定
+──────────────────────────────────
+  现状     这台机器上还没有装过 Hunter
+  服务     0 / 6 就绪，网页这一次没应答
+  该进哪   欢迎页（全新安装）
+  安装标记 进来时 done=false，现在 done=false
+  记录     启动器 0.1.16，装于 —，上次正常运行 —
+
+  升级状态 没有没做完的升级（配置与正在跑的容器对得上）
+
+  逐条证据：
+    · /tmp/r1-C/app/docker-compose.yml 或 /tmp/r1-C/app/.env 不在，这台机器上没有启动器装过的那一套
+
+  用时 305 毫秒（含复查 52 毫秒）
+
+# launcher.toml 的 [install] 段：
+[install]
+done = false
+at = ""
+offline = false
+launcher_version = "0.1.16"
+hunter_tag = ""
+project = ""
+app_dir = ""
+runtime = ""
+last_healthy_at = ""
+adopted_from_running = false
+stopped_by_user = false
+
