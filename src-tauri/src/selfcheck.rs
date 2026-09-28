@@ -21,7 +21,7 @@
 //! 一次本机 HTTP GET、（深查时）一个 `--rm` 的一次性容器。
 //! 本项目的容器、卷、配置文件一个字节都不碰。
 //!
-//! ## 五种结论，对应五种做法
+//! ## 六种结论，对应六种做法
 //!
 //! **`Stopped` 是 I16 补的，来自客户 2026-09-26 那份 Windows 诊断包。**
 //! 他那台机器上 `docker compose ps` 六个容器全是 `exited`，
@@ -31,11 +31,25 @@
 //! 等于把用户往错误的方向引 —— 而界面上还同时出现了
 //! 「Hunter 运行中」＋「v1.2.2 · 容器已停止」这种自相矛盾的一屏。
 //!
+//! **`RuntimeDown` 是 R1 补的，来自用户 2026-09-28 报的一幕**（它同时也是
+//! I15 任务书的 P0-1，2026-09-24 在另一台 Mac 上真实发生过）：
+//!
+//! ```text
+//! 不起 Docker 打开软件 → 又走了一遍安装流程 → 重新填 key
+//! ```
+//!
+//! 磁盘上 `docker-compose.yml` 与 `.env` 都在（`installed_on_disk()` 刚返回 `true`），
+//! 只是当时内置虚拟机 / Docker Desktop 没在跑，`docker compose ps` 问不出来。
+//! 0.1.16 及之前，问不出来就被判成 `Absent` —— 而 `Absent` 的下游是**完整安装**。
+//! 「问不出来」和「根本没有」是两回事：前者只是我们此刻看不到，
+//! 后者是磁盘上真的什么都没有。**把前者说成后者，用户就得重新填 key、甚至重建数据卷。**
+//!
 //! | 结论 | 现场 | 该做什么 |
 //! |---|---|---|
-//! | [`Posture::Absent`] | 本项目一个容器都没有 | 完整安装 |
+//! | [`Posture::Absent`] | 磁盘上没有这一套，本项目一个容器都没有 | 完整安装 |
 //! | [`Posture::Incomplete`] | 六个服务只有一部分建出来过 | 完整安装（镜像本机已有的话拉取那步是空跑） |
-//! | [`Posture::Stopped`] | 六个容器都建齐了，但一个在跑的都没有 | **点「启动」就行**（不用装、不用拉、不用修） |
+//! | [`Posture::Stopped`] | 六个容器都建齐了，但一个在跑的都没有（**问得出来**） | **点「启动」就行**（不用装、不用拉、不用修） |
+//! | [`Posture::RuntimeDown`] | 磁盘上装过，但运行时**问不出来** | **点「启动运行时」**；绝不重装、绝不重填 key、绝不碰 `.env` 与数据卷 |
 //! | [`Posture::Partial`] | 有容器在跑，但有的没就绪 / web 打不开 | **只修不正常的那部分** |
 //! | [`Posture::Healthy`] | 6/6 就绪、web 打得开（深查时还要容器连得上网关） | **什么都不做**，直接用 |
 
@@ -62,6 +76,12 @@ pub enum Posture {
     Incomplete,
     /// 六个容器都建齐了，**但一个在跑的都没有**（I16 · P0-4）
     Stopped,
+    /// 磁盘上装过，**但运行时问不出来**（R1）—— 内置虚拟机 / Docker 当时没在跑，
+    /// 或者 `hunter` 这个项目名正被别人占着。
+    ///
+    /// **绝不等同于 [`Posture::Absent`]**：这一档的下游一律不安装、不重填 key、
+    /// 不碰 `.env` 与数据卷（见 [`posture_before_containers`]）。
+    RuntimeDown,
     /// 六个都在、至少有一个在跑，但有的不正常
     Partial,
     /// 全好
@@ -74,10 +94,66 @@ impl Posture {
             Posture::Absent => "这台机器上还没有 Hunter",
             Posture::Incomplete => "上一次只装了一半",
             Posture::Stopped => "装好了，但容器都停着",
+            Posture::RuntimeDown => "装过，但运行时问不出来",
             Posture::Partial => "Hunter 在跑，但有服务不正常",
             Posture::Healthy => "Hunter 已经在正常运行",
         }
     }
+}
+
+/// 复查开头那两问里，「运行时问不问得出来」这一问的三种结果。
+///
+/// [`Runtime::NotAsked`] 是**故意不问**：项目名不是我们的、或者磁盘上压根没有这一套时，
+/// 去问 `docker compose ps` 要么是在问别人的容器，要么没有任何意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Runtime {
+    /// 问了，答上来了
+    Answers,
+    /// 问了，没答上来（daemon 连不上）
+    Silent,
+    /// 没问
+    NotAsked,
+}
+
+/// **还没看容器之前，光凭前两问能得出的结论。**
+///
+/// 做成纯函数，理由和 `commands::route_of` 一样：`docker compose ps` 问不出来这种现场，
+/// 在开发机与测试机上根本造不出来（这两台机器上的 Hunter 一直好好跑着，
+/// 而红线不许我们去动别人的容器）—— 而它正是 2026-09-28 用户报的那一幕。
+///
+/// 返回 `None` = 前两问没给出终局结论，接着去看容器现状。
+///
+/// 两条硬规矩，顺序不能换：
+///
+/// 1. **项目名不是我们的 ⇒ `RuntimeDown`。** 那是 `E_PROJECT_CONFLICT`，
+///    运行时好好的、只是它服务的是另一套；这里既不该说 `Absent`（会去装，
+///    把别人的配置和端口顶掉），也不该说「运行时没在跑」；
+/// 2. **只有磁盘上真的什么都没有，才许说 `Absent`。**
+///    `Absent` 的下游是完整安装，说错一次用户就得重填 key、甚至重建数据卷。
+///    磁盘上有、而运行时问不出来 ⇒ [`Posture::RuntimeDown`]。
+pub fn posture_before_containers(
+    installed_on_disk: bool,
+    project_owned_by_us: bool,
+    runtime: Runtime,
+) -> Option<Posture> {
+    if !project_owned_by_us {
+        return Some(Posture::RuntimeDown);
+    }
+    if !installed_on_disk {
+        // 真的没装过 —— 磁盘上两份文件一份都不在。哪怕 Docker 没起来也是这一档：
+        // 全新机器上 Docker 没装/没起，本来就该走完整流程去把运行时装起来
+        // （`E_DAEMON_DOWN` / `E_BUILTIN_DOWN` 那条路）。
+        return Some(Posture::Absent);
+    }
+    if runtime == Runtime::Silent {
+        return Some(Posture::RuntimeDown);
+    }
+    debug_assert_eq!(
+        runtime,
+        Runtime::Answers,
+        "走到这里只可能是问过了、答上来了"
+    );
+    None
 }
 
 /// 一次复查的全部结果。**每一项都是实测值，拿不到就是 `None` + 原因**（红线 1）。
@@ -221,55 +297,60 @@ pub fn review(deep: bool) -> Review {
     let mut lines: Vec<String> = Vec::new();
 
     // ① 这个项目名现在是谁的。不是我们的就别往下看了 —— 那是 E_PROJECT_CONFLICT 的事
-    if let Err(e) = compose::guard_project_owner() {
-        lines.push(format!("compose 项目名 {PROJECT} 归属检查：{}", e.msg));
-        return finish(
-            Posture::Absent,
-            Vec::new(),
-            None,
-            None,
-            lines,
-            t0,
-            deep,
-            None,
-        );
-    }
-
-    if !installed_on_disk() {
+    let owned_by_us = match compose::guard_project_owner() {
+        Ok(()) => true,
+        Err(e) => {
+            lines.push(format!("compose 项目名 {PROJECT} 归属检查没过：{}", e.msg));
+            false
+        }
+    };
+    let disk = installed_on_disk();
+    if owned_by_us && !disk {
         lines.push(format!(
             "{} 或 {} 不在，这台机器上没有启动器装过的那一套",
             crate::redact::mask_home(&crate::paths::compose_file().to_string_lossy()),
             crate::redact::mask_home(&crate::paths::env_file().to_string_lossy()),
         ));
-        return finish(
-            Posture::Absent,
-            Vec::new(),
+    }
+
+    // ② 容器现状。**只在这一问有意义的时候才问**：项目名不是我们的时去问，
+    //    问回来的是别人的容器；磁盘上什么都没有时，问了也不知道该比什么
+    let (runtime, services) = if !owned_by_us || !disk {
+        (Runtime::NotAsked, Vec::new())
+    } else {
+        match compose::ps() {
+            Ok(v) => (Runtime::Answers, v),
+            Err(e) => {
+                lines.push(format!("docker compose ps 问不出来：{}", e.msg));
+                (Runtime::Silent, Vec::new())
+            }
+        }
+    };
+
+    // 前两问就定了局的（含 R1 新增的 RuntimeDown），不必再往下看容器
+    if let Some(p) = posture_before_containers(disk, owned_by_us, runtime) {
+        let mut r = finish_full(
+            p,
+            services,
             None,
             None,
             lines,
             t0,
             deep,
+            Vec::new(),
+            Vec::new(),
             None,
         );
-    }
-
-    // ② 容器现状
-    let services = match compose::ps() {
-        Ok(v) => v,
-        Err(e) => {
-            lines.push(format!("docker compose ps 问不出来：{}", e.msg));
-            return finish(
-                Posture::Absent,
-                Vec::new(),
-                None,
-                None,
-                lines,
-                t0,
-                deep,
-                None,
+        if p == Posture::RuntimeDown && !owned_by_us {
+            // **项目名被别人占着，这不是「运行时没在跑」** —— 运行时好好的，
+            // 只是它服务的是另一套。说法必须跟着事实走（红线 1）。
+            r.headline = format!(
+                "另一个位置的 Hunter 正占着「{PROJECT}」这个项目名，启动器现在管不了这一套 —— \
+                 你的数据和配置都没动，这里也不会重新安装"
             );
         }
-    };
+        return r;
+    }
     let ours: Vec<ServiceStatus> = services
         .iter()
         .filter(|s| EXPECTED.contains(&s.service.as_str()))
@@ -452,7 +533,8 @@ fn finish_full(
     let mut container_net = None;
     if deep && matches!(posture, Posture::Healthy | Posture::Partial) {
         // 注意：`Stopped` 不在这里 —— 容器都停着的时候起一个一次性容器去探网关，
-        // 探出来的既不是「Hunter 能不能上网」也不是用户此刻关心的事
+        // 探出来的既不是「Hunter 能不能上网」也不是用户此刻关心的事。
+        // `RuntimeDown` 更不在这里：运行时都没在跑，一次性容器根本起不出来
         let o = crate::runtime::netcheck::probe();
         lines.push(o.one_line());
         if !o.ok && o.fail != crate::runtime::netcheck::Fail::NotRun {
@@ -461,9 +543,15 @@ fn finish_full(
         container_net = Some(o);
     }
 
-    // 停着的时候不给地址：那个端口上没有人应答，给出去就是一个点不开的链接
+    // 停着的时候不给地址：那个端口上没有人应答，给出去就是一个点不开的链接。
+    // `RuntimeDown` 同样不给 —— 运行时都问不出来，端口是哪来的都不知道
     let web_url = web_port
-        .filter(|_| !matches!(posture, Posture::Absent | Posture::Stopped))
+        .filter(|_| {
+            !matches!(
+                posture,
+                Posture::Absent | Posture::Stopped | Posture::RuntimeDown
+            )
+        })
         .map(|p| format!("http://localhost:{p}"));
 
     let headline = match posture {
@@ -476,6 +564,11 @@ fn finish_full(
             "Hunter 装好了，但 {} 个容器都停着 —— 点「启动」就能用",
             services.len()
         ),
+        // **R1**：装过是磁盘说的事实，问不出来只是问不出来。
+        // 这句要同时说清三件事：装过、不用重装、不用重填 key
+        Posture::RuntimeDown => {
+            "Hunter 装在这台电脑上，只是运行时没在跑 —— 不用重新安装，也不用重新填 key".to_string()
+        }
         Posture::Partial => {
             let mut what: Vec<String> = Vec::new();
             // **停着的和没就绪的分开说**（I16 · P0-4）。混在一起说成「还没就绪」，
@@ -650,6 +743,182 @@ mod tests {
             .iter()
             .map(|n| svc(n, "running", compose::Health::Healthy, Some(3100)))
             .collect()
+    }
+
+    // ── R1：装过但运行时问不出来 ──────────────────────────────────────────
+    //
+    // 这一组钉的是用户 2026-09-28 报的那一幕（也是 I15 任务书的 P0-1）：
+    // 不起 Docker 打开软件 → 被当成「没装过」→ 重复进入安装界面、重新填 key。
+    //
+    // 现场造不出来（这两台机器上的 Hunter 一直好好跑着，而且红线不许我们
+    // 去动别人的容器），所以判据被抽成了纯函数 `posture_before_containers`。
+
+    /// **第 1 条**：磁盘上装过（`installed_on_disk() == true`）而 `docker compose ps`
+    /// 报错 ⇒ 永远不是 `Absent`。
+    ///
+    /// `Absent` 的下游是完整安装（`route_of` 把 `Absent` 送进 Welcome / DataFound），
+    /// 所以这一条等价于「运行时不跑的时候绝不再装一遍」。
+    #[test]
+    fn 装过但运行时问不出来时永远不算没装过() {
+        let p = posture_before_containers(true, true, Runtime::Silent);
+        assert_eq!(
+            p,
+            Some(Posture::RuntimeDown),
+            "磁盘上有 + ps 报错 ⇒ RuntimeDown"
+        );
+        assert_ne!(p, Some(Posture::Absent), "★ 这一档绝不许是 Absent");
+
+        // 说法也要对：说清「装过、不用重装、不用重填 key」
+        let r = finish_full(
+            Posture::RuntimeDown,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            Instant::now(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        assert_eq!(r.posture, Posture::RuntimeDown);
+        assert!(!r.all_good());
+        assert!(
+            r.headline.contains("装在这台电脑上") && r.headline.contains("运行时没在跑"),
+            "要说清「装过、只是没起来」：{}",
+            r.headline
+        );
+        assert!(
+            r.headline.contains("不用重新安装") && r.headline.contains("不用重新填 key"),
+            "要说清不用重装、不用重填 key：{}",
+            r.headline
+        );
+        assert!(
+            !r.headline.contains("还没有装过"),
+            "不能再说成「没装过」：{}",
+            r.headline
+        );
+        // 运行时都问不出来，网页地址当然给不出来
+        assert!(r.web_url.is_none(), "{:?}", r.web_url);
+        assert_eq!(Posture::RuntimeDown.cn(), "装过，但运行时问不出来");
+    }
+
+    /// **第 2 条**：磁盘上真的什么都没有 ⇒ 仍然是 `Absent`。
+    ///
+    /// 别把「真的没装过」也一起改了 —— 全新机器上 Docker 没装/没起，
+    /// 本来就该走完整流程把运行时装起来（`E_DAEMON_DOWN` / `E_BUILTIN_DOWN` 那条路）。
+    /// 这一条同时是上面那条的**反向保险**：改宽了当场就红。
+    #[test]
+    fn 磁盘上什么都没有时仍然是没装过() {
+        assert_eq!(
+            posture_before_containers(false, true, Runtime::Answers),
+            Some(Posture::Absent)
+        );
+        // 磁盘上没有、Docker 也没起来 —— 依然是「没装过」：这两件事互不冒充
+        assert_eq!(
+            posture_before_containers(false, true, Runtime::Silent),
+            Some(Posture::Absent),
+            "唯一允许判 Absent 的判据是磁盘，不是运行时"
+        );
+        assert_eq!(
+            posture_before_containers(false, true, Runtime::NotAsked),
+            Some(Posture::Absent)
+        );
+    }
+
+    /// **第 3 条**：`guard_project_owner()` 失败 ⇒ 不是 `Absent`。
+    ///
+    /// 那是 `E_PROJECT_CONFLICT`：另一处的 Hunter 正占着 `hunter` 这个项目名。
+    /// 判成 `Absent` 会去完整安装，把别人的配置和端口一起顶掉（M2 实测撞到过）。
+    #[test]
+    fn 项目名被别人占着时不算没装过() {
+        let p = posture_before_containers(true, false, Runtime::NotAsked);
+        assert_ne!(p, Some(Posture::Absent), "★ 项目名冲突绝不许是 Absent");
+        assert_eq!(p, Some(Posture::RuntimeDown));
+        // 我们这一份磁盘上还没有（用户换了工作目录）时同样不许说 Absent
+        assert_ne!(
+            posture_before_containers(false, false, Runtime::NotAsked),
+            Some(Posture::Absent)
+        );
+    }
+
+    /// **第 4 条**：`RuntimeDown` 与 `Stopped` 的**区别**要钉死。
+    ///
+    /// - `Stopped`：容器**问得出来**，六个全 `exited` —— 缺的只是「起一下」；
+    /// - `RuntimeDown`：**根本问不出来** —— 连它建没建齐都不知道。
+    ///
+    /// 两者处置不同，说法也必须不同：前者说「N 个容器都停着」，
+    /// 后者说「装过、只是运行时没在跑」。混成一档会让用户照着错的方向去点。
+    #[test]
+    fn 全停着与问不出来是两回事() {
+        // `Stopped` 那一边：问得出来，六个全 exited
+        let all_exit: Vec<ServiceStatus> = EXPECTED
+            .iter()
+            .map(|n| svc(n, "exited", compose::Health::Pending, None))
+            .collect();
+        assert_eq!(
+            judge_containers(&all_exit).kind,
+            ByContainers::AllDown,
+            "六个全 exited 才叫「都停着」—— 前提是**问得出来**"
+        );
+        // 问得出来的时候 `posture_before_containers` 不插话，交给容器那一档判
+        assert_eq!(
+            posture_before_containers(true, true, Runtime::Answers),
+            None,
+            "问得出来时该往下看容器，不该在这里定局"
+        );
+
+        // `RuntimeDown` 那一边：根本问不出来，连服务列表都是空的
+        let down = finish_full(
+            Posture::RuntimeDown,
+            Vec::new(), // ← ps 报错，一个服务都拿不到
+            None,
+            None,
+            Vec::new(),
+            Instant::now(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        assert!(down.services.is_empty(), "问不出来时服务列表是空的");
+        assert!(down.missing.is_empty(), "连缺哪几个都不知道，不该编");
+        assert_eq!(down.ready, 0);
+        assert_eq!(
+            down.total,
+            EXPECTED.len(),
+            "总数是常量 6，不是从 ps 数出来的"
+        );
+
+        // 停着的那一边：六个服务都在手上
+        let stopped = finish_full(
+            Posture::Stopped,
+            all_exit.clone(),
+            None,
+            None,
+            Vec::new(),
+            Instant::now(),
+            false,
+            Vec::new(),
+            judge_containers(&all_exit).unready.clone(),
+            Some(3100),
+        );
+        assert_eq!(stopped.services.len(), 6, "问得出来就有六个服务可以逐个说");
+        assert_eq!(stopped.ready, 0);
+
+        // 说法不同（处置不同，说法就不能一样）
+        assert_ne!(down.headline, stopped.headline);
+        assert!(
+            stopped.headline.contains("都停着"),
+            "Stopped 说「都停着」：{}",
+            stopped.headline
+        );
+        assert!(
+            !down.headline.contains("都停着") && !down.headline.contains("个容器"),
+            "RuntimeDown **不知道有几个容器**，不许说「N 个容器」：{}",
+            down.headline
+        );
+        assert!(!down.all_good() && !stopped.all_good());
     }
 
     /// 三种现场，**三种说法必须互不相同**（I16 · P0-4）。

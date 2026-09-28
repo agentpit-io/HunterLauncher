@@ -40,7 +40,7 @@ import { useStore } from '../state/context'
  * 按总控规则红线 1，拿不到的数字宁可空着也不编 —— 演示数据模式下同样是「—」。
  */
 export function Dashboard() {
-  const { t, locale, send, setOverlay, state, notice, setNotice } = useStore()
+  const { t, locale, send, setOverlay, state, notice, setNotice, boot } = useStore()
   const rt = useAsync(() => ipc.runtimeStatus(), [])
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -185,6 +185,16 @@ export function Dashboard() {
 
   const running = state.name === 'Ready' && (d?.running ?? false)
   const hasUpdate = !!d?.latestTag && !!d.hunterTag && d.latestTag !== d.hunterTag
+  /**
+   * **R1：磁盘上装过，但运行时问不出来。**
+   *
+   * 这种机器 0.1.16 之前会被判成「没装过」，于是又走一遍安装、重新填一次 key
+   * （用户 2026-09-28 报的就是这一幕）。现在后端把它判成 `runtime-down`、
+   * 路由到这一页，这里负责说清「装过、不用重装」，并把主按钮换成「启动运行时」。
+   *
+   * 起好之后就撤掉：那时 `running` 已经为真，这一屏该回到正常的运行面板。
+   */
+  const runtimeDown = boot?.posture === 'runtime-down' && !running
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-window px-panel pb-panel pt-[40px]">
@@ -234,6 +244,32 @@ export function Dashboard() {
           {t.dashboard.openHunter}
         </Button>
       </header>
+
+      {/* R1：**磁盘上装过，但运行时问不出来**（内置虚拟机 / Docker 没在跑，
+          或者另一处的 Hunter 正占着同一个项目名）。
+          排在所有提醒的最前面 —— 这种机器上「Hunter 到底装没装过」这件事本身
+          就是用户最需要先确认的，而回答是「装过」。 */}
+      {runtimeDown && (
+        <div
+          className="mt-[14px] flex shrink-0 items-center justify-between gap-4 rounded-md border border-amber/45 bg-amber-soft px-4 py-2.5"
+          data-testid="runtime-down-banner"
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-amber-text">{t.dashboard.blockedTitle}</div>
+            {/* 具体说法来自后端**刚刚实测**的结论（红线 1），界面不另编一句 */}
+            <div className="mt-[4px] text-sm leading-[1.45] text-body">{boot?.headline}</div>
+          </div>
+          <Button
+            size="sm"
+            variant="primary"
+            data-testid="runtime-down-start"
+            disabled={busy !== null}
+            onClick={() => void act('start')}
+          >
+            {busy === 'start' ? t.common.working : t.dashboard.runtimeDownStart}
+          </Button>
+        </div>
+      )}
 
       {/* 启动器自己有新版本（方案 §10「有更新时托盘提示」，界面上也要有一条）。
           只在后台真的查到时才出现；点「查看」进更新页，装不装由用户决定 —— 绝不自动装。 */}
@@ -552,7 +588,10 @@ export function Dashboard() {
             </div>
           )}
           <div className="mt-auto flex flex-wrap gap-[10px] pt-4">
-            {/* 已经停了的时候主按钮是「启动」——「停止」在那儿没有意义 */}
+            {/* 已经停了的时候主按钮是「启动」——「停止」在那儿没有意义。
+                R1：运行时问不出来的时候说的是「启动运行时」—— 这一步要先把内置
+                虚拟机 / Docker 起起来（`stack_op` 的 start 本来就含这一步），
+                按钮上就得说清这一点，免得用户以为点了没反应 */}
             {running ? (
               <Button size="sm" data-testid="stack-stop" disabled={busy !== null} onClick={() => void openStop()}>
                 {busy === 'stop' ? t.common.working : t.common.stop}
@@ -565,7 +604,11 @@ export function Dashboard() {
                 disabled={busy !== null}
                 onClick={() => void act('start')}
               >
-                {busy === 'start' ? t.common.working : t.common.start}
+                {busy === 'start'
+                  ? t.common.working
+                  : runtimeDown
+                    ? t.dashboard.runtimeDownStart
+                    : t.common.start}
               </Button>
             )}
             <Button

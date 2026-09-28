@@ -1906,13 +1906,21 @@ fn cmd_boot_state() -> AppResult<()> {
         0
     };
     let route = crate::commands::route_of(rv.posture, volumes);
-    let adopted = route == crate::commands::BootRoute::Dashboard && !cfg.install.done;
-    if route == crate::commands::BootRoute::Dashboard {
+    // 和界面上那一次同一条规矩（R1）：运行时问不出来的机器**不写安装记录** ——
+    // 「检测到它已经在运行」这句话在那种机器上不成立（`boot_state` 里写了三条理由）
+    let adopted = route == crate::commands::BootRoute::Dashboard
+        && !cfg.install.done
+        && rv.posture != crate::selfcheck::Posture::RuntimeDown;
+    if route == crate::commands::BootRoute::Dashboard
+        && rv.posture != crate::selfcheck::Posture::RuntimeDown
+    {
         cfg.mark_installed(adopted);
         dirty = true;
-        if rv.posture == crate::selfcheck::Posture::Healthy {
-            cfg.touch_healthy();
-        }
+    }
+    if route == crate::commands::BootRoute::Dashboard
+        && rv.posture == crate::selfcheck::Posture::Healthy
+    {
+        cfg.touch_healthy();
     }
     cfg.save_if(dirty);
 
@@ -1928,6 +1936,9 @@ fn cmd_boot_state() -> AppResult<()> {
             // 2026-09-26 那位 Windows 客户看到的正是这一类话（I16 · P0-4）
             None if rv.posture == crate::selfcheck::Posture::Stopped =>
                 "，网页没去探（容器都停着，那个端口上不会有人应答）".to_string(),
+            // R1：运行时问不出来的时候同样没探过 —— 端口是多少都还不知道
+            None if rv.posture == crate::selfcheck::Posture::RuntimeDown =>
+                "，网页没去探（运行时没在跑，问了也没意义）".to_string(),
             None => "，网页这一次没应答".to_string(),
         }
     );

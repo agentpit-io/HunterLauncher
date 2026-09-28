@@ -454,6 +454,11 @@ const en: Dict = {
     recoveredTitle: 'Hunter is already running',
     recoveredBody:
       'That error no longer holds — the services were fixed, either outside the launcher or by the launcher itself. Nothing was reinstalled and nothing was downloaded again.',
+    // R1: installed on disk, but the runtime cannot be asked right now (the built-in
+    // VM / Docker is not running, or another Hunter owns the same project name).
+    // This is NOT "nothing is installed here" — the launcher stays on the dashboard.
+    blockedTitle: 'Hunter is installed here, but the launcher cannot reach it right now',
+    runtimeDownStart: 'Start the runtime',
     // I13 · R6 / R7
     envLastBackup: 'Last backup',
     envLastBackupNone: 'no backup yet',

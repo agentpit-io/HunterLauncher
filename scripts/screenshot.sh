@@ -48,8 +48,12 @@ SETTLE="${SETTLE:-9}"
 # I16 追加两页（都来自 2026-09-26 那位 Windows 客户的诊断包）：
 #   dashboard-stopped —— 六个容器全 exited。看的是顶上那行大字与副标题**不再打架**
 #     （0.1.15 在这个现场写的是「Hunter 运行中」＋「v1.2.2 · 容器已停止」）
+# R1 追加一页：
+#   dashboard-runtime-down —— 用户 2026-09-28 报的那一幕：没起 Docker 打开软件。
+#     看的是「不再被判成没装过」—— 进的是运行面板（不是欢迎页），
+#     顶上一块说清「装过、只是运行时没在跑」，主按钮是「启动运行时」
 #   dashboard-schedule-broken —— 定时备份根本没挂上的那条红横幅（0.1.15 界面上一个字都没有）
-PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-schedule-broken dashboard-interrupted upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }
