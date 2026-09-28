@@ -81,6 +81,13 @@ pub enum Kind {
     Manual,
     /// 定时任务跑的（`--backup --scheduled`）
     Scheduled,
+    /// **补跑的那一次**（R2，方案 §4.3）。
+    ///
+    /// 启动器启动满等待时长之后，替用户把「今天本该跑的定时备份」补做一遍。
+    /// **为什么不并进 `Scheduled`**：这一台机器上定时任务根本没装上
+    /// （`schtasks` 三条路全灭），这次不是它跑的。用户看到的必须是
+    /// 「这是补跑的一次」，而不是「定时备份」—— 界面上两者写的话不一样。
+    Missed,
     /// 升级前自动做的。**不参与「保留近 N 天」的轮换，另外单独留最近 2 份**
     ///
     /// 这也是默认值：0.1.12 及之前的备份全都是升级前备份，
@@ -94,6 +101,7 @@ impl Kind {
         match self {
             Kind::Manual => "manual",
             Kind::Scheduled => "scheduled",
+            Kind::Missed => "missed",
             Kind::PreUpgrade => "pre-upgrade",
         }
     }
@@ -101,6 +109,7 @@ impl Kind {
         match self {
             Kind::Manual => "你手动做的",
             Kind::Scheduled => "定时备份",
+            Kind::Missed => "补跑的一次",
             Kind::PreUpgrade => "升级前自动备份",
         }
     }
@@ -108,6 +117,7 @@ impl Kind {
         match s.trim().to_ascii_lowercase().as_str() {
             "manual" => Kind::Manual,
             "scheduled" => Kind::Scheduled,
+            "missed" => Kind::Missed,
             _ => Kind::PreUpgrade,
         }
     }
@@ -335,6 +345,95 @@ fn unique_dir(base: &Path, id: &str) -> (String, PathBuf) {
         if n > 50 {
             return (name, p);
         }
+    }
+}
+
+// ── 跨进程互斥（R2 · T2-4） ────────────────────────────────────────────────
+//
+// 有了 B 层兜底之后，同一台机器上「会真的做一次备份」的入口变成了四个：
+// 界面上的「立即备份」、系统定时任务（`--backup --scheduled`）、
+// 启动器的补跑（`--backup --missed`）、以及恢复前的保命备份。
+// 它们**可能是四个不同的进程**，而 `backup.rs` 里原本一个互斥都没有。
+//
+// 方案 §4.3 定的规矩：**抢不到就跳过这一次，不排队、不重试**。
+// 备份不是不能错过的实时交易，两次并发的 `pg_dump` 除了互相拖慢、
+// 争同一个输出目录之外没有任何好处。
+
+/// 备份的跨进程锁文件。
+pub fn lock_path() -> PathBuf {
+    crate::paths::root().join("backup.lock")
+}
+
+/// 抢到之后一直持有；**Drop 的时候把锁文件删掉**。
+#[derive(Debug)]
+pub struct BackupLock {
+    p: PathBuf,
+}
+
+impl Drop for BackupLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.p);
+    }
+}
+
+/// 锁文件多久没动就当成「上一个进程已经不在了」，可以抢过来。
+///
+/// **这一条不能省。** 没有它的话，一次强退 / 断电 / 任务管理器里结束进程
+/// 就会留下一个谁都不会删的锁文件 —— 从那一刻起**这台机器再也不会自动备份**，
+/// 而且界面上一切正常。那比「重复备份一次」严重得多。
+const LOCK_STALE: Duration = Duration::from_secs(2 * 3600);
+
+/// 抢锁。**拿不到就返回 `None`（这一次跳过），不排队、不重试。**
+pub fn try_lock() -> Option<BackupLock> {
+    try_lock_at(&lock_path())
+}
+
+/// [`try_lock`] 的实现。路径是参数，单测才能指到一个临时目录上去。
+fn try_lock_at(p: &Path) -> Option<BackupLock> {
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    for attempt in 0..2 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(p)
+        {
+            Ok(mut f) => {
+                // 写下是谁拿着它。**只为排查用**，判活看的是修改时间，不看这个数。
+                let _ = write!(f, "{}", std::process::id());
+                return Some(BackupLock { p: p.to_path_buf() });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if attempt == 0 && lock_is_stale(p) {
+                    crate::lwarn!("备份锁是陈旧的（上一个进程多半没退干净），这一次抢过来");
+                    let _ = std::fs::remove_file(p);
+                    continue;
+                }
+                return None;
+            }
+            // 写不进去（没有权限、磁盘满）：**当成抢不到**，绝不当成抢到了
+            Err(e) => {
+                crate::lwarn!("备份锁建不出来（{}）：这一次按「已有备份在跑」处理", e);
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// 锁文件是不是已经陈旧了。**读不到就当成陈旧**（文件刚被删掉是好事）；
+/// 修改时间在未来（时钟回拨）当成**活着的** —— 宁可这一次跳过，也不要并发。
+fn lock_is_stale(p: &Path) -> bool {
+    let Ok(md) = std::fs::metadata(p) else {
+        return true;
+    };
+    let Ok(m) = md.modified() else {
+        return true;
+    };
+    match m.elapsed() {
+        Ok(d) => d > LOCK_STALE,
+        Err(_) => false,
     }
 }
 
@@ -1951,6 +2050,84 @@ mod tests {
         assert!(m.has_dump());
         assert_eq!(m.kind, Kind::PreUpgrade, "没有 kind 的老备份算升级前备份");
         assert!(!m.kind.rotates(), "升级前备份不参与按天轮换");
+    }
+
+    /// **补跑的那一次不许冒充定时备份**（R2 · §6.1）。
+    ///
+    /// 这台机器上定时任务根本没装上，补跑是启动器自己做的。
+    /// 两档在界面上写的话不一样（「定时备份」/「补跑的一次」），
+    /// 在 `meta.json` 里的字符串也不一样 —— 混成一句就是在编。
+    #[test]
+    fn 补跑不能冒充定时备份() {
+        assert_eq!(Kind::Missed.as_str(), "missed");
+        assert_eq!(Kind::Scheduled.as_str(), "scheduled");
+        assert_ne!(Kind::Missed.as_str(), Kind::Scheduled.as_str());
+        assert_ne!(Kind::Missed.cn(), Kind::Scheduled.cn());
+        assert_ne!(Kind::Missed.cn(), Kind::Manual.cn());
+        assert_eq!(Kind::Missed.cn(), "补跑的一次");
+
+        // 序列化 / 反序列化往返：写进 meta.json 再读回来还是它
+        let s = serde_json::to_string(&Kind::Missed).expect("序列化得出来");
+        assert_eq!(s, "\"missed\"");
+        assert_eq!(
+            serde_json::from_str::<Kind>("\"missed\"").expect("读得回来"),
+            Kind::Missed
+        );
+        assert_eq!(Kind::parse("missed"), Kind::Missed);
+        assert_eq!(Kind::parse("MISSED"), Kind::Missed, "大小写不敏感");
+        // 补跑是日常备份，要参加按天轮换
+        assert!(Kind::Missed.rotates(), "补跑的那一次也参与轮换");
+    }
+
+    /// **拿不到锁时返回「跳过」，不是返回成功**（R2 · §6.1）。
+    #[test]
+    fn 锁拿不到就跳过而不是当成成功() {
+        let dir = std::env::temp_dir().join(format!("hunter-lock-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("backup.lock");
+        let _ = std::fs::remove_file(&p);
+
+        let first = try_lock_at(&p);
+        assert!(first.is_some(), "锁空着的时候应该抢得到");
+        assert!(
+            try_lock_at(&p).is_none(),
+            "已经有人拿着的时候必须拿不到 —— 调用方据此跳过这一次"
+        );
+
+        // Drop 之后锁就还回去了
+        drop(first);
+        assert!(!p.exists(), "Drop 要把锁文件删掉");
+        assert!(try_lock_at(&p).is_some(), "还回去之后下一个人抢得到");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 陈旧的锁会被抢过来 —— 否则一次强退就永远不再备份。
+    #[test]
+    fn 陈旧的锁抢得过来而新的抢不过来() {
+        let dir = std::env::temp_dir().join(format!("hunter-lockstale-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("backup.lock");
+        let _ = std::fs::remove_file(&p);
+
+        // 刚刚写下的锁：是活的
+        std::fs::write(&p, b"1").expect("写锁文件");
+        assert!(!lock_is_stale(&p), "刚写的锁不陈旧");
+        assert!(try_lock_at(&p).is_none(), "活的锁抢不过来");
+
+        // 把修改时间拨到 3 小时前：当成上一个进程已经死了
+        let old = std::time::SystemTime::now() - Duration::from_secs(3 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .and_then(|f| f.set_modified(old))
+            .expect("改锁文件的修改时间");
+        assert!(lock_is_stale(&p), "3 小时没动的锁算陈旧");
+        let stolen = try_lock_at(&p);
+        assert!(stolen.is_some(), "陈旧的锁必须抢得过来，否则永远不再备份");
+        drop(stolen);
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

@@ -1,0 +1,49 @@
+# R2 证据 a · 「该不该补跑」判据的纯函数单测（方案 §6.1）
+# 时间：2026-09-29 01:23:18  ·  机器：mixplode-hk-01 (Linux)
+# 判据是纯函数（fallback::should_catch_up / fallback::due），
+# 这一份跑的是真测试 —— 不是模拟 Windows，判据本来就与平台无关。
+
+$ cargo test --locked fallback::
+test fallback::tests::不足等待时长时不补跑哪怕当天从来没备过 ... ok
+test fallback::tests::判据用的是配置里那个等待时长 ... ok
+test fallback::tests::开关关掉时以上全不触发 ... ok
+test fallback::tests::时钟回拨与未来时间不误判也不崩 ... ok
+test fallback::tests::启动时记住的是墙钟秒 ... ok
+test fallback::tests::满等待时长且从未成功过就补跑 ... ok
+test fallback::tests::满等待时长但当天已经备过就不补 ... ok
+test fallback::tests::等待时长改了判据跟着变 ... ok
+test fallback::tests::等待时长的默认值就是用户定的那个数 ... ok
+test fallback::tests::等待时长被收进_5_到_720 ... ok
+test fallback::tests::跨天边界 ... ok
+test fallback::tests::间隔的两个边界_23小时59分不跑24小时01分跑 ... ok
+test fallback::tests::间隔被手改成零也不至于刚备过就再备 ... ok
+test fallback::tests::等待时长被手写成负数也读得回来并收进_5 ... ok
+test fallback::tests::老配置里没有这三项时按默认值来 ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 729 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ cargo test --locked backup::tests::
+test backup::tests::建议的备份目录一定在工作目录之外 ... ok
+test backup::tests::备份目录名按方案的格式 ... ok
+test backup::tests::有没有转储分得清楚 ... ok
+test backup::tests::校验只数真正的目录项不数注释 ... ok
+test backup::tests::新旧两种目录名都读得出日期 ... ok
+test backup::tests::版本比较认得出补丁号与两位数 ... ok
+test backup::tests::没有备份时摘要也有一行话 ... ok
+test backup::tests::目录名能排序且新的在后 ... ok
+test backup::tests::补跑不能冒充定时备份 ... ok
+test backup::tests::转储字节数为零时不算有备份 ... ok
+test backup::tests::老的_meta_json_读得出来且算成升级前备份 ... ok
+test backup::tests::轮换_保留天数被手改成零时也至少留一天 ... ok
+test backup::tests::同一分钟的第二次备份不会覆盖第一次 ... ok
+test backup::tests::轮换_升级前备份单独留最近两份不参与按天 ... ok
+test backup::tests::轮换_按天保留最后一份且只留最近三天 ... ok
+test backup::tests::轮换_认不出日期的一份都不删 ... ok
+test backup::tests::锁拿不到就跳过而不是当成成功 ... ok
+test backup::tests::陈旧的锁抢得过来而新的抢不过来 ... ok
+test backup::tests::删除守卫_只认备份根下面那一层 ... ok
+test backup::tests::排除子目录之后两个数字来自不同的地方 ... ok
+test backup::tests::稀疏文件按实占的块数算不按表观长度算 ... ok
+test backup::tests::备份命令走的是参数数组且带_exec_t_与项目名 ... ok
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 722 filtered out; finished in 0.10s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

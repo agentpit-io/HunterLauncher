@@ -1,0 +1,26 @@
+{
+  "id": "hunter-20260929-0122-v1.2.2-2",
+  "tag": "1.2.2",
+  "at": "2026-09-29 01:22:41",
+  "kind": "missed",
+  "launcherVersion": "0.1.16",
+  "project": "hunter",
+  "entries": [],
+  "dumpBytes": null,
+  "dumpError": "拉起 postgres 失败：open /tmp/r2-home/app/docker-compose.yml: no such file or directory",
+  "verified": false,
+  "verifyNote": "",
+  "tableCount": null,
+  "tables": [],
+  "rowsTotal": null,
+  "tablesNote": "",
+  "volumes": [],
+  "totalBytes": 0,
+  "elapsedMs": 253,
+  "dir": "/home/support/Hunter-backups/hunter-20260929-0122-v1.2.2-2",
+  "files": [
+    "launcher.toml"
+  ],
+  "sqlBytes": null,
+  "sqlError": null
+}

@@ -614,6 +614,9 @@ function demoBackup(id: string, at: string, kind: BackupMeta['kind']): BackupMet
 
 export const demoBackups: BackupMeta[] = [
   demoBackup('hunter-20260923-0000-v1.2.0', '2026-09-23 00:00:03', 'scheduled'),
+  // R2：**补跑的那一次**。演示数据里放一条，界面上就该显示「补跑的一次」
+  // 而不是「定时备份」—— 两句话说的事不一样。
+  demoBackup('hunter-20260922-1430-v1.2.0', '2026-09-22 14:30:11', 'missed'),
   demoBackup('hunter-20260922-0000-v1.2.0', '2026-09-22 00:00:02', 'scheduled'),
   demoBackup('hunter-20260921-1004-v1.2.0', '2026-09-21 10:04:31', 'pre-upgrade'),
 ]
@@ -636,6 +639,11 @@ export const demoBackupSettings: BackupSettings = {
   suggestedDir: '/home/user/Hunter-backups',
   externalSuggestions: ['/media/user/T7/Hunter 备份'],
   scheduleError: '',
+  windowsFallback: true,
+  fallbackDelayMins: 120,
+  fallbackIntervalHours: 24,
+  // 演示态演的就是「定时任务挂不上、改由启动器补跑」这一档
+  autoMode: 'fallback',
 }
 
 export const demoSchedule: ScheduleStatus = {

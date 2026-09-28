@@ -98,6 +98,11 @@ export type ErrorCode =
   | 'E_RATE_LIMITED'
   // I12 · R5：这台机器上的数据比要装的这一版新。硬装会真的弄坏数据，所以停在装之前
   | 'E_DATA_DOWNGRADE'
+  // R2：**已经有一份备份在跑，这一次跳过**。有了启动器补跑之后，会真的做备份的
+  // 入口有四个（界面按钮 / 系统定时任务 / 启动器补跑 / 恢复前的保命备份），
+  // 而它们可能是四个不同的进程。这一条是「不排队、不重试」的结果，
+  // **不是失败** —— 归进 E_UNKNOWN 会把它说成「出了点意外」
+  | 'E_BACKUP_BUSY'
   | 'E_NOT_IMPLEMENTED'
   | 'E_UNKNOWN'
 
@@ -123,6 +128,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_PROJECT_CONFLICT',
   'E_RATE_LIMITED',
   'E_DATA_DOWNGRADE',
+  'E_BACKUP_BUSY',
   'E_NOT_IMPLEMENTED',
   'E_UNKNOWN',
 ]

@@ -391,6 +391,27 @@ pub struct BackupSection {
     /// 界面上一个字都没有，用户以为自己有每日备份，实际一次都没跑过。
     #[serde(default)]
     pub schedule_error: String,
+
+    // ── R2 · B 层兜底（方案 §4.3）─────────────────────────────────────────
+    /// **不依赖系统任务库的每日备份**（R2）。默认**开**。
+    ///
+    /// 关掉它就回到 R2 之前的行为：Windows 上一旦任务装不上，
+    /// 这台机器一次备份都不会跑（界面上照旧如实显示红横幅）。
+    #[serde(default = "yes")]
+    pub windows_fallback: bool,
+    /// **启动后等多久才允许补跑**（分钟）。默认 120，有效范围 5–720。
+    ///
+    /// 用户 2026-09-28 定的：开机那阵子是最忙的时候，备份要连 docker、跑
+    /// `pg_dump`、大量写盘，那会儿插进去就是明抢 —— **绝不在启动那一刻备份**。
+    ///
+    /// 类型是 `i64` 而不是 `u32`：配置文件可能被手改成 `-1`，
+    /// 而 `u32` 遇到负数会让**整份配置**解析失败、所有设置一起退回默认值。
+    /// 收窄由 [`crate::fallback::clamp_wait_mins`] 负责。
+    #[serde(default = "d_fallback_delay_mins")]
+    pub fallback_delay_mins: i64,
+    /// 两次**成功**备份之间最长的间隔（小时）。默认 24。
+    #[serde(default = "d_fallback_interval_hours")]
+    pub fallback_interval_hours: u32,
 }
 
 impl Default for BackupSection {
@@ -408,8 +429,19 @@ impl Default for BackupSection {
             fail_streak: 0,
             schedule_installed: false,
             schedule_error: String::new(),
+            windows_fallback: true,
+            fallback_delay_mins: crate::fallback::DEFAULT_WAIT_MINS,
+            fallback_interval_hours: crate::fallback::DEFAULT_INTERVAL_HOURS,
         }
     }
+}
+
+fn d_fallback_delay_mins() -> i64 {
+    crate::fallback::DEFAULT_WAIT_MINS
+}
+
+fn d_fallback_interval_hours() -> u32 {
+    crate::fallback::DEFAULT_INTERVAL_HOURS
 }
 
 impl BackupSection {
@@ -430,6 +462,19 @@ impl BackupSection {
     /// 保留天数收进 1–30。配置文件被手改成 0 的时候不能真的一份都不留。
     pub fn keep_days_clamped(&self) -> u32 {
         self.keep_days.clamp(1, 30)
+    }
+
+    /// 补跑的等待时长（分钟），已经收进 5–720。
+    /// **0 与负数一律按 5 算** —— `0` 等于「启动就允许补跑」，正是要避免的事。
+    pub fn fallback_wait_mins(&self) -> i64 {
+        crate::fallback::clamp_wait_mins(self.fallback_delay_mins)
+    }
+
+    /// 两次成功备份之间最长的间隔（小时）。**最少 1 小时** ——
+    /// 配置里被手改成 0 的话，判据就退化成「只要满等待时长就补」，
+    /// 刚备过也会再备一次，那不是这个数想表达的意思。
+    pub fn fallback_interval_hours_clamped(&self) -> u32 {
+        self.fallback_interval_hours.clamp(1, 720)
     }
 }
 

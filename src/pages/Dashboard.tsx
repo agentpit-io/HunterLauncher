@@ -438,6 +438,32 @@ export function Dashboard() {
         </div>
       )}
 
+      {/* R2 · U3：自动备份是**怎么**跑的，常驻说明。
+          **不是红了才说** —— 两种机制的能力不一样（一个没赶上的那次会补跑，
+          一个不会），混成一句「已开启」就是在骗人；而且这两条上限
+          （当天没开机 = 没备份 / 没撑到等待时长就不补跑）用户必须知道。 */}
+      {bk.data && (
+        <div
+          className="mt-[14px] shrink-0 rounded-md border border-line bg-card px-4 py-2.5"
+          data-testid="auto-backup-status"
+        >
+          <div className="text-sm leading-[1.45] text-body">
+            {t.dashboard.autoTitle}：
+            {bk.data.autoMode === 'fallback'
+              ? t.dashboard.autoByFallback(bk.data.fallbackDelayMins)
+              : bk.data.autoMode === 'off'
+                ? t.dashboard.autoOff
+                : t.dashboard.autoByScheduler}
+          </div>
+          {bk.data.autoMode === 'fallback' && (
+            <div className="mt-[4px] text-xs leading-[1.5] text-muted">
+              {t.dashboard.autoLimitNoRun} {t.dashboard.autoLimitShortLived(bk.data.fallbackDelayMins)}{' '}
+              {t.dashboard.autoTune}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* I12 · R2：三层资源。放在统计卡之前 —— 用户打开面板最先想知道的是
           「它现在占了我多少东西」，而不是额度还剩多少 */}
       <ResourcePanel />

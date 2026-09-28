@@ -1,0 +1,22 @@
+# R2 证据 b · 跨进程锁：同一时刻只让一份备份在跑（T2-4）
+# 时间：2026-09-29 01:23:12  ·  机器：mixplode-hk-01 (Linux)
+# **这里没有伪造任何 Windows 场景** —— 锁是文件级的、跨平台的，
+# 下面跑的就是产品里那条代码路径（hunter-launcher --backup --missed）。
+# 现场：HUNTER_HOME=/tmp/r2-home，DOCKER_HOST=tcp://127.0.0.1:1（死端口，读不到 docker，
+#       所以本机上一套容器都不会被碰到），备份目录指到 /tmp/r2-backups。
+
+$ printf 99999 > /tmp/r2-home/backup.lock     # 另一份备份正拿着锁（刚建的，是活的）
+$ hunter-launcher --backup --missed
+备份到 /tmp/r2-backups
+  ⚠ 跳过：已经有一份备份在跑，这一次不排队也不重试。
+★ 退出码 = 0（0 = 跳过，不是失败 —— 方案 §4.3：不排队、不重试）
+
+$ rm -f /tmp/r2-home/backup.lock                # 那一份做完了，锁还回去
+$ hunter-launcher --backup --missed
+✗ E_UPDATE_FAILED: 拉起 postgres 失败：open /tmp/r2-home/app/docker-compose.yml: no such file or directory
+  日志：/tmp/r2-home/logs/launcher.log
+★ 退出码 = 1（1 = 这一次真做了、但本机没有 Hunter 那套 compose 文件所以失败；
+  与锁无关，只是说明「锁让开之后真的会往下走」）
+
+# 跑完之后锁文件被 Drop 删掉（下次还抢得到）
+ls: cannot access '/tmp/r2-home/backup.lock': No such file or directory

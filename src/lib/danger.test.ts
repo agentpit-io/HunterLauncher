@@ -55,6 +55,12 @@ describe('自动备份好像错过了一次', () => {
     diskFreeBytes: null,
     suggestedDir: '/home/u/Hunter-backups',
     externalSuggestions: [],
+    // R2：B 层兜底的三个配置项 + 那行常驻状态用的档位。
+    // 这一档的判据（`backupOverdue`）跟它们没关系，取默认值即可。
+    windowsFallback: true,
+    fallbackDelayMins: 120,
+    fallbackIntervalHours: 24,
+    autoMode: 'fallback',
   }
   // 2026-09-23 12:00:00 +08:00
   const now = Date.parse('2026-09-23T12:00:00+08:00')

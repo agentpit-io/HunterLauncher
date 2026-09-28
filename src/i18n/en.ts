@@ -482,6 +482,18 @@ const en: Dict = {
       `The daily automatic backup is not scheduled — it will never run on this computer: ${why}`,
     scheduleRetry: 'Schedule it again',
     scheduleRetrying: 'Scheduling…',
+    // ── R2: the fallback that does not depend on the task database ──────────
+    // The two mechanisms are not equal — one catches up after a missed run,
+    // the other does not. Saying a flat "on" would be a lie.
+    autoTitle: 'Automatic backup on this computer',
+    autoByFallback: (mins: number) =>
+      `the launcher runs it once it has been up for ${mins} minutes, then checks every 15 minutes (a run it slept through is not made up)`,
+    autoByScheduler: "the system's scheduled task (a missed run is made up later)",
+    autoOff: 'off — nothing is backed up automatically on this computer',
+    autoLimitNoRun: 'If the computer was never on and the launcher never ran that day, that day has no backup.',
+    autoLimitShortLived: (mins: number) =>
+      `If the launcher quit before ${mins} minutes, that run is not made up — the next start begins the wait again.`,
+    autoTune: 'If this computer is rarely on that long, lower the waiting time.',
   },
   backup: {
     title: 'Backup & restore',
@@ -497,6 +509,7 @@ const en: Dict = {
     empty: 'No backups yet. Press "Back up now" to make the first one.',
     kindManual: 'made by you',
     kindScheduled: 'scheduled',
+    kindMissed: 'made up by the launcher',
     kindPreUpgrade: 'before an upgrade',
     verified: 'verified',
     notVerified: 'not verified',
@@ -688,7 +701,7 @@ const en: Dict = {
       on ? 'an autostart entry exists on this system' : 'no autostart entry on this system',
     sectionBackup: 'Data backup',
     backupHint:
-      "Backs up the database, the secrets volume and the config to a folder you choose, every day. It runs even when the launcher is closed — the operating system's own scheduler does it.",
+      "Backs up the database, the secrets volume and the config to a folder you choose, every day. If the system scheduler works, that runs it; on a computer where it cannot be installed (such as a Windows machine without permission to write the task database), the launcher makes up the run itself.",
     backupEnabled: 'Automatic backup',
     backupTime: 'Time of day',
     backupTimeHint: '24-hour clock, e.g. 00:00 or 07:30. If the computer is off or asleep, it catches up after it wakes.',
@@ -711,6 +724,19 @@ const en: Dict = {
     backupLastError: 'Last failure',
     backupOpen: 'Open backup & restore',
     backupSaving: 'Saving and updating the scheduled task…',
+    // ── R2 · the launcher's own catch-up (plan §4.4 U6) ─────────────────────
+    fallbackTitle: 'When there is no scheduled task, let the launcher make it up',
+    fallbackHint:
+      'When this computer cannot take a system scheduled task, the launcher does the backup itself: one run after it has been up for a while, then a check every 15 minutes. The minutes right after start-up are the busiest, so it waits 2 hours by default before touching the disk.',
+    fallbackEnable: 'Let the launcher make it up',
+    fallbackWait: 'Wait this long after start-up',
+    fallbackWaitUnit: 'minutes',
+    fallbackWaitRange: 'Between 5 and 720.',
+    fallbackWaitLive: 'Lowering it takes effect within 15 minutes — the decision always uses the current value.',
+    fallbackWaitZero: 'A 0 is treated as 5: 0 would mean "back up the moment it starts", which is exactly what we are avoiding.',
+    fallbackWaitLong: 'If this computer is rarely on that long, lower the waiting time.',
+    fallbackRestoreDefault: 'Restore default (120 minutes)',
+    fallbackSaved: 'Saved.',
     sectionMonitor: 'Resource alerts',
     monitorHint:
       'When disk, memory or service restarts cross these thresholds, a banner appears on the dashboard. The same issue is only raised once per 24 hours.',
@@ -952,6 +978,10 @@ const en: Dict = {
       E_DATA_DOWNGRADE: {
         title: 'Your data is newer than the version being installed',
         hint: 'The Hunter data left on this computer was written by a newer Hunter than the one about to be installed. Going ahead would corrupt it, irreversibly, so we stopped before touching anything. Two ways out: install the version it came from, or restore from a backup. The details below show both versions.',
+      },
+      E_BACKUP_BUSY: {
+        title: 'A backup is already running',
+        hint: 'Only one backup runs at a time — it may be the scheduled task, or the run the launcher makes up for you. This attempt was skipped and will not queue. Try again once that one finishes.',
       },
       E_NOT_IMPLEMENTED: { title: 'Not implemented yet', hint: 'M1 only builds the UI skeleton; the real calls land in M2 / M3.' },
       E_UNKNOWN: { title: 'Unknown error', hint: 'An unclassified error — please attach the diagnostic bundle.' },
