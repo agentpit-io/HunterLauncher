@@ -43,3 +43,55 @@ describe('文案里不许出现渲染不出来的标记', () => {
     expect(keys(en)).toEqual(keys(zhCN))
   })
 })
+
+/**
+ * R2 · 补跑（方案 §4.3）。
+ *
+ * 这台机器上系统定时任务根本没装上（`schtasks` 三条路全灭），补跑是
+ * **启动器自己做的**。把它显示成「定时备份」就是在编 —— 两句话说的事不一样，
+ * 用户得能从界面上分清「这一份是谁做的」。
+ */
+describe('R2 · 补跑的那一次不许混成定时备份', () => {
+  it('四档备份的来源在中文里是四句不同的话', () => {
+    const b = zhCN.backup
+    const all = [b.kindManual, b.kindScheduled, b.kindMissed, b.kindPreUpgrade]
+    expect(new Set(all).size, `四句话必须两两不同：${all.join(' / ')}`).toBe(4)
+    expect(b.kindMissed).not.toContain('定时')
+    expect(b.kindMissed.length).toBeGreaterThan(0)
+  })
+
+  it('英文那一侧同样分开', () => {
+    const b = en.backup
+    expect(b.kindMissed).not.toBe(b.kindScheduled)
+    expect(new Set([b.kindManual, b.kindScheduled, b.kindMissed, b.kindPreUpgrade]).size).toBe(4)
+  })
+})
+
+/**
+ * R2 · U3：运行面板那行**常驻**状态（方案 §4.4 U3）。
+ *
+ * 两种机制的能力不一样 —— 系统定时任务「错过会补跑」，启动器补跑
+ * 「错过了不补」。混成一句「已开启」就是在骗人，所以这里把它们钉成两句。
+ */
+describe('R2 · 自动备份那行状态分得清两条机制', () => {
+  it('两句话不一样，而且补跑那句写明了等待多久', () => {
+    const d = zhCN.dashboard
+    const byFallback = d.autoByFallback(120)
+    expect(byFallback).not.toBe(d.autoByScheduler)
+    expect(byFallback).toContain('120')
+    expect(d.autoByScheduler).not.toContain('120')
+    // 「不补」那半句必须在 —— 这是两种机制真正的差别
+    expect(byFallback).toContain('不补')
+    expect(d.autoByScheduler).toContain('补跑')
+    // 关着的时候是第三句，不能显示成「已开启」
+    expect(d.autoOff).not.toBe(byFallback)
+    expect(d.autoOff).not.toBe(d.autoByScheduler)
+  })
+
+  it('两条上限都写在常驻说明里', () => {
+    const d = zhCN.dashboard
+    expect(d.autoLimitNoRun).toContain('那天不会有备份')
+    expect(d.autoLimitShortLived(120)).toContain('120')
+    expect(d.autoLimitShortLived(120)).toContain('重新计时')
+  })
+})

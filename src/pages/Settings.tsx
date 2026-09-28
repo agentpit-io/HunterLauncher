@@ -175,7 +175,7 @@ export function Settings() {
         {/* I13 · R6：数据备份。开关、时间、目录、保留天数、内容勾选都在这里，
             改完**当场**去改系统里的定时任务 —— 「配置里写着几点」和
             「系统里真的几点跑」永远不该是两件事（写在 write_backup_settings 里）。 */}
-        <BackupCard t={t} onOpen={() => setOverlay('backup')} />
+        <BackupCard t={t} platform={app.data?.platform ?? ''} onOpen={() => setOverlay('backup')} />
 
         {/* I13 · R7：资源提醒。阈值都是 `[monitor]` 里的真实配置，
             右边那一行「现在有几条提醒」是当场跑一遍监测的结果，不是缓存 */}
@@ -816,13 +816,25 @@ function AuditLog({ t }: { t: ReturnType<typeof useStore>['t'] }) {
  * `systemctl --user is-enabled` / `schtasks /Query`），不是配置里的备忘 ——
  * 配置说「开着」而系统里根本没装，正是最需要被看见的那种情况。
  */
-function BackupCard({ t, onOpen }: { t: ReturnType<typeof useStore>['t']; onOpen: () => void }) {
+function BackupCard({
+  t,
+  platform,
+  onOpen,
+}: {
+  t: ReturnType<typeof useStore>['t']
+  /** `appInfo().platform`。R2 那块兜底设置**只在 Windows 上有意义** ——
+   *  macOS / Linux 的定时机制本来就是好的，不该跟着一起降级。 */
+  platform: string
+  onOpen: () => void
+}) {
   const [nonce, setNonce] = useState(0)
   const b = useAsync(() => ipc.readBackupSettings(), [nonce])
   const sc = useAsync(() => ipc.backupScheduleStatus(), [nonce])
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [draft, setDraft] = useState<BackupSettings | null>(null)
+  /** R2：等待时长的输入框。`null` = 还没动过，显示后端给的那个数。 */
+  const [waitDraft, setWaitDraft] = useState<string | null>(null)
   const d = draft ?? b.data
 
   async function patch(p: Partial<BackupSettings>) {
@@ -840,6 +852,19 @@ function BackupCard({ t, onOpen }: { t: ReturnType<typeof useStore>['t']; onOpen
     } finally {
       setSaving(false)
     }
+  }
+
+  /** 存等待时长。**存完把输入框清空回到「显示后端那个数」** ——
+   *  后端存的是收窄后的值（5–720），所以填 0 的人会看到框里变成 5，
+   *  旁边那三句文案解释了为什么（方案 §4.3 的校验语义：不静默夹取）。 */
+  async function saveWait() {
+    const n = Number(waitDraft)
+    if (!Number.isFinite(n)) {
+      setErr(t.settings.fallbackWaitRange)
+      return
+    }
+    await patch({ fallbackDelayMins: Math.trunc(n) })
+    setWaitDraft(null)
   }
 
   async function pick() {
@@ -935,6 +960,60 @@ function BackupCard({ t, onOpen }: { t: ReturnType<typeof useStore>['t']; onOpen
           <span data-testid="settings-backup-sessions">{t.settings.backupIncludeSessions}</span>
         </Checkbox>
       </div>
+      {/* R2 · B 层兜底（方案 §4.4 U6）：**只在 Windows 上出现**。
+          那台出问题的机器上 `schtasks` 三条路全灭，备份改由启动器自己补跑；
+          等待时长用户 2026-09-28 已拍板要放开给用户改。
+          下面那三句文案缺一不可（为什么默认 2 小时 / 改小多久生效 / 填 0 为什么按 5 算）。 */}
+      {platform === 'windows' && d && (
+        <div className="mt-[18px] border-t border-line pt-[14px]" data-testid="settings-fallback">
+          <div className="text-sm font-medium text-ink">{t.settings.fallbackTitle}</div>
+          <div className="mt-[6px] text-xs leading-[1.6] text-muted">{t.settings.fallbackHint}</div>
+          <div className="mt-[10px]">
+            <Toggle
+              on={d.windowsFallback}
+              testId="settings-fallback-enabled"
+              onChange={(v) => void patch({ windowsFallback: v })}
+              label={t.settings.fallbackEnable}
+            />
+          </div>
+          <Field
+            className="mt-[12px]"
+            label={t.settings.fallbackWait}
+            hint={`${t.settings.fallbackWaitRange}${t.settings.fallbackWaitLive}${t.settings.fallbackWaitZero}${t.settings.fallbackWaitLong}`}
+          >
+            <div className="flex items-center gap-[10px]">
+              <TextInput
+                testId="settings-fallback-wait"
+                value={waitDraft ?? String(d.fallbackDelayMins)}
+                onChange={(v) => setWaitDraft(v)}
+              />
+              <span className="text-sm text-muted">{t.settings.fallbackWaitUnit}</span>
+            </div>
+            <div className="mt-[8px] flex flex-wrap gap-[10px]">
+              <Button
+                size="sm"
+                data-testid="settings-fallback-wait-save"
+                disabled={saving || waitDraft === null}
+                onClick={() => void saveWait()}
+              >
+                {t.common.save}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                data-testid="settings-fallback-wait-default"
+                disabled={saving}
+                onClick={() => {
+                  setWaitDraft(null)
+                  void patch({ fallbackDelayMins: 120 })
+                }}
+              >
+                {t.settings.fallbackRestoreDefault}
+              </Button>
+            </div>
+          </Field>
+        </div>
+      )}
       <div className="mt-[14px]">
         <EnvList
           items={[

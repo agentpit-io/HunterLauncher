@@ -1755,6 +1755,18 @@ pub async fn list_backups() -> Result<Vec<crate::backup::BackupMeta>> {
 #[tauri::command]
 pub async fn create_backup(app: tauri::AppHandle) -> Result<crate::backup::BackupMeta> {
     blocking(move || {
+        // **同一时刻只允许一份备份在跑**（R2 · T2-4）。此刻在跑的可能是
+        // 启动器的兜底补跑，也可能是系统定时任务 —— 它们各是一个进程。
+        // 抢不到就如实说，**不当成失败记进 `fail_streak`**：
+        // 「有人正在做」不是「做砸了」，记成失败会让「连续两次失败交给诊断助手」误触发。
+        let Some(_lock) = crate::backup::try_lock() else {
+            return Err(AppError::new(
+                Code::BackupBusy,
+                "已经有一份备份在跑了（可能是定时备份或者启动器刚补跑的那一次），\
+                 这一次就跳过了。等它做完再点。"
+                    .to_string(),
+            ));
+        };
         let tag = state(&app).config().hunter.tag;
         let r = crate::backup::create(crate::backup::Kind::Manual, &tag, |_| {});
         match &r {
@@ -1842,11 +1854,36 @@ pub struct BackupSettings {
     /// 比备份失败本身更危险。
     #[serde(default)]
     pub schedule_error: String,
+
+    // ── R2 · B 层兜底（方案 §4.3）─────────────────────────────────────────
+    /// 关掉它 = 回到 R2 之前：Windows 上任务装不上就一次都不跑
+    #[serde(default)]
+    pub windows_fallback: bool,
+    /// **启动后等多久才允许补跑**（分钟）。默认 120，范围 5–720
+    #[serde(default)]
+    pub fallback_delay_mins: i64,
+    /// 两次成功备份之间最长多久（小时）。本轮不给用户改
+    #[serde(default)]
+    pub fallback_interval_hours: u32,
+    /// **本机自动备份现在靠哪条路**（U3 那行常驻状态用它）：
+    /// `scheduler` = 系统定时任务；`fallback` = 启动器自己补跑；`off` = 关着。
+    ///
+    /// 两种机制的能力不一样（一个「错过会补跑」、一个「错过了不补」），
+    /// 界面上必须分开说，不能混成一句「已开启」。
+    #[serde(default)]
+    pub auto_mode: String,
 }
 
 fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
     let eff = c.backup.effective_dir();
     let all = crate::backup::list();
+    let auto_mode = if !c.backup.enabled {
+        "off"
+    } else if crate::fallback::active(&c.backup) {
+        "fallback"
+    } else {
+        "scheduler"
+    };
     BackupSettings {
         enabled: c.backup.enabled,
         time: c.backup.time.clone(),
@@ -1867,6 +1904,12 @@ fn to_backup_settings(c: &LauncherConfig) -> BackupSettings {
             .into_owned(),
         external_suggestions: crate::backup::external_suggestions(),
         schedule_error: c.backup.schedule_error.clone(),
+        windows_fallback: c.backup.windows_fallback,
+        fallback_delay_mins: c.backup.fallback_wait_mins(),
+        // 回给界面的是**收窄之后的**值：输入框里显示的就是实际生效的那个数，
+        // 用户填 0 之后看到的是 5，旁边那三句话解释了为什么
+        fallback_interval_hours: c.backup.fallback_interval_hours_clamped(),
+        auto_mode: auto_mode.to_string(),
     }
 }
 
@@ -1933,6 +1976,11 @@ pub async fn write_backup_settings(
         c.backup.keep_days = settings.keep_days.clamp(1, 30);
         c.backup.include_sessions = settings.include_sessions;
         c.backup.include_skills = settings.include_skills;
+        // R2：等待时长**落盘的是收窄后的值**（5–720）。
+        // 不静默：回给界面的 `fallbackDelayMins` 也是这个数，输入框里跟着变，
+        // 旁边那三句文案说明了「填 0 为什么按 5 算」。
+        c.backup.windows_fallback = settings.windows_fallback;
+        c.backup.fallback_delay_mins = crate::fallback::clamp_wait_mins(settings.fallback_delay_mins);
         c.save()?;
         st.set_config(c.clone());
         // 系统里的定时任务跟着改。装不上（例如没有 systemd）**不算保存失败** ——

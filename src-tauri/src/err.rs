@@ -106,6 +106,14 @@ pub enum Code {
     /// 而且没法撤销。其余任何一档（缺密钥卷、只有备份、全新）都不阻拦安装 ——
     /// 只有这一档值得用「装不了」去换「数据还在」。
     DataDowngrade,
+    /// **已经有一份备份在跑，这一次跳过**（R2）。
+    ///
+    /// 为什么单独一个码：有了 B 层兜底的补跑之后，会真的做备份的入口有四个
+    /// （界面按钮 / 系统定时任务 / 启动器补跑 / 恢复前的保命备份），
+    /// 而它们可能是**四个不同的进程**。这一条是「不排队、不重试」的那个结果，
+    /// **不是失败** —— 归进 `E_UNKNOWN` 会把它说成「出了点意外」，
+    /// 而它其实是一件完全正常的事。
+    BackupBusy,
     NotImplemented,
     Unknown,
 }
@@ -134,6 +142,7 @@ impl Code {
             Code::ProjectConflict => "E_PROJECT_CONFLICT",
             Code::RateLimited => "E_RATE_LIMITED",
             Code::DataDowngrade => "E_DATA_DOWNGRADE",
+            Code::BackupBusy => "E_BACKUP_BUSY",
             Code::NotImplemented => "E_NOT_IMPLEMENTED",
             Code::Unknown => "E_UNKNOWN",
         }
@@ -163,6 +172,7 @@ impl Code {
             Code::ProjectConflict => "另一个工作目录正占着 hunter 这个项目名",
             Code::RateLimited => "请求太频繁，网关暂时挡了一下",
             Code::DataDowngrade => "你的数据比要装的这一版新",
+            Code::BackupBusy => "已经有一份备份在跑",
             Code::NotImplemented => "这个功能还没实现",
             Code::Unknown => "出了点意外",
         }
@@ -204,6 +214,7 @@ impl Code {
         Code::ConfigWrite,
         Code::ProjectConflict,
         Code::DataDowngrade,
+        Code::BackupBusy,
         Code::NotImplemented,
         Code::Unknown,
     ];

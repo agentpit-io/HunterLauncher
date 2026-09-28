@@ -1,0 +1,21 @@
+# R2 证据 d · 三个新配置项真的落盘了（[backup] 段）
+# 时间：2026-09-29 01:23:27
+# 现场：HUNTER_HOME=/tmp/r2-home 下那份 launcher.toml（启动器自己写出来的，
+#       不是手写的）—— 说明三项目默认值跟着配置一起落盘、读得回来。
+
+[backup]
+enabled = true
+time = "00:00"
+dir = "/tmp/r2-backups"
+keep_days = 3
+include_sessions = true
+include_skills = true
+last_ok_at = ""
+last_error = "拉起 postgres 失败：open /tmp/r2-home/app/docker-compose.yml: no such file or directory"
+last_run_at = "2026-09-29 01:23:13"
+fail_streak = 5
+schedule_installed = false
+schedule_error = ""
+windows_fallback = true
+fallback_delay_mins = 120
+fallback_interval_hours = 24

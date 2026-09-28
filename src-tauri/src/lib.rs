@@ -43,6 +43,7 @@ pub mod config;
 pub mod datacheck;
 pub mod dockercfg;
 pub mod err;
+pub mod fallback;
 pub mod feedback;
 pub mod flow;
 pub mod gateway;
@@ -94,6 +95,10 @@ pub fn run() {
     // 日志要在任何业务代码之前初始化，否则最早的几行会丢
     let _ = paths::ensure_dirs();
     log::init(paths::launcher_log());
+    // **先把「本次是几点起来的」记下来**（R2）。B 层补跑的等待时长以它为基准，
+    // 越早记越准 —— 被 `HKCU\...\Run` 拉起、缩在托盘里的那一次也算启动。
+    // 记的是**墙钟**（见 `fallback` 模块头的计时口径）。
+    fallback::mark_started();
     // `--tray-menu` 那一路只是个转发器：single-instance 会把参数交给已经在跑的实例，
     // 它自己几毫秒后就退了。写「启动器启动」会让日志里凭空多出一堆假的启动记录。
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -471,6 +476,17 @@ pub fn run() {
                     Err(e) => lwarn!("开机自查定时备份：没能对齐 —— {}", e.msg),
                 }
             });
+
+            // **B 层兜底：不依赖任务库的每日备份**（R2 · 方案 §4.3）。
+            //
+            // 客户那台 Windows 上 `schtasks` 三条路全灭，于是「每日备份」一次都不会跑。
+            // 这一条不碰任务库：启动器自己每 15 分钟查一次，**启动满 120 分钟**之后
+            // （且距上次成功备份 ≥ 24 小时）就补跑一次 `--backup --missed`。
+            // **绝不在启动那一刻动手** —— 用户 2026-09-28 定的，理由见 `fallback` 模块头。
+            //
+            // 只 Windows 走这条（macOS / Linux 的定时机制本来就是好的）；
+            // 上面那条 `schedule::sync` 的对齐**一字未动**，两条路并存。
+            crate::fallback::spawn_watch();
 
             // **上一次自动备份是不是出事了**（I13 · R6 6.3）。
             //

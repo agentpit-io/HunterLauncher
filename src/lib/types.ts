@@ -765,7 +765,14 @@ export interface UpgradeStatus {
 
 // ── 数据备份与恢复（I13 · R6）─────────────────────────────────────────────
 
-export type BackupKind = 'manual' | 'scheduled' | 'pre-upgrade'
+/**
+ * 这次备份是谁发起的。
+ *
+ * `missed`（R2）是**启动器自己补跑的那一次**：这台机器上系统定时任务没装上
+ * （`schtasks` 三条路全灭），启动器启动满等待时长之后替用户补做一遍。
+ * 它**不是** `scheduled` —— 说成「定时备份」就是在编。
+ */
+export type BackupKind = 'manual' | 'scheduled' | 'missed' | 'pre-upgrade'
 
 export interface BackupFileEntry {
   name: string
@@ -843,6 +850,23 @@ export interface BackupSettings {
    * 于是他以为自己有每日自动备份 —— 实际上一次都没跑过。
    */
   scheduleError: string
+
+  // ── R2 · B 层兜底（方案 §4.3）────────────────────────────────────────────
+  /** 关掉它 = 回到 R2 之前：Windows 上任务装不上就一次都不跑 */
+  windowsFallback: boolean
+  /** **启动后等多久才允许补跑**（分钟）。默认 120，范围 5–720 */
+  fallbackDelayMins: number
+  /** 两次成功备份之间最长多久（小时）。本轮不给用户改 */
+  fallbackIntervalHours: number
+  /**
+   * 本机自动备份现在靠哪条路（运行面板那行常驻状态用它）：
+   * `scheduler` = 系统定时任务（**错过会补跑**）；
+   * `fallback` = 启动器自己补跑（**错过了不补**）；
+   * `off` = 关着。
+   *
+   * 两种机制的能力不一样，界面上必须分开说，不能混成一句「已开启」。
+   */
+  autoMode: 'scheduler' | 'fallback' | 'off'
 }
 
 export interface ScheduleStatus {

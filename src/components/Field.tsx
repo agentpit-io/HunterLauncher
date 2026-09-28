@@ -28,6 +28,7 @@ export function TextInput({
   mono = false,
   disabled,
   password = false,
+  testId,
 }: {
   value: string
   onChange: (v: string) => void
@@ -36,11 +37,14 @@ export function TextInput({
   disabled?: boolean
   /** 自带模型 key 这类敏感输入用它：不回显明文（红线 2） */
   password?: boolean
+  /** Xvfb 下要点进这个输入框靠它定位（与 [`Toggle`] 同一个理由） */
+  testId?: string
 }) {
   return (
     <input
       type={password ? 'password' : 'text'}
       spellCheck={false}
+      data-testid={testId}
       value={value}
       disabled={disabled}
       placeholder={placeholder}

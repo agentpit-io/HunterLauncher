@@ -346,6 +346,9 @@ export function BackupPanel() {
 
 function kindLabel(m: BackupMeta, t: ReturnType<typeof useStore>['t']): string {
   if (m.kind === 'scheduled') return t.backup.kindScheduled
+  // R2：**补跑的那一次不许显示成「定时备份」** —— 这台机器上定时任务根本没装上，
+  // 那一次是启动器自己做的。两句话说的事不一样，用户要分得清。
+  if (m.kind === 'missed') return t.backup.kindMissed
   if (m.kind === 'manual') return t.backup.kindManual
   return t.backup.kindPreUpgrade
 }

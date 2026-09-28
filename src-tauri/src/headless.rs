@@ -99,6 +99,13 @@ pub struct Args {
     /// ② Hunter 已停止时只临时起 postgres、做完**停回原状态**；
     /// ③ 运行环境都没起的话**记为跳过**，不擅自把整套服务拉起来。
     pub scheduled: bool,
+    /// `--backup --missed`：**这次是启动器自己补跑的**（R2，方案 §4.3 的 ①）。
+    ///
+    /// 与 `--scheduled` 跑的是同一条无界面路径，只有一处不同：
+    /// 记进 `meta.json` 的 `kind` 是 `missed` 而不是 `scheduled`。
+    /// **不许混**：这台机器上定时任务根本没装上，用户看到的必须是
+    /// 「这是补跑的一次」—— 说成「定时备份」就是在编（红线 1）。
+    pub missed: bool,
     /// `--restore <id 或目录>`：从一份备份恢复。要 `-y`
     pub restore: Option<String>,
     /// `--schedule <install|remove|status>`：管定时任务
@@ -150,6 +157,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
         auto: false,
         assist_mode: None,
         scheduled: false,
+        missed: false,
         restore: None,
         schedule: None,
         uninstall: None,
@@ -305,6 +313,8 @@ pub fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Args {
                 a.headless = true;
             }
             "--scheduled" => a.scheduled = true,
+            // R2：跟 `--backup` 用的，不改动作，只改 `kind`
+            "--missed" => a.missed = true,
             "--with-images" => a.with_images = true,
             "--with-runtime" => a.with_runtime = true,
             "--backup-first" => a.backup_first = true,
@@ -404,6 +414,7 @@ Hunter 启动器 · 命令行模式
   hunter-launcher --backups             列出全部备份（当前备份目录 + 老的 ~/.hunter/backups）
   hunter-launcher --backup              立刻做一次备份（pg_dump -Fc + 密钥卷 + 配置，做完校验）
   hunter-launcher --backup --scheduled  定时任务用的无界面入口（Hunter 停着也能做；运行环境没起则记为跳过）
+  hunter-launcher --backup --missed     启动器自己补跑的那次（R2；走同一条无界面路，备份档记成「补跑」）
   hunter-launcher --restore <id|目录>   从一份备份恢复（要 -y 与 --confirm 恢复数据）
   hunter-launcher --schedule status|install|remove   管定时备份任务
   hunter-launcher --uninstall-plan      删除应用会动到什么（只读）
@@ -416,6 +427,7 @@ Hunter 启动器 · 命令行模式
 选项
   --key-file <路径>   从文件读 hunter key（文件建议权限 600）。不给就交互式输入
   --scheduled         跟着 --backup 用：这一次是定时任务跑的
+  --missed            跟着 --backup 用：这一次是启动器补跑的（R2）
   --confirm <文字>    跟着 --uninstall / --restore 用：逐字确认那句话
   --with-images       跟着 --uninstall 用：连镜像一起删
   --with-runtime      跟着 --uninstall 用：连运行环境（虚拟机）一起删
@@ -2446,23 +2458,53 @@ fn cmd_backup(args: &Args) -> AppResult<()> {
         // 无界面那一路把 stdout 也写进日志：这一次没有人在看屏幕
         crate::linfo!("定时备份开始（--backup --scheduled）");
     }
-    title(if args.scheduled {
+    if args.missed {
+        crate::linfo!("兜底补跑开始（--backup --missed）");
+    }
+    title(if args.missed {
+        "补跑备份"
+    } else if args.scheduled {
         "定时备份"
     } else {
         "备份"
     });
     println!("备份到 {}", cfg.backup.effective_dir().display());
 
+    // 日志里说的是哪一次。三条路跑的是同一条代码，只有说法不一样。
+    let what = if args.missed {
+        "兜底补跑"
+    } else if args.scheduled {
+        "定时备份"
+    } else {
+        "备份"
+    };
+
+    // **同一时刻只允许一份备份在跑**（R2 · T2-4）。
+    //
+    // 现在会真的做备份的入口有四个（界面按钮 / 系统定时任务 / 启动器补跑 /
+    // 恢复前的保命备份），它们**可能是四个不同的进程**。抢不到锁就跳过这一次，
+    // **退出码 0**：这不是失败，只是没轮到它（方案 §4.3：不排队、不重试）。
+    //
+    // 抢锁排在「运行环境起没起」**之前**：抢到就说明「这一次轮到我做」，
+    // 后面所有判断都是在「我已经排上号」的前提下做的 —— 两个进程不会
+    // 双双通过同一个判断之后再撞上。
+    let Some(_lock) = crate::backup::try_lock() else {
+        let why = "跳过：已经有一份备份在跑，这一次不排队也不重试。";
+        println!("  ⚠ {why}");
+        crate::lwarn!("{what}{why}");
+        return Ok(());
+    };
+
     // 运行环境都没起 → 记为跳过，**不擅自把整套服务拉起来**
     let eff = crate::runtime::effective::current();
     if !eff.running {
         let why = format!(
             "跳过：Hunter 的运行环境现在没在跑（{}）。备份需要 postgres，\
-             而定时备份不会替你把整套服务启动起来。下次打开启动器时可以点「立即备份一次」。",
+             而这条路不会替你把整套服务启动起来。下次打开启动器时可以点「立即备份一次」。",
             eff.why
         );
         println!("  ⚠ {why}");
-        crate::lwarn!("定时备份{why}");
+        crate::lwarn!("{what}{why}");
         let mut c = config::LauncherConfig::load();
         c.backup.last_run_at = crate::timefmt::now_shanghai();
         let _ = c.save();
@@ -2472,7 +2514,9 @@ fn cmd_backup(args: &Args) -> AppResult<()> {
     // Hunter 停着的时候只临时起 postgres，**做完停回原状态**（方案 R6 6.3）
     let was_running = compose::is_up();
     let t0 = Instant::now();
-    let kind = if args.scheduled {
+    let kind = if args.missed {
+        crate::backup::Kind::Missed
+    } else if args.scheduled {
         crate::backup::Kind::Scheduled
     } else {
         crate::backup::Kind::Manual
