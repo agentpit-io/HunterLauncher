@@ -416,12 +416,13 @@ pub fn spec(id: &str) -> Option<&'static Spec> {
 
 /// 这个动作**至少要用户授权到哪一档**（F-02 · 技术方案 §4.3）。
 ///
-/// 判据只有一条：**这一步会不会弹系统自己的授权框**。
+/// 判据只有一条：**这件事的目的本身是不是一次系统级变更**
+/// （改系统组件、起系统服务、装系统级的软件）。
 ///
 /// | 情形 | 档 |
 /// |---|---|
 /// | 表外的动作 | 三级（其实什么授权都不够 —— `plan` 那一步本来就拒，这里只是别让它显得「够」） |
-/// | 会弹系统授权框 | 三级 |
+/// | 目的就是改系统 | 三级 |
 /// | 只看不改 | 一级 |
 /// | 其余的（装 / 起自己那套运行时、改自己的配置） | 二级 |
 ///
@@ -432,7 +433,7 @@ pub fn required_grant(id: &str, args: &BTreeMap<String, String>) -> guard::Grant
     let Some(s) = spec(id) else {
         return guard::Grant::Elevated;
     };
-    if pops_system_auth(id, args) {
+    if is_system_level_change(id, args) {
         return guard::Grant::Elevated;
     }
     match s.level {
@@ -441,25 +442,34 @@ pub fn required_grant(id: &str, args: &BTreeMap<String, String>) -> guard::Grant
     }
 }
 
-/// 这一步会不会弹**系统自己的**授权框。
+/// 这件事**本身**是不是一次系统级变更。
 ///
 /// 现在只有一条：Linux 上起 docker 的后台服务。它先以当前身份原样试一次，
-/// 不成就走 `pkexec` 弹系统授权框（见 [`execute_as`] 里 `start_runtime` 那一条分支）。
-/// 这条命令**在这个平台上是二级**（直接试那次根本不提权），在别的平台上也走不到
-/// 提权那一步 —— 但「会不会弹框」是这台机器上**此刻**就能确定的事，
-/// 按最坏的那一种算，用户才不会被弹一个他没授权的框。
+/// 不成就走 `pkexec` 弹系统授权框（见 [`execute_as`] 里 `start_runtime` 那一条分支）；
+/// 它要办的事**就是**「把这台机器上的 docker 服务起起来」，那是系统级的事。
+/// 同一个动作在别的 `app` 上（起 colima / 打开 OrbStack）是用户态的，仍是二级 ——
+/// 所以这里看参数，不只看 id。
 ///
-/// Windows 上启用 WSL2 / 装 Docker Desktop 的那几个动作（W-13/14）同样会弹 UAC，
-/// 它们会以**新增动作**的形式进来并声明三级（`PRIVILEGED_OPS` 那张表也在那时扩）。
-pub fn pops_system_auth(id: &str, args: &BTreeMap<String, String>) -> bool {
+/// **`install_runtime` 不算三级**，尽管它的兜底链里那几段（装 Homebrew / OrbStack）
+/// 有可能弹框。理由：它要办的这件事是「装 Hunter 自己那套运行时」，默认那条内置路线
+/// 全程用户态、不要密码；链子里真要用到管理员权限的那一步会**当场**弹系统授权框，
+/// 用户点取消那一步就不做 —— 那不是一笔可以提前一揽子授予的权限。
+/// 三级留给「这件事的目的就是改系统」的那些动作。Windows 上启用 WSL2 /
+/// 装 Docker Desktop 的那几个（W-13/14）正是这一类，它们会以**新增动作**的形式
+/// 进来并声明三级（`PRIVILEGED_OPS` 那张表也在那时扩）。
+pub fn is_system_level_change(id: &str, args: &BTreeMap<String, String>) -> bool {
     id == "start_runtime" && args.get("app").map(|s| s.trim()) == Some("systemd")
 }
 
-/// 过程流里那一行「说人话」：这一步要哪一档授权、它会做什么（F-02）。
+/// 过程流里那一行「说人话」：这一步要哪一档授权（F-02）。
 ///
 /// 只读的动作返回 `None` —— 看一眼的事不用跟用户报备，报了反而是噪音。
-/// 二级与三级的动作各出一行：**用户得看得见「它现在动手了，动的是什么范围」**，
-/// 而不是刷过去一行「正在处理」。
+/// 二级与三级的动作各出一行。
+///
+/// 这句话**只说授权这件事本身**，不去替动作概括「它动多大范围」——
+/// 那是 [`Plan::summary`] 的活，而它是**逐条动作**写出来的、比一句按档位套的
+/// 通用话准得多。在这里顺手概括一次，就会出现「二级 = 只动 Hunter 自己的目录」
+/// 这种对 `install_runtime` 并不成立的句子（它的兜底链会装 Homebrew / OrbStack）。
 pub fn grant_line(call: &Call) -> Option<String> {
     let need = required_grant(&call.id, &call.args);
     if need < guard::Grant::Local {
@@ -470,9 +480,10 @@ pub fn grant_line(call: &Call) -> Option<String> {
         need.cn_full(),
         match need {
             guard::Grant::Elevated => {
-                "它会弹系统自己的授权框，密码由系统收，启动器不看不存。"
+                "它会弹系统自己的授权框，密码由系统收、启动器不看不存；\
+                 授权框上点取消，这一步就不做。"
             }
-            _ => "只在本机 Hunter 自己的目录与容器里做，不碰你别的软件和网络设置。",
+            _ => "你授权到了这一档，所以这一步不用再问你；做不到的它会如实说做不到。",
         }
     ))
 }
@@ -2060,6 +2071,40 @@ pub(crate) mod tests {
         assert!(
             tail.contains("remap_ports") && tail.contains("二级"),
             "拒绝没写进审计：{tail}"
+        );
+    }
+
+    /// **`install_runtime` 是二级，尽管它的兜底链里那几段可能弹框。**
+    ///
+    /// 它要办的这件事是「装 Hunter 自己那套运行时」，默认那条内置路线全程用户态、
+    /// 不要密码；链子里真要用到管理员权限的那一步会**当场**弹系统授权框，
+    /// 用户点取消那一步就不做 —— 那不是一笔可以提前一揽子授予的权限。
+    /// 把它记成三级的话，出厂默认（一级 + 二级）就装不了 Docker，
+    /// 而那正是这个产品存在的理由。
+    #[test]
+    fn 装运行时是二级不算系统级变更() {
+        let a = |app: &str| {
+            let mut m = BTreeMap::new();
+            m.insert("app".to_string(), app.to_string());
+            m
+        };
+        assert_eq!(
+            required_grant("install_runtime", &BTreeMap::new()),
+            guard::Grant::Local
+        );
+        // 同一个动作换一个 `app` 就换档 —— 判据看的是「这件事本身是不是改系统」，
+        // 不是「有没有可能弹框」
+        assert_eq!(
+            required_grant("start_runtime", &BTreeMap::new()),
+            guard::Grant::Local
+        );
+        assert_eq!(
+            required_grant("start_runtime", &a("colima")),
+            guard::Grant::Local
+        );
+        assert_eq!(
+            required_grant("start_runtime", &a("systemd")),
+            guard::Grant::Elevated
         );
     }
 
