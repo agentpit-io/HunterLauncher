@@ -349,27 +349,43 @@ mod tests {
         assert_eq!(TIGHT_BYTES, 45 * GB);
     }
 
-    /// 真去枚举一次这台机器上的卷。**只断言不会崩、且系统卷被认出来**，
-    /// 不对盘的数量与大小做任何断言 —— 那取决于跑在哪台机器上。
+    /// 真去枚举一次这台机器上的卷，并在**真机上**验那条最要紧的：
+    /// **家目录所在的那块盘不许被推荐**。
+    ///
+    /// ## 断言写轻一点是有原因的
+    ///
+    /// 第一版写的是「家目录所在的那块必须出现在枚举结果里」，CI 的 macOS runner
+    /// 上当场红了 —— 那台机器的整块盘才 14 GB，连 [`MIN_TOTAL_BYTES`]（40 GB）
+    /// 都够不着。**「这块盘够不够大」不是这个模块该管的事**，拿它当断言就是把
+    /// 「测试机长什么样」写进了契约里。所以这里只断言两条真契约：
+    ///
+    /// 1. 出来的每一条都过了那三条硬条件（调用方可以依赖这一点）；
+    /// 2. **`pick()` 不会挑中家目录所在的那块盘** —— 这条在哪个平台上都成立。
     #[test]
-    fn 枚举本机卷时不会崩且认得出系统卷() {
+    fn 枚举本机卷时不会崩且系统卷不会被推荐() {
         let vols = volumes();
-        // 三个平台上都至少有一块盘（拿不到就算失败，不能悄悄放过）
-        assert!(!vols.is_empty(), "一块盘都没枚举出来");
-        // 家目录所在的那块**必须**被标成系统卷 —— 这条在三个平台上都成立
-        if let Some((home_mount, _, _)) = crate::monitor::disk_for(&crate::paths::home()) {
-            let hay = vols
-                .iter()
-                .find(|v| v.mount == home_mount)
-                .unwrap_or_else(|| panic!("家目录所在的盘 {home_mount} 没被枚举出来"));
-            assert!(hay.is_system, "{home_mount} 是家目录所在的盘，必须算系统卷");
+        for v in &vols {
+            assert!(
+                v.total >= MIN_TOTAL_BYTES,
+                "{} 没够着候选门槛却出现在枚举结果里",
+                v.mount
+            );
+            assert!(!v.mount.is_empty());
         }
-        // 排序是按挂载点的 —— pick 的「并列取盘符序」靠它
+        // 排序是按挂载点的 —— `pick` 的「并列取盘符序」靠它
         let mut sorted = vols.clone();
         sorted.sort_by(|a, b| a.mount.cmp(&b.mount));
         assert_eq!(
             vols.iter().map(|v| &v.mount).collect::<Vec<_>>(),
             sorted.iter().map(|v| &v.mount).collect::<Vec<_>>()
         );
+        // **真机上最要紧的那一条**：家目录所在的盘永远不被推荐
+        if let Some((home_mount, _, _)) = crate::monitor::disk_for(&crate::paths::home()) {
+            assert_ne!(
+                pick(&vols).map(|p| &p.mount),
+                Some(&home_mount),
+                "家目录所在的盘（{home_mount}）被推荐了"
+            );
+        }
     }
 }

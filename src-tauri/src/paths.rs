@@ -408,22 +408,22 @@ mod tests {
         // 默认：空 = 沿用 ~/.hunter/runtime
         assert_eq!(runtime_dir(), root().join("runtime"));
 
-        // 指一个绝对路径
+        // 指一个绝对路径。
+        //
+        // **从 `temp_dir()` 拼出来，不写死 `/tmp/...`** —— Windows 上
+        // `Path::new("/tmp/x").is_absolute()` 是 **false**（没有盘符），
+        // 于是那个值会被 [`data_dir_usable`] 当成相对路径拒掉，
+        // 这条测试在 Windows 的 CI 上当场红过一次（2026-09-29 · run 36521800174）。
+        let another = std::env::temp_dir().join("hunter-另一块盘").join("Hunter");
         let mut c = crate::config::LauncherConfig::load();
-        c.runtime.data_dir = "/tmp/别的一块盘/Hunter".to_string();
+        c.runtime.data_dir = another.to_string_lossy().into_owned();
         c.save().expect("写配置");
-        assert_eq!(runtime_dir(), PathBuf::from("/tmp/别的一块盘/Hunter"));
+        assert_eq!(runtime_dir(), another);
         // 整棵树的子路径一起跟过去
-        assert_eq!(runtime_bin(), PathBuf::from("/tmp/别的一块盘/Hunter/bin"));
-        assert_eq!(lima_home(), PathBuf::from("/tmp/别的一块盘/Hunter/lima"));
-        assert_eq!(
-            colima_home(),
-            PathBuf::from("/tmp/别的一块盘/Hunter/colima")
-        );
-        assert_eq!(
-            runtime_manifest(),
-            PathBuf::from("/tmp/别的一块盘/Hunter/installed.json")
-        );
+        assert_eq!(runtime_bin(), another.join("bin"));
+        assert_eq!(lima_home(), another.join("lima"));
+        assert_eq!(colima_home(), another.join("colima"));
+        assert_eq!(runtime_manifest(), another.join("installed.json"));
 
         // 写 `~/` 开头也认（配置文件里写波浪号是很自然的事）
         let mut c = crate::config::LauncherConfig::load();
@@ -468,8 +468,11 @@ mod tests {
         c.save().expect("写配置");
         assert_eq!(runtime_dir(), default, "工作目录的上一层不该被采用");
 
-        // ③ 正常的绝对路径不许被误伤
-        assert!(data_dir_usable(&PathBuf::from("/mnt/别的盘/Hunter")));
+        // ③ 正常的绝对路径不许被误伤。
+        //    同样从 `temp_dir()` 拼 —— Windows 上 `/mnt/...` 不是绝对路径（见上一条测试）
+        assert!(data_dir_usable(
+            &std::env::temp_dir().join("hunter-别的盘").join("Hunter")
+        ));
         // ④ `~` 这种写法**先按字面消掉 `..` 再比**，不能靠 components 的前缀比对糊过去
         assert_eq!(
             normalize(std::path::Path::new("/home/u/..")),
