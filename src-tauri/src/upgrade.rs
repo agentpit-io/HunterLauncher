@@ -1144,8 +1144,10 @@ pub fn quit_guard(armed_tag: Option<&str>) -> Option<QuitGuard> {
     Some(QuitGuard {
         target_tag: target.to_string(),
         headline: format!("正在升级到 v{target}，现在退出会留下一个说不清的中间态"),
+        // 这句话是**原样**打进弹窗的（界面上没有 Markdown 渲染器），
+        // 所以不写反引号 —— 写了用户看到的就是两个反引号（同 P0-3 那次「四个星号」）。
         body: format!(
-            "升级已经改写了配置（`.env` 与 compose 都指向 v{target}），\
+            "升级已经改写了配置（.env 与 compose 都指向 v{target}），\
              但这一轮还没跑完。现在退出的话，回滚那一步不会执行 —— \
              机器会停在「配置是新版本、镜像还没拉齐」这种状态里，下次打开要多处理一次。\
              要中断请点「取消升级并回滚后再退出」（会把配置写回升级前那一份）。"

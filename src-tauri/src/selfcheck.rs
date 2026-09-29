@@ -1241,12 +1241,16 @@ mod tests {
     /// 六个容器里只有 postgres 活着，网页一个字节都回不来。
     /// 面板那边已经改说话了，这一句也得跟上，否则日志里两个地方两套说法。
     #[test]
-    fn 网页打不开时不说「Hunter 在跑」() {
+    fn 网页打不开时不说在跑() {
         // 只有 postgres 活着（客户 2026-09-29 的现场）
         let services: Vec<ServiceStatus> = EXPECTED
             .iter()
             .map(|n| {
-                let state = if *n == "postgres" { "running" } else { "exited" };
+                let state = if *n == "postgres" {
+                    "running"
+                } else {
+                    "exited"
+                };
                 svc(n, state, compose::Health::Pending, None)
             })
             .collect();

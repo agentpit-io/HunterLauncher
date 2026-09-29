@@ -82,7 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.install.done
     );
 
-    println!("\n下一步：docker compose -p hunter --project-directory {} \\", paths::app_dir().display());
+    println!(
+        "\n下一步：docker compose -p hunter --project-directory {} \\",
+        paths::app_dir().display()
+    );
     println!("          -f docker-compose.yml -f docker-compose.launcher.yml up -d");
     Ok(())
 }

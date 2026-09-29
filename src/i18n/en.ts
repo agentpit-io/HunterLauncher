@@ -423,7 +423,7 @@ const en: Dict = {
     stopService: 'Stop services',
     // ── I17 · U2: quit the launcher ─────────────────────────────────────
     quitLauncher: 'Quit launcher',
-    quitHint: 'Hunter keeps running in the background; it will be there next time.',
+    // the two small lines next to that button live in `t.quit`
     // ── I17 · U3: check for updates, promoted to a first-class button ───
     checkUpdate: 'Check for updates',
     checkUpdateNew: (tag: string) => `Check for updates · ${tag}`,

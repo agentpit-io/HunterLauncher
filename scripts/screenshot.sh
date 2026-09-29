@@ -16,8 +16,15 @@ BIN="${BIN:-src-tauri/target/release/hunter-launcher}"
 W="${W:-1180}"
 H="${H:-760}"
 DISPLAY_NUM="${DISPLAY_NUM:-:99}"
-# 截图前等多久。WebKitGTK 在软件渲染下首帧比较慢，宁可多等
-SETTLE="${SETTLE:-9}"
+# **等窗口出来的上限（秒）**，不是固定的 sleep 时长。WebKitGTK 在软件渲染下首帧很慢，
+# 而且快慢随机器负载变化：2026-09-29 在 mixplode-hk-01 上实测，同一台机器同一页，
+# 窗口出现要 **10~25 秒**、出现之后再等 **约 5 秒**才真的画出来（在那之前窗口是纯色）。
+# 原来写死 `sleep 9`，截到的是一张纯黑的图，而 `check-shots.sh` 只会说
+# 「颜色数只有 1」—— 它说得对，但说不出原因是「等得不够」。
+# 现在三个等待全部改成**探到条件就走**：窗口出现 → 真的画出来（颜色数）→ resize 后重画。
+SETTLE="${SETTLE:-45}"
+# 上面每一步最多等多少秒
+PAINT="${PAINT:-20}"
 
 # I5：向导改成「欢迎 → key → 一次授权 → 选模型 → 自动安装 → 完成」，
 # 「拉取镜像」那一页没有了，换成 consent 与 auto 两页（见 src/state/machine.ts 文件头）
@@ -57,11 +64,18 @@ SETTLE="${SETTLE:-9}"
 #   dashboard-interrupted-stopped —— **六个容器全停**的那种中间态（客户 2026-09-29 的现场
 #     HL-GFV764）。0.1.17 恰好判不出这一格：卡片不出现，面板反而说「点『启动』就能用」。
 #     和 dashboard-interrupted 分开截 —— 全停时回退目标与措辞都不一样
-#   update-no-tag —— 升级前置体检发现「当前源还没有这一版」（方案 §4.2②）。
-#     看的是**配置还没被改**的时候就把话说出来了，并且摆出换源要下多少
+#   （`update-no-tag` 这一页**不在自动截图里**：演示模式下自动打开前置体检弹窗没做成，
+#     截出来会和普通的更新页一模一样。那一张改成真点两下点出来的 `i17-update-preflight.png`，
+#     见 I17 报告 8.3。页面本身还在（`HUNTER_DEMO_PAGE=update-no-tag` 能进），只是不进这一套图）
 #   quit-guard —— 升级进行中点退出被拦下的那一句（P0-4）。U2 之后这是唯一会弹的提示
 #   （dashboard 那一页这一轮也变了：起停/重启/检查更新/退出启动器 全在首屏一级按钮区）
-PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped update-no-tag quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
+
+# 只截指定的几页（改了一两页时不用把四十几页重跑一遍）：
+#   ONLY="dashboard update" bash scripts/screenshot.sh docs/screenshots/I17
+# 留空 = 全跑。**注意它只影响截哪几页**，`check-shots.sh` 仍然扫整个目录，
+# 所以局部出图之后不要拿它当「这一套图是完整的」。
+if [ -n "${ONLY:-}" ]; then read -r -a PAGES <<<"$ONLY"; fi
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }
@@ -87,23 +101,57 @@ for page in "${PAGES[@]}"; do
   echo "== $page =="
   HUNTER_DEMO_PAGE="$page" "$BIN" >/tmp/hunter-shot-$page.log 2>&1 &
   APP_PID=$!
-  sleep "$SETTLE"
 
+  # 等主窗口真的出来（最多 SETTLE 秒）。没出来就说清楚是等超时了，不要把黑屏当成
+  # 「这一页长这样」交上去 —— 下面那道「颜色数只有 1」的校验只会说结果、说不出原因。
+  WID=""
+  for _ in $(seq 1 "$SETTLE"); do
+    sleep 1
+    kill -0 "$APP_PID" 2>/dev/null || break
+    WID=$(xdotool search --name "Hunter Launcher" 2>/dev/null | tail -1 || true)
+    [ -n "$WID" ] && break
+  done
   if ! kill -0 "$APP_PID" 2>/dev/null; then
     echo "进程已退出，日志："; cat "/tmp/hunter-shot-$page.log"; exit 1
   fi
-
-  # 找到窗口并按它的几何裁剪，避免把 Xvfb 的黑边也截进去
-  WID=$(xdotool search --name "Hunter Launcher" 2>/dev/null | tail -1 || true)
-  if [ -n "$WID" ]; then
-    import -window "$WID" "$OUT/$PREFIX-$page.png"
-  else
-    import -window root -crop "${W}x${H}+0+0" +repage "$OUT/$PREFIX-$page.png"
+  if [ -z "$WID" ]; then
+    echo "等了 $SETTLE 秒主窗口还没出来（应用日志）："; cat "/tmp/hunter-shot-$page.log"; exit 1
   fi
+
+  # **把窗口摆成 W×H**：程序自己的 `inner_size` 是视觉稿的 1180×760，
+  # 要不要按别的尺寸出图（例如 I17 要验「1440×900 首屏不滚动」）由调用方的 W/H 说了算。
+  # 窗口是可缩放的（`min_inner_size` 980×660），X 下没有 WM 也照样 resize 得动。
+  xdotool windowmove "$WID" 0 0 2>/dev/null || true
+  xdotool windowsize "$WID" "$W" "$H" 2>/dev/null || true
+
+  # **等它真的画出来**：判据是「颜色数 ≥ 200」。界面是深海军蓝 + 琥珀金，
+  # 正常一页的颜色数在两千以上；纯色（还没画、或白屏）是 1。
+  # 这两道等待都要，因为窗口一出现就截的话拿到的是一张纯色图。
+  # 判据与下面 `check-shots.sh` 那三道用的是同一个数，不是另一把尺子。
+  for _ in $(seq 1 "$PAINT"); do
+    import -window "$WID" "$OUT/$PREFIX-$page.png" 2>/dev/null || true
+    COLORSN=$(identify -format %k "$OUT/$PREFIX-$page.png" 2>/dev/null || echo 0)
+    if [ "${COLORSN:-0}" -ge 200 ]; then break; fi
+    sleep 1
+  done
+  if [ "${COLORSN:-0}" -lt 200 ]; then
+    echo "等了 $PAINT 秒这一页还没画出来（颜色数 ${COLORSN:-0}）；应用日志："
+    cat "/tmp/hunter-shot-$page.log"
+    exit 1
+  fi
+  # 再稳一下：刚画出来的那一帧可能还在加载字体（中文会先出豆腐块再换真字）
+  sleep 2
+  import -window "$WID" "$OUT/$PREFIX-$page.png"
 
   kill "$APP_PID" 2>/dev/null || true
   wait "$APP_PID" 2>/dev/null || true
-  sleep 1
+  # 等上一页的窗口真的消失再起下一页 —— 否则下面那次 `xdotool search` 会抓到
+  # **正在死掉的那一页**，截出来的就是上一页的图（`check-shots.sh` 的「两张一模一样」
+  # 只能告诉你出了这件事，说不出是哪一步抓错了）
+  for _ in $(seq 1 10); do
+    [ -z "$(xdotool search --name 'Hunter Launcher' 2>/dev/null)" ] && break
+    sleep 1
+  done
 
   SIZE=$(stat -c%s "$OUT/$PREFIX-$page.png")
   COLORS=$(identify -format %k "$OUT/$PREFIX-$page.png")

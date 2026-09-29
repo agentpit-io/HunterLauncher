@@ -1,0 +1,387 @@
+### I17 现场造景 · 2026-09-29 · 机 hk-mixplode-01 · 测试栈 compose 项目名 hunter（起点 1.2.0 / 超前 1.2.2）
+### 驱动：bash scripts/i17-verify.sh <场景>   （断言全部落在 src-tauri/tests/i17_live.rs 打印的 PANEL / INTERRUPTED / BOOT / QUIT_GUARD 上）
+
+===================== 场景 a11 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:24:25 UTC
+
+== A1-1 造现场：docker compose stop web api opencode llm-shim redis（只留 postgres） ==
+    api exited
+    llm-shim exited
+    opencode exited
+    postgres running
+    redis exited
+    web exited
+  ✓ 只有 1 个在跑
+
+== A1-1 面板会拿到什么 ==
+    PANEL running=false
+    PANEL posture=Partial
+    PANEL web_ok=false
+    PANEL web_url=None
+    PANEL uptime_seconds=None
+    PANEL hunter_tag=Some("1.2.0")
+    PANEL 服务=web:exited api:exited opencode:exited llm-shim:exited postgres:running redis:exited
+    BOOT posture=Partial
+    BOOT headline=Hunter 没跑起来：web、api、opencode、llm-shim、redis 停着（需要启动）、网页打不开
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · running · 健康
+    BOOT line=redis · exited · 未启动
+    BOOT line=这几个容器退出了（不是「还没就绪」）：web、api、opencode、llm-shim、redis
+    BOOT line=GET http://127.0.0.1:3101/ → 请求 127.0.0.1:3101 失败：io: Connection refused (os error 111)
+  ✓ running=false（不说「运行中」）
+  ✓ web_url=None（不给「打开 Hunter」）
+  ✓ uptime_seconds=None（不显示假时长）
+  ✓ posture=Partial（有服务不正常）
+  ✓ 开机判定没说「运行中」
+
+== A1-1 恢复现场：把五个容器起回来 ==
+  ✓ 6/6 健康
+
+全部通过
+
+===================== 场景 a13 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:25:28 UTC
+
+== A1-3 造现场：六个容器全停（客户 10:44 的现场） ==
+    api exited
+    llm-shim exited
+    opencode exited
+    postgres exited
+    redis exited
+    web exited
+  ✓ 六个全是 exited
+
+== A1-3 面板会拿到什么 ==
+    PANEL running=false
+    PANEL posture=Stopped
+    PANEL web_ok=false
+    PANEL web_url=None
+    PANEL uptime_seconds=None
+    PANEL hunter_tag=Some("1.2.0")
+    PANEL 服务=web:exited api:exited opencode:exited llm-shim:exited postgres:exited redis:exited
+    BOOT posture=Stopped
+    BOOT headline=Hunter 装好了，但 6 个容器都停着 —— 点「启动」就能用
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · exited · 未启动
+    BOOT line=redis · exited · 未启动
+    BOOT line=6 个容器全部已退出 —— 装是装好了，只是没在跑
+  ✓ running=false
+  ✓ 不给地址
+  ✓ 不给时长
+  ✓ posture=Stopped
+
+== A1-3 恢复现场 ==
+  ✓ 6/6 健康
+
+全部通过
+
+===================== 场景 a21 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:26:13 UTC
+
+== A2-1 造现场：Hunter 停止状态（六个全停） ==
+  ✓ 六个全是 exited
+
+== A2-1 备份一次 ==
+      postgres 没在运行，先把它单独拉起来再备份
+      正在转储数据库 hunter（用户 hunter）…
+      数据库已转储（146 KB）
+      校验通过 · pg_restore --list 读出 396 条目录项
+      已打包 hunter_secrets（295 B）
+      已打包 hunter_user_skills（87 B）
+      已打包 hunter_opencode_data（15.2 KB）
+    
+    ✓ 备份完成 hunter-20260929-1326-v1.2.0 · 192 KB · 校验 通过 · 用时 3 秒
+      库里 60 张表，合计 27 行
+      数据卷 hunter_secrets → 295 B
+      数据卷 hunter_user_skills → 87 B
+      数据卷 hunter_opencode_data → 15.2 KB
+      备份前 Hunter 是停着的，现在把临时起来的 postgres 停回去
+    退出码=0
+
+== A2-1 备份之后容器什么状态（必须六个仍全 exited） ==
+    api exited
+    llm-shim exited
+    opencode exited
+    postgres exited
+    redis exited
+    web exited
+  ✓ 六个仍是 exited，没有留下孤儿 postgres
+  ✓ 启动器日志里有「已停回去」那一行
+    2026-09-29 13:26:38 [info] 备份时临时起的 postgres 已停回去（Hunter 本来就没在跑）
+
+== A2-1 恢复现场 ==
+  ✓ 6/6 健康
+
+全部通过
+
+===================== 场景 a23 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:26:57 UTC
+
+== A2-3 运行中（6/6 健康）备份一次 —— postgres 不许被误停 ==
+  ✓ 起点是 6/6 健康
+      已打包 hunter_opencode_data（15.2 KB）
+    
+    ✓ 备份完成 hunter-20260929-1326-v1.2.0-2 · 192 KB · 校验 通过 · 用时 2 秒
+      库里 60 张表，合计 27 行
+      数据卷 hunter_secrets → 295 B
+      数据卷 hunter_user_skills → 87 B
+      数据卷 hunter_opencode_data → 15.2 KB
+      轮换：删掉 1 份过期备份，腾出 221 KB
+    api running
+    llm-shim running
+    opencode running
+    postgres running
+    redis running
+    web running
+  ✓ 六个都还在跑（lease 是空动作）
+  ✓ 面板仍是「运行中」
+
+全部通过
+
+===================== 场景 a31 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:39:43 UTC
+
+== A3-1 造现场：.env 的 HUNTER_VERSION 改成 1.2.2（本机没有这一版的镜像）+ 六个全停 ==
+  ✓ 现场造好了：写完配置、正在拉镜像时被强杀（客户 HL-GFV764 的同一个位置）
+    .env  HUNTER_VERSION=1.2.2
+    toml  hunter.tag       =1.2.0
+  ✓ 六个全是 exited
+
+== A3-1 面板会拿到什么 ==
+    PANEL running=false
+    PANEL posture=Stopped
+    PANEL web_ok=false
+    PANEL web_url=None
+    PANEL uptime_seconds=None
+    PANEL hunter_tag=Some("1.2.0")
+    PANEL 服务=web:exited api:exited opencode:exited llm-shim:exited postgres:exited redis:exited
+    INTERRUPTED yes
+    INTERRUPTED config_tag=1.2.2
+    INTERRUPTED running_tag=None
+    INTERRUPTED last_good_tag=1.2.0
+    INTERRUPTED missing=web,api,opencode,llm-shim
+    INTERRUPTED headline=上一次升级没做完：配置已经是 v1.2.2，本机还缺 4 个镜像，而容器都停着
+    BOOT posture=Stopped
+    BOOT headline=Hunter 装好了，但 v1.2.2 的镜像本机还缺 4 个 —— 先补齐再启动，别急着点「启动」
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · exited · 未启动
+    BOOT line=redis · exited · 未启动
+    BOOT line=6 个容器全部已退出 —— 装是装好了，只是没在跑
+    BOOT line=但配置那一版 v1.2.2 的镜像本机还缺 4 个：web、api、opencode、llm-shim
+    BOOT line=所以现在点「启动」会先去拉这几个镜像 —— 上一次升级多半就是卡在这一步。
+  ✓ 出了「上一次升级没做完」卡片
+  ✓ config_tag=1.2.2
+  ✓ running_tag=None（全停时没有「正在跑的那一版」）
+  ✓ last_good_tag=1.2.0（回退目标）
+  ✓ 列出了缺哪几个镜像：web,api,opencode,llm-shim
+  ✓ 没有出现「点『启动』就能用」
+  ✓ 开机判定写明了「配置那一版还缺几个镜像」
+
+全部通过
+
+===================== 场景 a32 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:30:38 UTC
+
+== A3-2 点「继续升到 v1.2.2」：拉齐四个镜像并启动（走升级那条真路径） ==
+      postgres 没在运行，先把它单独拉起来再备份
+      正在转储数据库 hunter（用户 hunter）…
+      数据库已转储（146 KB）
+      校验通过 · pg_restore --list 读出 396 条目录项
+      已打包 hunter_secrets（295 B）
+      已打包 hunter_user_skills（87 B）
+      已打包 hunter_opencode_data（15.3 KB）
+      已写入新的 compose 与 .env（HUNTER_VERSION=1.2.2，端口不变）
+      docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）
+      要拉的六个镜像合计约 881 MB（已有的层不会重复下载）
+      正在拉取新版本的镜像…
+        0% 0 B / 881 MB
+       20% 173 MB / 881 MB
+       75% 657 MB / 881 MB
+       99% 876 MB / 881 MB
+      镜像拉好了：6 个镜像共下载 483 MB
+      正在用新镜像重建容器…
+      6 个服务全部就绪
+      已升级到 v1.2.2，六个服务都已就绪。升级前的备份留在 /home/support/Hunter-backups/hunter-20260929-1330-v1.2.0。
+    
+      ✓ 已升级到 v1.2.2，六个服务都已就绪。升级前的备份留在 /home/support/Hunter-backups/hunter-20260929-1330-v1.2.0。
+    
+    退出码=0
+    .env  HUNTER_VERSION=1.2.2
+    toml  hunter.tag       =1.2.2
+    api running Up 12 seconds (healthy)
+    llm-shim running Up 18 seconds (healthy)
+    opencode running Up 6 seconds (healthy)
+    postgres running Up 18 seconds (healthy)
+    redis running Up 18 seconds (healthy)
+    web running Up 12 seconds (healthy)
+  ✓ hunter.tag 跟上了（1.2.2）
+  ✓ 卡片消失
+  ✓ 面板「运行中」
+  ✓ v1.2.2 的 web 镜像已经在本机
+
+全部通过
+
+===================== 场景 a34 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:35:06 UTC
+
+== A3-4 配置超前（1.2.2）但镜像齐、仍全停 → 不出卡片（「缺镜为空」是主防线） ==
+  ✓ v1.2.2 的镜像本机已有（A3-2 拉下来的）
+    INTERRUPTED no
+    BOOT posture=Stopped
+    BOOT headline=Hunter 装好了，但 6 个容器都停着 —— 点「启动」就能用
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · exited · 未启动
+    BOOT line=redis · exited · 未启动
+    BOOT line=6 个容器全部已退出 —— 装是装好了，只是没在跑
+  ✓ 不出卡片
+
+==     --start：容器起得回来、面板「运行中」（走的是 compose::up） ==
+    ✓ start 完成
+  ✓ 6/6 健康
+    toml  hunter.tag =1.2.0（配置那版是 1.2.2）
+  ✓ 起来后面板「运行中」
+  ✓ 面板仍报 v1.2.0 —— 与下面那条边界一致（不假装它补齐了）
+
+==     「起来之后补齐 hunter.tag」这一条的边界（**不编，如实说**） ==
+  ✓ 纯判据那三条单测都过了（decide_catch_up）
+    执行点是 flow::start（界面上的「启动服务」按钮走的就是它），
+    而命令行 --start / 托盘「启动」走的是 compose::up()，不经过它 —— 所以补不上。
+    **本机不跑 flow::start**：它会顺带调 schedule::sync()，
+    在这台机器上会真去写 ~/.config/systemd/user/hunter-backup.{service,timer}
+    并 systemctl --user daemon-reload —— 总控规则红线 3 明令不许动 systemd。
+    → 所以「界面上点一次启动服务能不能补齐」列进未验证清单，留真机验收。
+
+全部通过
+
+===================== 场景 a35 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:36:09 UTC
+
+== A3-5 容器正在跑 + 配置超前 → 卡片照旧出现（I16 覆盖的现场，不许回归） ==
+  ✓ 起点：容器跑在 1.2.0 上、6/6 健康
+    PANEL running=true
+    PANEL posture=Healthy
+    PANEL web_ok=true
+    PANEL web_url=Some("http://localhost:3101")
+    PANEL uptime_seconds=Some(13)
+    PANEL hunter_tag=Some("1.2.0")
+    PANEL 服务=web:running api:running opencode:running llm-shim:running postgres:running redis:running
+    INTERRUPTED yes
+    INTERRUPTED config_tag=1.2.2
+    INTERRUPTED running_tag=Some("1.2.0")
+    INTERRUPTED last_good_tag=1.2.0
+    INTERRUPTED missing=web,api,opencode,llm-shim
+    INTERRUPTED headline=上一次升级没做完：配置已经是 v1.2.2，跑着的还是 v1.2.0，而 v1.2.2 的镜像本机不齐
+  ✓ 卡片照旧出现
+  ✓ running_tag=1.2.0（跑着的那一版）
+
+全部通过
+
+===================== 场景 a33 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:40:01 UTC
+
+== A3-3 卡片点「回退到 v1.2.0」：配置回到 1.2.0，卡片消失 ==
+  ✓ 现场造好了：写完配置、正在拉镜像时被强杀（客户 HL-GFV764 的同一个位置）
+    .env  HUNTER_VERSION=1.2.2
+    toml  hunter.tag       =1.2.0
+  ✓ 中间态成立
+  ✓ 回退目标是 1.2.0（全停时它就是「上一次成功的版本」）
+
+==     命令行上同一条路：--revert-to-running ==
+    ────────────────────
+      上一次升级没做完：配置已经是 v1.2.2，本机还缺 4 个镜像，而容器都停着
+      要把配置写回：v1.2.0
+    
+      这一次**什么都没有改**。确认没问题就再跑一次，加上 -y。
+      要把配置写回：v1.2.0
+      把配置写回 v1.2.0（不动正在跑的容器）
+      已从升级前那次备份（hunter-20260929-1340-v1.2.0）写回 .env、docker-compose.yml、docker-compose.launcher.yml
+      已经回到 v1.2.0：配置写回了，正在跑的容器一个都没动（它们本来就是 v1.2.0）。之前那次没做完的升级（要升到 v1.2.2）就此作罢，想再升随时可以在更新页点。
+    
+      ✓ 复核：配置与正在跑的容器已经对得上了
+    .env  HUNTER_VERSION=1.2.0
+    toml  hunter.tag       =1.2.0
+  ✓ .env 回到 1.2.0
+  ✓ 卡片消失
+    BOOT posture=Stopped
+    BOOT headline=Hunter 装好了，但 6 个容器都停着 —— 点「启动」就能用
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · exited · 未启动
+    BOOT line=redis · exited · 未启动
+    BOOT line=6 个容器全部已退出 —— 装是装好了，只是没在跑
+
+全部通过
+
+===================== 场景 a42 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:40:21 UTC
+
+== A4-2 当前源上没有这一版（国内源 1.2.3 实测 404）→ 必须在改配置**之前**拦下 ==
+    镜像源 registry_id=tencent
+    
+    升级 Hunter v1.2.0 → v1.2.3
+    ──────────────────────────────────────────────────
+      升级 Hunter：v1.2.0 → v1.2.3
+      正在取 v1.2.3 的 docker-compose.yml…
+      已取到（来自 raw.githubusercontent.com，24093 字节）
+    
+    ✗ E_UPDATE_FAILED: 「中国国内云服务」上还没有 v1.2.3 这一版，先不升级（配置一个字节都没改）。换到「GHCR · GitHub」可以继续，要下大约 861 MB；命令行下加 `--registry ghcr` 就是这个意思，界面上会直接问你要不要换。
+      日志：/home/support/.hunter/logs/launcher.log
+    退出码=1
+  ✓ 非零退出（没往下走）
+    .env  HUNTER_VERSION=1.2.2（改前 1.2.2）
+    toml  hunter.tag       =1.2.0（改前 1.2.0）
+  ✓ .env 一个字节没改
+  ✓ hunter.tag 一个字节没改
+
+全部通过
+
+===================== 场景 a46 =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:40:42 UTC
+
+== A4-6 非升级状态：退出拦截判据必须是 None（一个提示都不许有） ==
+    QUIT_GUARD armed=None
+    QUIT_GUARD guard=None
+  ✓ 没有升级在跑
+  ✓ 判据为 None → 直接退出，不弹任何提示
+
+== A4-6 对照：把「升级进行中」这一个窗口打开，必须有那一句话（单测） ==
+  ✓ quit_guard 的两条单测都过了
+
+全部通过
+
+===================== 场景 restore =====================
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:40:48 UTC
+
+== 收尾：把测试栈摆回 v1.2.0、配置与它一致 ==
+  ✓ 6/6 健康
+  ✓ 没有中间态残留
+  ✓ 面板「运行中」
+
+全部通过
+

@@ -235,7 +235,8 @@ pub enum Action {
     CheckUpdate,
     /// 切开机自启
     ToggleAutostart,
-    /// 请求退出（要不要停容器由界面上的弹窗决定）
+    /// 请求退出。**不问要不要停容器**（I17 · U2）：走 `commands::request_quit`，
+    /// 常规情况直接退、容器一个都不动；只有「升级进行中」那一个窗口会被拦下问一句（P0-4）
     RequestQuit,
     /// 什么都不做（状态项）
     Nothing,

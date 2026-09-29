@@ -84,6 +84,21 @@ const DEMO_STATES: Record<string, State> = {
   'upload-done': { name: 'Ready' },
   // I16：强退之后留下的中间态 —— 运行面板顶上那张「上一次升级没做完」
   'dashboard-interrupted': { name: 'Ready' },
+  // I17 · P0-3：同上一张卡片，但**六个容器全停**（客户 HL-GFV764 的现场，
+  // 0.1.17 恰好判不出来的那一格）。卡片本身在运行面板上，所以状态仍是 Ready
+  'dashboard-interrupted-stopped': { name: 'Ready' },
+  // I17 · P0-4：升级进行中点退出被拦下的那一句。它盖在运行面板上，
+  // 所以底色也得是运行面板（这一条原来漏登记，截出来是开机屏 + 一个弹窗）
+  'quit-guard': { name: 'Ready' },
+  // I17 · §4.2②：升级前置体检发现「当前源还没有这一版」。页面本身是更新页
+  // （见下面 `initialOverlay` 里那一条）。
+  //
+  // **只登记页面，不自动弹那一问**：试过两种写法（依赖本页数据的 effect、
+  // 挂载时自己问一次版本），在演示构建里都没能让弹窗出来，而 `checkHunterUpdate`
+  // 与 `upgradePreflight` 的演示分支本身是对的。没有查出根因之前不硬凑 ——
+  // 截图里那一屏改成**真点两下**（运行面板上没有这一版时点「升级」→ 确认框里再点
+  // 「升级」）。详见 I17 迭代报告「截图」一节。
+  'update-no-tag': { name: 'Ready' },
   // I9：上一次没装成功留下的内置运行时残骸（用户 Mac 上 0.1.8 那次的现场）。
   // 这一页同时也是「启动器已经替你做了这几步」那一块的样子
   'error-builtin': {
@@ -106,6 +121,8 @@ function initialOverlay(): Overlay {
   if (page === 'settings-lan' || page === 'settings-backup') return 'settings'
   // I13：「备份与恢复」是一张新的抽屉页
   if (page === 'backup' || page === 'backup-restore') return 'backup'
+  // I17：前置体检那一屏是**更新页**上的一问，不是独立一页
+  if (page === 'update-no-tag') return 'update'
   return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
     ? page
     : null

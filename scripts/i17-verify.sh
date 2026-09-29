@@ -23,7 +23,12 @@
 #   a35   容器在跑 + 配置超前        → 卡片照旧出现（A3-5，不许回归）
 #   a42   当前源没有这一版           → 改写 .env **之前**就拦下（A4-2）
 #   a46   非升级状态                 → 退出拦截判据必须为 None（A4-6）
-#   all   按上面的顺序全跑一遍
+#   all   按「a11 a13 a21 a23 a31 a32 a34 a35 a33 a42 a46 收尾」全跑一遍
+#
+# **顺序是有讲究的**（照抄旧顺序会造不出中间态）：A3-1/A3-3 要的是「$AHEAD 的镜像
+# 本机没有」，而 A3-2 会把它们拉下来、A3-4 正需要它们在本机。所以
+# A3-2 → A3-4（镜像齐）→ A3-5 / A3-3（自己把镜像删掉再造现场）。每条场景都能
+# 单独跑：造景的那几步都在场景自己里，不赖上一条留下的状态。
 #
 # 容器只动 `-p hunter` 这一套；**不碰**这台机器上的 hca-* / xinghe-* / mixplode-*（总控规则红线 1）。
 set -uo pipefail
@@ -148,13 +153,86 @@ case_a23() {
 }
 
 # ── A3-1 / A3-2 / A3-3：中间态 ──────────────────────────────────────────
-case_a31() {
-  say "A3-1 造现场：.env 的 HUNTER_VERSION 改成 $AHEAD（本机没有这一版的镜像）+ 六个全停"
+
+# 造「上一次升级没做完」那台机器的现场（A3-1 / A3-3 共用）。四样缺一不可：
+#
+#   1. `.env` 的 HUNTER_VERSION 写成 $AHEAD（配置超前）；
+#   2. `launcher.toml` 的 hunter.tag 是 $TAG（上一次**成功**的版本，
+#      升级只在成功后才改它 —— 客户那台就是这两处对不上）；
+#   3. 六个容器全停；
+#   4. **$AHEAD 的四个镜像本机没有**（含「拉到一半」）。
+#
+# 第 4 样最容易被漏掉：A3-2 会把它们拉下来，之后同一台机器上再想造这个现场，
+# 判定会（**正确地**，见 A3-4）判成「配置超前但镜像齐 → 不算中间态」，
+# 卡片就不出现 —— 看起来像功能坏了，其实只是现场没造对。
+# 所以这里摘掉那四个 tag。它们是我们自己拉下来的测试镜像，随时能再拉回来。
+#
+# 把 $AHEAD 那四个镜像从本机删掉（上面第 4 样）。删的只是我们自己拉下来的测试镜像，
+# 重新拉一次就有。
+#
+# **必须带 `-f`**：那几个容器的定义里还指着这个 tag（哪怕它们现在是 exited），
+# 不带 `-f` 时 docker 会以 `conflict: … must be forced` 拒绝 —— 于是镜像还在、
+# 「缺镜」这个前提不成立，卡片就不出现（实测踩过一次）。
+# `-f` 做的是「摘掉这个 tag」，而判定用的正是 `docker image inspect <引用>`
+# （`offline::inspect_size`），摘掉之后它必然失败 ⇒ 缺镜成立。
+rmi_ahead() {
+  docker rmi -f \
+    "ghcr.io/agentpit-io/hunter-community-web:$AHEAD" \
+    "ghcr.io/agentpit-io/hunter-community-api:$AHEAD" \
+    "ghcr.io/agentpit-io/hunter-community-opencode:$AHEAD" \
+    "ghcr.io/agentpit-io/hunter-community-llm-shim:$AHEAD" >/dev/null 2>&1 || true
+  # 校验一下前提真的成立了 —— 造景失败时要说出来，不要让后面那条断言去背锅
+  local left
+  left="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -c ":$AHEAD\$")"
+  [ "$left" -eq 0 ] || bad "还有 $left 个 $AHEAD 的镜像没删掉，「缺镜」这个前提不成立"
+}
+
+scene_interrupted() {
   snapshot
-  set_env_version "$AHEAD"
+  set_cfg_tag "$TAG"
+  set_env_version "$TAG"
+  dc stop >/dev/null 2>&1
+
+  # ── 起一次**真的**升级，在它「配置已经写完、正在拉镜像」的时候把它强杀掉 ──
+  #
+  # 客户 2026-09-29 那次就是这么留下中间态的：他在「正在拉取新版本的镜像…」时
+  # 点了「应用退出」，进程一死，会回滚的那条路根本不会跑（方案 P0-4）。
+  #
+  # 手改 `.env` 也能摆出「配置超前」，**但那样没有升级前那份备份** ——
+  # 而「回退」正是从那份备份里把配置写回去的。手摆的现场会让备份里存着
+  # 一份被手改过的 .env，回退写回去之后复核不过、如实报错（实测踩过一次）。
+  # 真跑一次升级再强杀，现场才是客户那台的样子。
+  local log; log="$(mktemp)"
+  setsid "$BIN" --upgrade "$AHEAD" -y >"$log" 2>&1 &
+  local pid=$! i
+  for i in $(seq 1 180); do
+    grep -q "已写入新的 compose 与 .env" "$log" 2>/dev/null && break
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if grep -q "已写入新的 compose 与 .env" "$log" 2>/dev/null; then
+    # 连**整个进程组**一起杀：不给还在跑的 `docker pull` 留下来把刚摘掉的 tag 又贴回去
+    local pgid; pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [ -n "$pgid" ] && kill -9 -"$pgid" 2>/dev/null
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    ok "现场造好了：写完配置、正在拉镜像时被强杀（客户 HL-GFV764 的同一个位置）"
+  else
+    bad "没能在「配置已改、正在拉镜像」那一段里杀掉升级 —— 现场没造对"
+    tail -6 "$log" | sed 's/^/    /'
+    kill -9 "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  fi
+  rm -f "$log"
+  sleep 2
+  rmi_ahead
   echo "    .env  HUNTER_VERSION=$(get_env_version)"
   echo "    toml  hunter.tag       =$(get_cfg_tag)"
-  dc stop >/dev/null 2>&1
+}
+
+case_a31() {
+  say "A3-1 造现场：.env 的 HUNTER_VERSION 改成 $AHEAD（本机没有这一版的镜像）+ 六个全停"
+  scene_interrupted
   [ "$(n_exited)" -eq 6 ] && ok "六个全是 exited" || bad "现场没造对"
 
   say "A3-1 面板会拿到什么"
@@ -188,9 +266,12 @@ case_a32() {
 
 case_a33() {
   say "A3-3 卡片点「回退到 v$TAG」：配置回到 $TAG，卡片消失"
-  set_env_version "$AHEAD"
-  echo "    先把现场摆回中间态：.env=$(get_env_version) / toml=$(get_cfg_tag)"
+  # 「同上现场」＝ A3-1 的那个现场，自带造景（跟在 A3-2 后面跑时，
+  # hunter.tag 已经是 $AHEAD、$AHEAD 的镜像也已经在机器上了 —— 两样都得掰回来）
+  scene_interrupted
   probe; grep -q "^INTERRUPTED yes" <<<"$PROBE" && ok "中间态成立" || bad "没造出中间态"
+  grep -q "^INTERRUPTED last_good_tag=$TAG" <<<"$PROBE" \
+    && ok "回退目标是 $TAG（全停时它就是「上一次成功的版本」）" || bad "回退目标不是 $TAG"
 
   say "    命令行上同一条路：--revert-to-running"
   "$BIN" --revert-to-running 2>&1 | tail -5 | sed 's/^/    /'
@@ -205,34 +286,71 @@ case_a33() {
 }
 
 case_a34() {
-  say "A3-4 配置超前（$AHEAD）但镜像齐、仍全停 → 不出卡片；启动后 hunter.tag 被补齐"
+  say "A3-4 配置超前（$AHEAD）但镜像齐、仍全停 → 不出卡片（「缺镜为空」是主防线）"
   snapshot
   set_env_version "$AHEAD"; set_cfg_tag "$TAG"
   docker image inspect "ghcr.io/agentpit-io/hunter-community-web:$AHEAD" >/dev/null 2>&1 \
-    && ok "v$AHEAD 的镜像本机已有（上一条拉下来的）" || bad "镜像不齐，这条测不了"
+    && ok "v$AHEAD 的镜像本机已有（A3-2 拉下来的）" || bad "镜像不齐，这条测不了"
   dc stop >/dev/null 2>&1
   probe; pshow 'INTERRUPTED|BOOT'
-  grep -q "^INTERRUPTED no" <<<"$PROBE" && ok "不出卡片（「缺镜为空」就是不出卡的主防线）" || bad "误报了卡片"
+  grep -q "^INTERRUPTED no" <<<"$PROBE" && ok "不出卡片" || bad "误报了卡片"
 
-  say "    --start：起来之后 hunter.tag 应该被补齐成 $AHEAD"
+  say "    --start：容器起得回来、面板「运行中」（走的是 compose::up）"
   "$BIN" --start 2>&1 | tail -6 | sed 's/^/    /'
-  wait_healthy >/dev/null 2>&1
-  echo "    toml  hunter.tag =$(get_cfg_tag)"
-  [ "$(get_cfg_tag)" = "$AHEAD" ] && ok "hunter.tag 补齐成 $AHEAD" || bad "hunter.tag 还是 $(get_cfg_tag)"
-  probe; grep -q "^PANEL running=true" <<<"$PROBE" && ok "起来后面板「运行中」" || bad "没起来"
+  wait_healthy >/dev/null 2>&1 && ok "6/6 健康" || bad "没起全"
+  echo "    toml  hunter.tag =$(get_cfg_tag)（配置那版是 $(get_env_version)）"
+  probe
+  grep -q "^PANEL running=true" <<<"$PROBE" && ok "起来后面板「运行中」" || bad "没起来"
+  # 命令行 `--start` 只做 `compose::up()`，**不经 `flow::start`**，所以不补记录。
+  # 这不是缺陷，是本轮造景的一个边界，见下面那段说明。
+  grep -q "^PANEL hunter_tag=Some(\"$TAG\")" <<<"$PROBE" \
+    && ok "面板仍报 v$TAG —— 与下面那条边界一致（不假装它补齐了）" \
+    || bad "面板报的版本与预期不符，看上面的输出"
+
+  say "    「起来之后补齐 hunter.tag」这一条的边界（**不编，如实说**）"
+  local n
+  n="$(nice -n 10 ionice -c 3 cargo test --manifest-path "$REPO/src-tauri/Cargo.toml" --locked \
+      --lib -- 补齐 2>&1 | grep -c 'test result: ok')"
+  [ "$n" = "1" ] && ok "纯判据那三条单测都过了（decide_catch_up）" || bad "decide_catch_up 的单测没过"
+  echo "    执行点是 flow::start（界面上的「启动服务」按钮走的就是它），"
+  echo "    而命令行 --start / 托盘「启动」走的是 compose::up()，不经过它 —— 所以补不上。"
+  echo "    **本机不跑 flow::start**：它会顺带调 schedule::sync()，"
+  echo "    在这台机器上会真去写 ~/.config/systemd/user/hunter-backup.{service,timer}"
+  echo "    并 systemctl --user daemon-reload —— 总控规则红线 3 明令不许动 systemd。"
+  echo "    → 所以「界面上点一次启动服务能不能补齐」列进未验证清单，留真机验收。"
   restore
 }
 
 case_a35() {
   say "A3-5 容器正在跑 + 配置超前 → 卡片照旧出现（I16 覆盖的现场，不许回归）"
   snapshot
-  dc start >/dev/null 2>&1; wait_healthy >/dev/null 2>&1
-  set_env_version "$AHEAD"; set_cfg_tag "$TAG"
+  # 「跑着的容器」必须是 $TAG 那一版：先把配置摆回 $TAG 并把容器起回来，
+  # 再单独把 .env 写成 $AHEAD —— 升级第 ③ 步干的就是这最后一下。
+  # （A3-2 / A3-4 之后容器跑的是 $AHEAD，不掰回来这里就成了「配置与跑着的一致」）
+  set_cfg_tag "$TAG"; set_env_version "$TAG"
+  dc up -d >/dev/null 2>&1
+  wait_healthy >/dev/null 2>&1 && ok "起点：容器跑在 $TAG 上、6/6 健康" || bad "起点没起全，这条测不准"
+  set_env_version "$AHEAD"
+  rmi_ahead
   probe; pshow 'INTERRUPTED|PANEL'
   grep -q "^INTERRUPTED yes" <<<"$PROBE" && ok "卡片照旧出现" || bad "卡片不见了 —— 回归了"
   [ "$(pget INTERRUPTED running_tag)" = "Some(\"$TAG\")" ] && ok "running_tag=$TAG（跑着的那一版）" || bad "running_tag 不对"
   restore
-  dc start >/dev/null 2>&1; wait_healthy >/dev/null 2>&1
+  dc up -d >/dev/null 2>&1; wait_healthy >/dev/null 2>&1
+}
+
+# ── 收尾 ────────────────────────────────────────────────────────────────
+# 造景会改 .env / launcher.toml / 删镜像，收工前把测试栈摆回「$TAG 跑着、
+# 配置与它一致、6/6 健康」。`all` 跑完必须落在这一格上，否则下一个人接手时
+# 面对的是一台状态不明的机器。
+case_restore() {
+  say "收尾：把测试栈摆回 v$TAG、配置与它一致"
+  set_cfg_tag "$TAG"; set_env_version "$TAG"
+  dc up -d >/dev/null 2>&1
+  wait_healthy && ok "6/6 健康" || bad "没起全"
+  probe
+  grep -q "^INTERRUPTED no" <<<"$PROBE" && ok "没有中间态残留" || bad "还有中间态残留"
+  grep -q "^PANEL running=true" <<<"$PROBE" && ok "面板「运行中」" || bad "面板不是运行中"
 }
 
 # ── A4-x ────────────────────────────────────────────────────────────────
@@ -277,8 +395,9 @@ for c in "$@"; do
   case "$c" in
     a11) case_a11;; a13) case_a13;; a21) case_a21;; a23) case_a23;;
     a31) case_a31;; a32) case_a32;; a33) case_a33;; a34) case_a34;; a35) case_a35;;
-    a42) case_a42;; a46) case_a46;;
-    all) case_a11; case_a13; case_a21; case_a23; case_a31; case_a32; case_a33; case_a34; case_a35; case_a42; case_a46;;
+    a42) case_a42;; a46) case_a46;; restore) case_restore;;
+    # 顺序见文件头：A3-2 → A3-4（镜像要在本机）→ A3-5 / A3-3（自己删镜像再造现场）
+    all) case_a11; case_a13; case_a21; case_a23; case_a31; case_a32; case_a34; case_a35; case_a33; case_a42; case_a46; case_restore;;
     *) echo "不认识的场景：$c"; exit 2;;
   esac
 done

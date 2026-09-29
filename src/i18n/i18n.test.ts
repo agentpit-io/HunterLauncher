@@ -114,12 +114,13 @@ describe('I17 · U2 退出与停止分得开', () => {
     expect(en.dashboard.stopService).not.toBe(en.dashboard.quitLauncher)
   })
 
-  it('退出旁边那行小字说清了「Hunter 继续在后台运行」', () => {
-    for (const hint of [zhCN.dashboard.quitHint, zhCN.quit.hint]) {
-      expect(hint).toContain('后台运行')
-    }
+  it('退出旁边那两行小字说清了「Hunter 继续在后台运行」和「要停内存点哪个」', () => {
+    // 这两行就是界面上**真的渲染**的那两条（`Dashboard.tsx` 的 quit-hint / quit-stop-hint）
+    expect(zhCN.quit.hint).toContain('后台运行')
+    expect(en.quit.hint.toLowerCase()).toContain('keeps running')
     // 还得说明白想停服务该点哪儿 —— 用户不再被提醒容器占着内存，这是补偿
     expect(zhCN.quit.stopHint).toContain('停止服务')
+    expect(en.quit.stopHint).toContain('Stop services')
   })
 
   it('升级进行中那一句有两个动作，且第二个是「回滚后再退」', () => {

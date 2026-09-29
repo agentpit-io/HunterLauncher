@@ -346,12 +346,18 @@ export function Dashboard() {
             U2：**「退出启动器」与「停止服务」必须分得开。**
             退出＝只关这个窗口，Hunter 继续在后台跑（`quit_app` 已经没有任何地方
             能传「一起停容器」了）；要让它不再占内存，用上面那个「停止服务」。
-            旁边这行小字是「不再询问」的代价换来的知情 —— 用户不再被提醒容器还占着内存。
+            两行小字是「不再询问」的代价换来的知情 —— 用户不再被提醒容器还占着内存，
+            所以第一行说清「退出之后还在」，第二行点名「要停内存用哪一个」。
           */}
           <div className="flex items-center gap-[10px]">
-            <span className="text-xs leading-[1.4] text-muted" data-testid="quit-hint">
-              {t.dashboard.quitHint}
-            </span>
+            <div className="flex flex-col items-end gap-[2px]">
+              <span className="text-xs leading-[1.4] text-muted" data-testid="quit-hint">
+                {t.quit.hint}
+              </span>
+              <span className="text-xs leading-[1.4] text-muted" data-testid="quit-stop-hint">
+                {t.quit.stopHint}
+              </span>
+            </div>
             <Button variant="ghost" data-testid="quit-launcher" className="h-[34px] px-4 text-sm" onClick={() => void ipc.quitApp()}>
               {t.dashboard.quitLauncher}
             </Button>
