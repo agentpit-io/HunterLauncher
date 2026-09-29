@@ -279,6 +279,9 @@ export const demoPull: PullProgress = {
   images: demoImages,
   totalBytes: demoTotal,
   downloadedBytes: demoDone,
+  // U5：`downloadedBytes` 把「本机已有的层」也算进去了，`netBytes` 才是**这次真的过网**的
+  // 那一部分。演示数据也照这个区别给 —— 两个数一样的话就看不出这一栏在说什么了
+  netBytes: Math.round(demoDone * 0.62),
   percent: Math.round((demoDone / demoTotal) * 100),
   speedBps: 4_800_000,
   etaSeconds: 80,
@@ -290,6 +293,36 @@ export const demoPull: PullProgress = {
   error: null,
   errorCode: null,
 }
+
+/**
+ * **换源重试那一档**（I18 · U5 · A5-4）。
+ *
+ * 第一次拉取失败、自动换到 GHCR 之后的第二个样本。两个诚实性要点都在这份数据里：
+ *
+ * * `attempt: 2` → 界面上要出现「第 2 次尝试（上一次失败后已自动换源）」；
+ * * `etaSeconds: null` → **ETA 已经作废重算**（后端在 `set_attempt` 里把速度样本
+ *   清掉了），界面显示「剩余时间未知」而**不是一个编出来的秒数**。
+ *
+ * 今早那位客户就是第 1 次失败后换的源，而 0.1.19 的界面上什么都没说。
+ */
+export const demoPullRetry: PullProgress = {
+  ...demoPull,
+  attempt: 2,
+  // 换源之后速度样本清零，够一秒才有第一个样本 —— 这一屏正好是「还没攒够」
+  speedBps: null,
+  etaSeconds: null,
+}
+
+/**
+ * 「升级正在进行中」那几行步骤（`ipc.upgradeStatus()` 演示分支用）。
+ *
+ * 与 `upgrade.rs` 里 `note(...)` 的真实文案同一口径：说清在做什么、**不预告结果**。
+ */
+export const demoUpgradeSteps: string[] = [
+  '正在取 v1.2.2 的 compose 与配置',
+  '已备份（升级失败可以回滚）',
+  '正在拉取新版本的镜像…',
+]
 
 export const demoRuntime: RuntimeStatus = {
   hunterTag: DEMO_HUNTER_TAG,

@@ -756,9 +756,12 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             // 展示与执行同一个来源：这里写的顺序就是 `chain::routes()` 的顺序
             let routes = crate::runtime::chain::routes();
             if routes.is_empty() {
+                // I18 · P0-2：这句话按「装没装」两态走 —— 走到这里的**不一定**是没装
                 return Err(AppError::new(
                     Code::NotImplemented,
-                    crate::runtime::chain::platform_cannot_install(),
+                    crate::runtime::chain::platform_cannot_install(
+                        &crate::runtime::docker::detect(),
+                    ),
                 ));
             }
             let missing = crate::runtime::builtin::missing_items();
@@ -1438,11 +1441,6 @@ pub fn runtime_label(app: &str) -> &'static str {
     }
 }
 
-/// 启动某个运行时要跑的命令。
-///
-/// mac 上用 `open -a`（系统自己去找 .app，比我们猜路径可靠）；Linux 上只有 systemd
-/// 这一条；Colima 三平台都是 `colima start`。找不到对应的做法就**如实拒绝**，
-/// 不硬凑一条大概能跑的命令。
 /// 用户**自己**装的那个 colima 可执行文件（不是我们下到 `~/.hunter/runtime` 里的）。
 ///
 /// [`which::resolve`] 把内置运行时的 `bin` 排在所有清单最前面（I7 有意为之），
@@ -1456,26 +1454,90 @@ fn user_colima_bin() -> Option<String> {
     Some(p)
 }
 
-fn start_runtime_argv(app: &str) -> AppResult<Vec<String>> {
-    match app {
-        "orbstack" | "docker-desktop" => {
-            if !cfg!(target_os = "macos") {
-                return Err(AppError::new(
-                    Code::NotImplemented,
-                    format!("{} 只在 macOS 上能这样启动。", runtime_label(app)),
-                ));
-            }
+/// 启动某个运行时要跑的命令。
+///
+/// mac 上用 `open -a`（系统自己去找 .app，比我们猜路径可靠）；Windows 上直接启动
+/// Docker Desktop 的可执行文件（**用户态程序，点开它不需要管理员**）；Linux 上的
+/// Docker 是 systemd 服务，走下面 `"systemd"` 那一档；Colima 三平台都是 `colima start`。
+/// 找不到对应的做法就**如实拒绝**，不硬凑一条大概能跑的命令。
+///
+/// ## I18 · P0-1：这个函数从「只在 macOS 上能成」变成三平台各有各的做法
+///
+/// 原来 `"orbstack" | "docker-desktop"` 那一条在非 macOS 上直接 `NotImplemented`。
+/// 后果客户 2026-09-29 现场撞到了：那台 Windows 上 Docker Desktop 装着、引擎没在跑，
+/// 面板给了一个很显眼的「启动运行时」按钮，**点下去什么也做不了**。
+///
+/// 那个「启动器替他点不了」的前提在 macOS 上早就被自己推翻了（`open -a` 不需要管理员），
+/// 在 Windows 上从来没有被验证过 —— 而 `Docker Desktop.exe` 同样是用户态程序。
+///
+/// **也改成 `pub` 了**：`runtime/docker.rs` 的 `try_start_daemon` 直接复用它，
+/// 不在那边再抄一份 argv 构造（两处各写一份，迟早对不上）。
+pub fn start_runtime_argv(app: &str) -> AppResult<Vec<String>> {
+    // 路径由定位器解析好再进纯函数（见 [`desktop_app_argv`]）。定位器有进程内缓存，不贵。
+    // 只有在真正要用的那个平台上才走得到对应的那一条 —— 解析出来没用上也无害（就是一次缓存查询）
+    let open = which::resolve("open").resolved;
+    let dd = which::resolve("Docker Desktop").resolved;
+    if matches!(app, "orbstack" | "docker-desktop") {
+        return desktop_app_argv(app, crate::runtime::OS, open.as_deref(), dd.as_deref());
+    }
+    start_runtime_argv_rest(app)
+}
+
+/// 「启动桌面版运行时」这一档的 argv 选择。**纯函数**，三平台各一条分支。
+///
+/// 做成纯函数是为了能在 Linux 上断言 Windows / macOS 那两条分支 ——
+/// 真机行为（`open -a` 到底起没起得来、Docker Desktop 冷启动几秒）
+/// 只有真机能验，但「该跑哪条命令」是确定性规则，必须在单测里钉死。
+///
+/// `open_bin` / `dd_exe` 由调用方用定位器解析好传进来（纯函数不碰文件系统）。
+fn desktop_app_argv(
+    app: &str,
+    os: crate::runtime::Os,
+    open_bin: Option<&str>,
+    dd_exe: Option<&str>,
+) -> AppResult<Vec<String>> {
+    debug_assert!(matches!(app, "orbstack" | "docker-desktop"));
+    let label = runtime_label(app);
+    match os {
+        crate::runtime::Os::Mac => {
             // `open` 在 /usr/bin，GUI 程序的默认 PATH 里就有它；仍然走定位器统一口径
-            let open = which::resolve("open")
-                .resolved
-                .unwrap_or_else(|| "/usr/bin/open".to_string());
+            let open = open_bin.unwrap_or("/usr/bin/open");
             let name = if app == "orbstack" {
                 "OrbStack"
             } else {
                 "Docker"
             };
-            Ok(vec![open, "-a".into(), name.into()])
+            Ok(vec![open.to_string(), "-a".into(), name.into()])
         }
+        crate::runtime::Os::Windows => {
+            if app != "docker-desktop" {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    format!("{label} 只有 macOS 版，Windows 上没有它。"),
+                ));
+            }
+            // Docker Desktop 在 Windows 上装在
+            // `C:\Program Files\Docker\Docker\Docker Desktop.exe`，
+            // 是个**用户态程序** —— 点开它不需要管理员（只有装的时候才需要）。
+            // 路径走定位器统一口径，不在这里写死（用户可能装在别处）。
+            let exe = dd_exe.ok_or_else(|| {
+                AppError::new(
+                    Code::DockerMissing,
+                    format!("这台电脑上找不到 {label} 的程序文件，像是没有装它。"),
+                )
+            })?;
+            Ok(vec![exe.to_string()])
+        }
+        crate::runtime::Os::Linux => Err(AppError::new(
+            Code::NotImplemented,
+            format!("Linux 上的 Docker 是系统服务，没有「{label}」这种桌面程序可以点开。"),
+        )),
+    }
+}
+
+/// `start_runtime_argv` 里除「桌面版运行时」之外的几档（colima / systemd / 认不得的）。
+fn start_runtime_argv_rest(app: &str) -> AppResult<Vec<String>> {
+    match app {
         // **这一档只针对用户自己装的 colima**（I9 的 P0-2）。
         //
         // 0.1.8 在用户 Mac 上规划出来的那条命令是
@@ -1677,11 +1739,83 @@ pub(crate) mod tests {
     }
     use super::*;
 
+    /// **A1-5 的关键断言**：三平台各自该跑什么命令。
+    ///
+    /// 走的是纯函数 [`desktop_app_argv`]，所以这条测试在**任意一台机器**上都能把
+    /// 三条分支跑一遍 —— 包括 Windows 那条。这正是 I18 要修的那一格：
+    /// 客户 2026-09-29 那台 Windows 上，那个「启动运行时」按钮原来什么也做不了
+    /// （`start_runtime_argv` 在非 macOS 上直接 `NotImplemented`）。
+    #[test]
+    fn 启动桌面运行时的命令三平台各一条() {
+        use crate::runtime::Os;
+
+        // macOS：沿用 `open -a`（这一档有既有的单测钉着，不许改坏）
+        assert_eq!(
+            desktop_app_argv("orbstack", Os::Mac, Some("/usr/bin/open"), None).unwrap(),
+            vec!["/usr/bin/open", "-a", "OrbStack"]
+        );
+        assert_eq!(
+            desktop_app_argv("docker-desktop", Os::Mac, Some("/usr/bin/open"), None).unwrap(),
+            vec!["/usr/bin/open", "-a", "Docker"]
+        );
+        // 定位器没给出 open 时退回 /usr/bin/open（GUI 程序的默认 PATH 里就有它）
+        assert_eq!(
+            desktop_app_argv("orbstack", Os::Mac, None, None).unwrap()[0],
+            "/usr/bin/open"
+        );
+
+        // **Windows：本轮的核心。** Docker Desktop 是用户态程序，点开它不需要管理员，
+        // 启动的就是定位器找到的那个可执行文件本身（没有别的参数）。
+        const DD: &str = r"C:\Program Files\Docker\Docker\Docker Desktop.exe";
+        assert_eq!(
+            desktop_app_argv("docker-desktop", Os::Windows, None, Some(DD)).unwrap(),
+            vec![DD]
+        );
+        // Windows 上没有 OrbStack —— 如实拒绝，不硬凑一条大概能跑的命令
+        assert!(desktop_app_argv("orbstack", Os::Windows, None, Some(DD)).is_err());
+        // 找不到那个可执行文件 = 这台机器上没装它：说「没装」（`DockerMissing`），
+        // 不是「这个平台做不到」（那会让人以为 Windows 上永远不行）
+        let e = desktop_app_argv("docker-desktop", Os::Windows, None, None).unwrap_err();
+        assert_eq!(e.code, crate::err::Code::DockerMissing);
+        assert!(e.msg.contains("没有装"), "{}", e.msg);
+
+        // Linux：Docker 是系统服务，没有「桌面程序」可以点 —— 那一档走 systemd
+        assert!(desktop_app_argv("docker-desktop", Os::Linux, None, None).is_err());
+        assert!(desktop_app_argv("orbstack", Os::Linux, None, None).is_err());
+    }
+
+    /// Linux 上 `start_runtime("systemd")` 给的仍然是 `systemctl start docker`，
+    /// 而 [`desktop_app_argv`] 在 Linux 上如实拒绝 —— 两件事不要混
+    /// （后者要的是「点亮一个桌面程序」，前者是系统服务）。
+    #[test]
+    fn linux_上桌面那一档与_systemd_那一档是两回事() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let e = desktop_app_argv("docker-desktop", crate::runtime::Os::Linux, None, None)
+            .expect_err("Linux 上没有 Docker Desktop 这个桌面程序");
+        assert!(e.msg.contains("系统服务"), "{}", e.msg);
+        assert_eq!(
+            start_runtime_argv("systemd").unwrap(),
+            vec![
+                which::resolve("systemctl")
+                    .resolved
+                    .unwrap_or_else(|| "systemctl".to_string()),
+                "start".to_string(),
+                "docker".to_string(),
+            ]
+        );
+    }
+
     /// 这个平台上**能真的规划出启动动作**的那个运行时，以及它命令里该出现的一段。
     ///
-    /// 三平台不一样：Linux 只有 systemd，macOS 只有 `open -a`，Windows 一个都没有
-    /// （Docker Desktop 在 Windows 上没有可靠的命令行启动方式，`start_runtime_argv`
-    /// 如实拒绝）。测试要跟着平台走，否则在 CI 的 macOS / Windows runner 上必红 ——
+    /// 三平台不一样：Linux 只有 systemd，macOS 只有 `open -a`。
+    /// **Windows 这里仍然返回 `None`**：那条命令的形状已经由
+    /// [`启动桌面运行时的命令三平台各一条`] 这个纯函数测试钉死了，
+    /// 而这里要断言的是「真的规划出了一条命令」，那要求 CI 的 Windows runner 上
+    /// 真装着 Docker Desktop —— 押在别人的 runner 上不如押在纯函数上。
+    ///
+    /// 测试要跟着平台走，否则在 CI 的 macOS / Windows runner 上必红 ——
     /// I4 第一版就是写死 `systemd`，三条测试在那两个平台上全挂。
     pub(crate) fn startable_app() -> Option<(&'static str, &'static str)> {
         if cfg!(target_os = "linux") {

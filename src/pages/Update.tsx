@@ -9,8 +9,16 @@ import { useAsync } from '../lib/useAsync'
 import { isoToShanghai } from '../lib/format'
 import * as ipc from '../lib/ipc'
 import { bytes } from '../lib/format'
+import { pullImageBytes, pullStateText, pullView } from '../lib/pull'
 import { useStore } from '../state/context'
-import type { BackupMeta, LauncherUpdate, Preflight, UpgradeStatus } from '../lib/types'
+import type {
+  BackupMeta,
+  ImagePull,
+  LauncherUpdate,
+  Preflight,
+  PullProgress,
+  UpgradeStatus,
+} from '../lib/types'
 
 /**
  * 启动器的官网页面（下载页 + 版本说明）。
@@ -161,13 +169,75 @@ function HunterCard() {
   const [nonce, setNonce] = useState(0)
   const c = useAsync(() => ipc.checkHunterUpdate(nonce > 0), [nonce])
   const [confirm, setConfirm] = useState(false)
-  const [st, setSt] = useState<UpgradeStatus | null>(null)
+  /**
+   * I18 · U5：**演示模式直接进「升级进行中」那一态。**
+   *
+   * 真机上 `st` 是点「升级」点出来的，而那一块（字节进度、网速、预计剩余）
+   * 只有 `st.running` 为真才画得出来 —— 截图脚本点两下才出得来、还不一定点得中
+   * （I17 的 `update-no-tag` 就是栽在这上面）。所以演示构建里由这三处直接给：
+   * 这里、下面的 `runningRef`、以及 `ipc.upgradeStatus()` 的演示分支。
+   * 做法与 `BackupPanel` 的 `backup-restore` 是同一个。
+   */
+  const demoingUpgrade = ipc.demoPage() === 'update-running' || ipc.demoPage() === 'update-retry'
+  const [st, setSt] = useState<UpgradeStatus | null>(() =>
+    demoingUpgrade ? { running: true, steps: [], result: null, error: null } : null,
+  )
   const timer = useRef<number | undefined>(undefined)
   const d = c.data ?? null
+
+  /**
+   * U5：拉取进度。
+   *
+   * `EV_PULL` 是**每条**进度都发的，而升级本身很吃 CPU（拉镜像 + 解压）。
+   * 所以这里分两步走，**上屏频率不高于每秒一次**：
+   *
+   * * 监听器只把最新的那一份**存进 ref**（不触发重渲）；
+   * * 真正 `setState` 的是下面那个和轮询共用的一秒定时器。
+   *
+   * 直接一条一条 `setState` 会让整块面板每秒重渲几十次 —— 而那正是用户
+   * 点「取消升级」那一刻最卡的时候（A5-5 要他在那时能看清已经下了多少）。
+   */
+  const pullRef = useRef<PullProgress | null>(null)
+  const [pull, setPull] = useState<PullProgress | null>(null)
+  /**
+   * 明细默认折叠：六个镜像 × 状态 × 字节，摊开会把「还要多久」那一行挤下去。
+   * `update-retry` 那一页例外 —— 它就是给 A5-3 / A5-4 出图的，明细要开着。
+   */
+  const [showImages, setShowImages] = useState(ipc.demoPage() === 'update-retry')
+  /**
+   * 升级在不在跑。**用 ref 而不是 `st.running`** —— 监听器是闭包里那一个，
+   * 拿不到最新的 state；而「装 Docker 时也会发 EV_PULL」这件事必须挡住，
+   * 否则用户开着这一页装 Docker，这里会显示成「正在升级」。
+   */
+  const runningRef = useRef(demoingUpgrade)
 
   // 升级要几分钟。开始之后每秒问一次进度，做完就停。
   useEffect(() => {
     return () => window.clearInterval(timer.current)
+  }, [])
+
+  // 演示模式那一页：进来就按「升级正在进行」跑起来（真机上这一步是点出来的）。
+  // 这个一秒一次的定时器同时负责把 `pullRef` 里最新的那一份搬上屏（见 `poll`）
+  useEffect(() => {
+    if (demoingUpgrade) poll()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    let un: (() => void) | undefined
+    let gone = false
+    void ipc
+      .onPullProgress((p) => {
+        if (runningRef.current) pullRef.current = p
+      })
+      .then((f) => {
+        if (gone) f()
+        else un = f
+      })
+    return () => {
+      gone = true
+      un?.()
+    }
   }, [])
 
   function poll() {
@@ -175,7 +245,10 @@ function HunterCard() {
     timer.current = window.setInterval(() => {
       void ipc.upgradeStatus().then((s) => {
         setSt(s)
+        // 每秒把 ref 里最新那一份搬上屏；没有新样本就不动 state（不白重渲一次）
+        setPull((cur) => (pullRef.current !== cur ? pullRef.current : cur))
         if (!s.running) {
+          runningRef.current = false
           window.clearInterval(timer.current)
           setNonce((n) => n + 1)
         }
@@ -216,11 +289,17 @@ function HunterCard() {
   async function start(tag: string, registry?: string) {
     setConfirm(false)
     setAsk(null)
+    // 上一次升级的进度不许留到这一次（换了目标版本、换了源，那些数字全不作数了）
+    pullRef.current = null
+    runningRef.current = true
+    setPull(null)
+    setShowImages(false)
     setSt({ running: true, steps: [], result: null, error: null })
     try {
       await ipc.upgradeHunter(tag, registry)
       poll()
     } catch (e) {
+      runningRef.current = false
       setSt({
         running: false,
         steps: [],
@@ -307,6 +386,12 @@ function HunterCard() {
                     : ''}
             </span>
           </div>
+          {/*
+            U5：**升级过程要看得见网速与剩余时间**（用户 2026-09-29 深夜提的）。
+            在它之前，这一屏只有一行「正在升级…」—— 今早那位客户就是看不到
+            「再等两分钟就好」，等了一分钟就点「一起停止」退出，把机器留在了中间态。
+          */}
+          {pull && <PullPanel p={pull} open={showImages} onToggle={() => setShowImages((v) => !v)} />}
           <LogBox lines={st.steps} className="mt-[8px] max-h-[160px]" emptyText={t.common.loading} />
           {st.error && (
             <div className="mt-[10px] text-sm leading-[1.6] text-danger" data-testid="upgrade-error">
@@ -436,6 +521,92 @@ function HunterCard() {
         </Modal>
       )}
     </Card>
+  )
+}
+
+// ── U5 · 升级过程中的字节进度 ─────────────────────────────────────────────
+
+/**
+ * U5：升级 / 安装过程中那一块字节进度。
+ *
+ * **判断「该显示什么」的那部分在 [`crate::pullView`]（`src/lib/pull.ts`）** ——
+ * 那里是纯函数，三条诚实性红线（不编数字、总量未知时不写 0%、
+ * 「本次已下载」必须用 `netBytes`）由 `src/lib/pull.test.ts` 逐条钉着。
+ * 这个组件只负责把那些字符串摆出来。
+ */
+function PullPanel({ p, open, onToggle }: { p: PullProgress; open: boolean; onToggle: () => void }) {
+  const { t } = useStore()
+  const v = pullView(p, t.pull)
+
+  return (
+    <div
+      className="mt-[10px] rounded-md border border-line bg-window px-3 py-2.5"
+      data-testid="pull-progress"
+    >
+      <div className="tnum flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-body">
+        <span data-testid="pull-size">{v.size}</span>
+        {/* 分母没算出来时这里是 null —— **不写 0%** */}
+        {v.percent && <span data-testid="pull-percent">{v.percent}</span>}
+        {/* 网速取不到就不显示这一项 —— 不编 */}
+        {v.speed && (
+          <span className="text-muted" data-testid="pull-speed">
+            {v.speed}
+          </span>
+        )}
+        {/* 拿不到样本就是「剩余时间未知」，**不拿已用时去凑一个数** */}
+        {v.eta && (
+          <span className="text-muted" data-testid="pull-eta">
+            {v.eta}
+          </span>
+        )}
+        {/* 第几次尝试。今早那次客户就是第 1 次失败后换的源，而界面上什么都没说 */}
+        {v.attempt && (
+          <span className="text-amber-text" data-testid="pull-attempt">
+            {v.attempt}
+          </span>
+        )}
+      </div>
+
+      {/* 「**这次**真的下载了多少」—— 必须用 netBytes（见 pull.ts 的红线 3） */}
+      {v.net && (
+        <div className="tnum mt-[6px] text-xs text-muted" data-testid="pull-net">
+          {v.net}
+        </div>
+      )}
+
+      {p.images.length > 0 && (
+        <>
+          <button
+            type="button"
+            className="mt-[8px] cursor-pointer text-xs text-amber-text underline-offset-2 hover:underline"
+            data-testid="pull-images-toggle"
+            onClick={onToggle}
+          >
+            {t.pull.detailsToggle}
+          </button>
+          {open && (
+            <ul
+              className="tnum mt-[6px] flex flex-col gap-[4px] text-xs text-dim"
+              data-testid="pull-images"
+            >
+              {p.images.map((i: ImagePull) => (
+                <li key={i.service} className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate">
+                    {t.pull.roles[i.service as keyof typeof t.pull.roles] ?? i.service}
+                    <span className="ml-1.5 text-muted">{i.shortRef}</span>
+                  </span>
+                  <span className="shrink-0">
+                    {pullStateText(i.state, t.pull)}
+                    {' · '}
+                    {pullImageBytes(i, t.pull)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 

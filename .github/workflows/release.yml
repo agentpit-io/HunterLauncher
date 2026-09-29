@@ -28,6 +28,10 @@ on:
       tag:
         description: '要发布的 tag（例如 launcher-v0.1.0-rc.1）。必须已经存在'
         required: true
+      hunter_version:
+        description: '镜像闸门要同步的 hunter 版本（例如 1.2.3）。留空 = hunter-community 的最新正式 Release'
+        required: false
+        default: ''
 
 concurrency:
   group: release-${{ github.ref }}
@@ -298,10 +302,54 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # ── 镜像闸门（I18 · P1）──────────────────────────────────────────────────
+  #
+  # **镜像先就位，再点亮升级入口。** 这一步排在 `gh release create` 之前，
+  # 它不过，Release 就不存在 —— 而 Release 一出现，客户那边的升级按钮就亮了。
+  #
+  # 为什么要这一步：2026-09-29 09:05 客户那台 Windows 上升级失败的直接原因不是网络、
+  # 不是操作，而是国内源上还没有 v1.2.3（国内源是每 6 小时的定时同步，
+  # 而升级按钮在 Release 出现那一刻就亮了）。10:38 实测 `…:1.2.3: not found` →
+  # 启动器按设计换到 GHCR → 客户等不下去点「一起停止」→ 机器留在中间态。
+  #
+  # 这个 job 做三件事（细节与「为什么是 30 分钟」写在 `scripts/gate-mirrors.sh` 的文件头）：
+  # ① 触发一次 `cn-mirror.yml`（带上要同步的 hunter 版本）；
+  # ② **等它跑完**（上限 30 分钟），失败或超时就不往下走；
+  # ③ 用 `scripts/verify-mirrors.sh` 核两源四个镜像，非零退出就停。
+  #
+  # **宁可晚发，不把一个「客户点升级就 404」的版本放出去。**
+  mirrors:
+    name: 镜像闸门 · 先就位再点亮
+    needs: build
+    runs-on: ubuntu-22.04
+    # cn-mirror 实测跑过 15 分 7 秒，gate 自己还要等最多 30 分钟 + 校验
+    timeout-minutes: 50
+    permissions:
+      contents: write # gh api 读 hunter-community 的 Release
+      actions: write # gh workflow run 触发 cn-mirror，以及轮询它的状态
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: 触发国内源同步 · 等它成功 · 校验两源四个镜像
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 留空时脚本自己去问 hunter-community 的最新正式 Release（与 cn-mirror 同一条口径）
+          HUNTER_VERSION: ${{ github.event.inputs.hunter_version }}
+        run: |
+          set -e
+          if [ -n "${HUNTER_VERSION:-}" ]; then
+            bash scripts/gate-mirrors.sh "$HUNTER_VERSION"
+          else
+            bash scripts/gate-mirrors.sh
+          fi
+
   # ── 汇总发布 ──────────────────────────────────────────────────────────────
   release:
     name: 汇总 · GitHub Release + latest.json + COS
-    needs: build
+    # I18 · P1：**`mirrors` 没有成功就不建 Release** —— 那一步才是「点亮升级入口」
+    needs: [build, mirrors]
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:

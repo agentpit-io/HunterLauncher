@@ -286,9 +286,11 @@ pub fn install_docker(p: &mut builtin::Progress) -> AppResult<Outcome> {
 
     let list = routes();
     if list.is_empty() {
+        // I18 · P0-2：这句话现在跟着「装没装」走 —— 走到这里的不一定都是「没装」
+        // （Windows 上装了没在跑也会落到这，因为那边 routes() 是有意留空的）
         return Err(AppError::new(
             Code::NotImplemented,
-            platform_cannot_install(),
+            platform_cannot_install(&super::docker::detect()),
         ));
     }
     let mut failed: Vec<(Route, String)> = Vec::new();
@@ -352,20 +354,63 @@ pub fn install_docker(p: &mut builtin::Progress) -> AppResult<Outcome> {
     ))
 }
 
-/// 这个平台上启动器还不能替用户装 Docker 时，那一句**如实**的说明。
-pub fn platform_cannot_install() -> String {
-    if cfg!(target_os = "linux") {
-        "这台机器是 Linux：装 Docker 要改系统服务、要管理员权限，\
-         启动器这一版还没有做这条链路。你可以先用系统自带的包管理器装好 Docker，\
-         再回来点一次「重新检测」；启动器会自己接着往下装。"
-            .to_string()
-    } else if cfg!(target_os = "windows") {
-        "这台机器是 Windows：装 Docker Desktop 要 WSL 与管理员权限，\
-         启动器这一版还没有做这条链路。装好 Docker Desktop 之后回来点一次「重新检测」，\
-         启动器会自己接着往下装。"
-            .to_string()
-    } else {
-        "这个平台上启动器还不能替你装 Docker。".to_string()
+/// 这个平台上，启动器还不能替用户**装** Docker 时，那一句**如实**的说明。
+///
+/// ## I18 · P0-2：按「装没装」两态分开说
+///
+/// 原来 Windows 那一条无论什么情况都写「**装好 Docker Desktop 之后**回来点一次
+/// 『重新检测』」。对一个**早就装好、只是引擎没在跑**的人是错的 ——
+/// 客户 2026-09-29 那台机器（`installed=true daemon=false`）正是这一档，
+/// 照这句话做他会去重装一遍，装完发现还是起不来。
+///
+/// 所以先看 [`crate::runtime::docker::DockerInfo`] 的两态（它的 `error_code()`
+/// 早就在分 `DockerMissing` 与 `DaemonDown` 了，这里只是把它往出口透）：
+///
+/// | 状态 | 说的是什么 |
+/// |---|---|
+/// | 装了、没在跑 | 点「启动运行时」把**已经装好的**那一份拉起来（P0-1 起它真的拉得动） |
+/// | 装了、在跑 | 那是版本不满足，不是「装没装」的问题，别叫人家去装 |
+/// | 没装 | 这个平台能不能替你装、要走什么路 |
+///
+/// **「装」与「拉起」是两件事**：这个函数只讲这个平台能不能替你装 ——
+/// 那条链路要管理员、要重启，本轮明确不做；能拉起的那一格走 P0-1。
+pub fn platform_cannot_install(d: &super::docker::DockerInfo) -> String {
+    platform_cannot_install_on(crate::runtime::OS, d.installed, d.daemon_running)
+}
+
+/// [`platform_cannot_install`] 的**纯函数**实现 —— 平台与状态都是参数，三平台都测得到。
+fn platform_cannot_install_on(
+    os: crate::runtime::Os,
+    installed: bool,
+    daemon_running: bool,
+) -> String {
+    if installed && !daemon_running {
+        return if os == crate::runtime::Os::Windows {
+            "这台电脑上的 Docker Desktop 装着，只是引擎没在跑 —— 点「启动运行时」，\
+             启动器会替你把它拉起来（冷启动通常要半分钟到一分钟）。"
+                .to_string()
+        } else {
+            "Docker 装着，只是后台服务没在跑 —— 点「启动运行时」，启动器会替你把它拉起来。"
+                .to_string()
+        };
+    }
+    if installed {
+        // 装了、也在跑，那不满足的只可能是版本或 WSL。**别把话说成「去装一个」**
+        return "Docker 装着、也在跑，只是版本不满足要求 —— 上面那一行的原话说明了差在哪。"
+            .to_string();
+    }
+    match os {
+        crate::runtime::Os::Linux => "这台机器是 Linux：装 Docker 要改系统服务、要管理员权限，\
+             启动器这一版还没有做这条链路。你可以先用系统自带的包管理器装好 Docker，\
+             再回来点一次「重新检测」；启动器会自己接着往下装。"
+            .to_string(),
+        crate::runtime::Os::Windows => {
+            "这台电脑上还没有装 Docker Desktop。装它要 WSL2 与管理员权限、\
+             装完要重启一次电脑，启动器这一版还没有做这条链路。\
+             装好之后回来点一次「重新检测」，启动器会自己接着往下装。"
+                .to_string()
+        }
+        crate::runtime::Os::Mac => "这个平台上启动器还不能替你装 Docker。".to_string(),
     }
 }
 
@@ -409,13 +454,101 @@ mod tests {
         assert!(h.contains("启动器看不到也不会保存"), "{h}");
     }
 
+    /// I18 · P0-2：`platform_cannot_install` 的三种状态 × 三个平台**都要过这一条**。
+    ///
+    /// 原来它只有两种取值（按平台分），所以「装了没在跑」那一档根本测不到 ——
+    /// 而那一档恰恰是把话说错的那一档。
+    fn 三平台() -> [crate::runtime::Os; 3] {
+        [
+            crate::runtime::Os::Mac,
+            crate::runtime::Os::Windows,
+            crate::runtime::Os::Linux,
+        ]
+    }
+
     /// 平台不支持时那句话里**不许**出现「请你在终端里执行」这类引导
-    /// （I8 第〇节：界面上永远不出现这种话）。
+    /// （I8 第〇节：界面上永远不出现这种话），也不许再把活儿推回给用户。
     #[test]
     fn 平台不支持时不叫用户去敲命令() {
-        let s = platform_cannot_install();
-        for bad in ["终端", "命令行", "复制", "sudo", "apt-get", "curl"] {
-            assert!(!s.contains(bad), "这句话里不该出现「{bad}」：{s}");
+        for os in 三平台() {
+            for (installed, daemon) in [(false, false), (true, false), (true, true)] {
+                let s = platform_cannot_install_on(os, installed, daemon);
+                for bad in [
+                    "终端",
+                    "命令行",
+                    "复制",
+                    "sudo",
+                    "apt-get",
+                    "curl",
+                    "请手动启动",
+                ] {
+                    assert!(
+                        !s.contains(bad),
+                        "{os:?} installed={installed} daemon={daemon} 里不该出现「{bad}」：{s}"
+                    );
+                }
+            }
         }
+    }
+
+    /// **A2-1**：`installed=false` 时**不许**出现「装着」这类措辞 ——
+    /// 那会让一个真没装的人以为自己装过（0.1.16 的日志里就有这种自相矛盾）。
+    #[test]
+    fn 没装时不说装着() {
+        for os in 三平台() {
+            let s = platform_cannot_install_on(os, false, false);
+            assert!(!s.contains("装着"), "{os:?}：{s}");
+        }
+    }
+
+    /// **A2-2**：`installed=true, daemon=false` 时**不许**再把「装好…之后」这套话摆出来。
+    ///
+    /// 客户 2026-09-29 那台（HL-853ZUM，`installed=true daemon=false`）就是这一档：
+    /// 照原来那句「装好 Docker Desktop 之后回来点一次『重新检测』」做，
+    /// 他会去重装一遍，装完发现还是起不来。
+    #[test]
+    fn 装了没在跑时不说去装() {
+        for os in [crate::runtime::Os::Windows, crate::runtime::Os::Linux] {
+            let s = platform_cannot_install_on(os, true, false);
+            assert!(!s.contains("装好"), "{os:?}：{s}");
+            assert!(!s.contains("还没有装"), "{os:?}：{s}");
+            // 出路得说出来：那个按钮是真的能把已经装好的那份拉起来的（P0-1）
+            assert!(s.contains("启动运行时"), "{os:?} 该指向那个按钮：{s}");
+        }
+        // Windows 那一条还要说到点子上：是 Docker Desktop、是「引擎」没在跑
+        let w = platform_cannot_install_on(crate::runtime::Os::Windows, true, false);
+        assert!(w.contains("Docker Desktop") && w.contains("引擎"), "{w}");
+        // Linux 那一条不点名 Docker Desktop（那边根本没有这个东西）
+        let l = platform_cannot_install_on(crate::runtime::Os::Linux, true, false);
+        assert!(!l.contains("Docker Desktop"), "{l}");
+    }
+
+    /// 装了、也在跑 —— 那不满足的只可能是版本，**别叫人家去装一遍**。
+    #[test]
+    fn 装着也在跑时不叫去装() {
+        let s = platform_cannot_install_on(crate::runtime::Os::Windows, true, true);
+        assert!(!s.contains("还没有装"), "{s}");
+        assert!(!s.contains("启动运行时"), "{s}");
+        assert!(s.contains("版本"), "{s}");
+    }
+
+    /// 检测结果里的两态怎么映射到文案上（`error_code()` 早就在分 `DockerMissing`
+    /// 与 `DaemonDown`，这里只是把它往出口透）。
+    #[test]
+    fn 检测结果决定说的是哪一态() {
+        let mk = |i: bool, d: bool| {
+            let mut info = crate::runtime::docker::DockerInfo::empty();
+            info.installed = i;
+            info.daemon_running = d;
+            info
+        };
+        // 两态说的话**必须不一样** —— 合成一句就是把用户往错的方向引
+        assert_ne!(
+            platform_cannot_install(&mk(false, false)),
+            platform_cannot_install(&mk(true, false))
+        );
+        // 装了没在跑那一档，出路是那个按钮；没装那一档不提它（按不到）
+        assert!(platform_cannot_install(&mk(true, false)).contains("启动运行时"));
+        assert!(!platform_cannot_install(&mk(false, false)).contains("启动运行时"));
     }
 }

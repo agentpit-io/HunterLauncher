@@ -307,6 +307,15 @@ export interface PullProgress {
   images: ImagePull[]
   totalBytes: number
   downloadedBytes: number
+  /**
+   * 这一次**真的走了网络**的字节数。
+   *
+   * `downloadedBytes` 把「本机已有的层」也算进去了 —— 它是进度条的分子，用户关心的是
+   * 整体完成度。但拿它去说「下载了 849 MB」就是在骗人：那 849 MB 一个字节都没过网。
+   * 所以「这次下载了多少」这句话**必须**用它（I18 · U5 §3.3①；
+   * Rust 侧同名字段的注释在 `compose.rs` 的 `PullProgress::net_bytes`）。
+   */
+  netBytes: number
   percent: number
   speedBps: number | null
   etaSeconds: number | null

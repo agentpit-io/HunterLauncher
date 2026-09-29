@@ -75,7 +75,12 @@ PAINT="${PAINT:-20}"
 #     而不是静默失败或者瞎选一块
 # 这一轮还改了三页既有页面：docker-missing（主按钮）、consent（三个勾）、
 # settings（授权卡 + 人话审计），它们本来就在这套图里，跟着一起重截
-PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing disk disk-none start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
+# I18 新增两页（U5 升级过程要看得见网速与剩余时间）：
+#   update-running —— 升级进行中：`已下 / 总计` + 百分比 + 当前网速 + 预计剩余
+#     + 「本次已下载」（**用 netBytes，不是 downloadedBytes**）
+#   update-retry —— 换源重试那一档（attempt=2）：出现「第 N 次尝试（已自动换源）」，
+#     而 ETA 已经作废重算，显示的是「剩余时间未知」**而不是一个编出来的秒数**（A5-3/A5-4）
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing disk disk-none start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update update-running update-retry error error-stalled error-builtin error-recovered)
 
 # 只截指定的几页（改了一两页时不用把四十几页重跑一遍）：
 #   ONLY="dashboard update" bash scripts/screenshot.sh docs/screenshots/I17

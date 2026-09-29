@@ -293,8 +293,12 @@ const en: Dict = {
     missingHint:
       'Docker is not installed on this machine, and Hunter needs it. The button below lets the launcher install one for you — no work on your side. The manual steps further down are still there for anyone who prefers them.',
     daemonDownTitle: 'Docker is installed but the daemon is not running',
+    // I18 · P0-1 / P0-2: this used to push the work back onto the user (and carried a
+    // terminal command). The launcher now brings it up itself and waits for it to be
+    // ready (up to a minute); if it never becomes ready we say so instead of claiming it worked.
     daemonDownHint:
-      'Start Docker Desktop / OrbStack, or run sudo systemctl start docker on Linux, then click "Check again".',
+      'Docker is installed on this machine, its engine just is not running. Use "Try starting Docker" below and the launcher will bring it up for you (a cold start usually takes 30 to 60 seconds).',
+    daemonStarting: 'Bringing it up for you — a cold start usually takes 30 to 60 seconds…',
     installLinux: 'Linux: curl -fsSL https://get.docker.com | sh, then add yourself to the docker group and log back in',
     installMac: 'macOS: OrbStack recommended (lighter, Apple-Silicon friendly), Docker Desktop otherwise',
     // R5 · U-04: used to spell out the `wsl --install` command — terminal commands
@@ -465,6 +469,13 @@ const en: Dict = {
       `Registry: ${registry}. This only happens on first install; later upgrades pull only changed layers.`,
     percentUnit: '%',
     sizeLine: (done: string, total: string) => `${done} / ${total}`,
+    // I18 · U5: never print 0% before the total is known — say this instead.
+    sizeComputing: 'working it out…',
+    // I18 · U5: "downloaded this time" uses netBytes, not downloadedBytes —
+    // the latter counts layers that were already on this machine.
+    downloaded: (v: string) => `${v} downloaded this time`,
+    noDownload: 'every image was already on this machine — nothing downloaded',
+    speedLine: (v: string) => `${v}/s`,
     eta: (t: string) => `about ${t} left`,
     etaUnknown: 'time left unknown',
     stateDone: 'done',
@@ -476,6 +487,7 @@ const en: Dict = {
     preparingIntro: 'Probing registries, fetching the compose file and writing configuration. First install only.',
     preparing: 'Preparing…',
     stateDownloading: 'downloading',
+    detailsToggle: 'Per-image details',
     retrying: (n: number) => `Attempt ${n} (registry switched after the previous failure)`,
     roles: {
       web: 'UI',

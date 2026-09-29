@@ -305,7 +305,12 @@ const zhCN = {
     // check-wording 第 4 条要拦的句式。现在主按钮在上、手动步骤在下。
     missingHint: '这台电脑上没有装 Docker，而 Hunter 要靠它跑起来。下面的主按钮会让启动器自己装一套，不用你动手；想自己装的人，再往下的步骤也留着。',
     daemonDownTitle: 'Docker 已安装，但守护进程没在跑',
-    daemonDownHint: '请启动 Docker Desktop / OrbStack，或在 Linux 上执行 sudo systemctl start docker，然后点「重新检测」。',
+    // I18 · P0-1 / P0-2：这句原来把活儿推回给用户（「请启动 Docker Desktop / OrbStack」），
+    // 还带着一条终端命令。现在**启动器自己拉**：Windows 上启动 Docker Desktop 的程序，
+    // mac 上 open -a，Linux 走 systemctl —— 拉起来之后还会等它就绪（最长一分钟），
+    // 等不到就如实说超时，不写成「已经好了」。
+    daemonDownHint: '这台电脑上的 Docker 装着，只是引擎没在跑。点下面的「尝试启动 Docker」，启动器会替你把它拉起来（冷启动通常要半分钟到一分钟）。',
+    daemonStarting: '正在替你把它拉起来，冷启动通常要半分钟到一分钟，请稍等…',
     installLinux: 'Linux：curl -fsSL https://get.docker.com | sh，装完把自己加进 docker 组并重新登录',
     installMac: 'macOS：推荐 OrbStack（更轻、对 Apple Silicon 友好），其次 Docker Desktop',
     // R5 · U-04：原来这条里带着 `wsl --install` 这条命令 —— **命令不该出现在界面文案里**
@@ -465,6 +470,15 @@ const zhCN = {
       `镜像源：${registry}。这一步只在首次安装时需要，之后升级只拉变化的层。`,
     percentUnit: '%',
     sizeLine: (done: string, total: string) => `${done} / ${total}`,
+    // I18 · U5：**总量还没算出来的时候不许写 0%**，就写这一句。
+    // `totalBytes` 要等 manifest 读完才有，那之前任何百分比都是编的。
+    sizeComputing: '正在算…',
+    // I18 · U5：**「这次下载了多少」用的是 `netBytes`，不是 `downloadedBytes`。**
+    // 后者把「本机已有的层」也算进去了（它是进度条的分子），拿它报数就是在骗人。
+    downloaded: (v: string) => `本次已下载 ${v}`,
+    // 本机全都有的时候：说清「没有下载」，不写「已下载 0 B」那种看着像失败的句子
+    noDownload: '这些镜像本机都已有，没有下载',
+    speedLine: (v: string) => `当前速度 ${v}/秒`,
     eta: (t: string) => `预计还需 ${t}`,
     etaUnknown: '剩余时间未知',
     stateDone: '完成',
@@ -475,6 +489,7 @@ const zhCN = {
     preparingIntro: '正在测速镜像源、取 compose 文件、写配置。这一步只在首次安装时需要。',
     preparing: '准备中…',
     stateDownloading: '下载中',
+    detailsToggle: '按镜像看明细',
     retrying: (n: number) => `第 ${n} 次尝试（上一次失败后已自动换源）`,
     roles: {
       web: '界面',
