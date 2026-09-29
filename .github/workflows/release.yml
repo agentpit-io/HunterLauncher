@@ -332,29 +332,44 @@ jobs:
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           ls -la staged/
 
-      - name: 生成两份 latest.json（GitHub 与 COS）
+      - name: 生成三份 latest.json（GitHub / 腾讯云香港 / 官网）
         run: |
           set -e
           # updater 弹窗里显示的那句话。不放整份 Release 说明 ——
-          # 那玩意儿几百行，塞进一个更新提示框只会让人划不到底
-          printf '%s\n' "Hunter 启动器 ${{ steps.v.outputs.version }} · 完整说明见 https://github.com/${{ github.repository }}/releases/tag/${{ steps.v.outputs.tag }}" > NOTE.txt
+          # 那玩意儿几百行，塞进一个更新提示框只会让人划不到底。
+          # 指向**官网**的下载页，不是 GitHub：国内点 GitHub 那个链接是打不开的白页。
+          printf '%s\n' "Hunter 启动器 ${{ steps.v.outputs.version }} · 完整说明与下载见 https://www.agentpit.io/hunter-launcher" > NOTE.txt
+          # ① GitHub 那份：留在 Release 里，海外用户与「就地看资产」用
           python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
             "https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}" \
             staged/latest.json --pub-date "${{ steps.v.outputs.date }}" --notes NOTE.txt
+          # ② 腾讯云香港那份：启动器的**第一个** updater 端点（国内快线）
           python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
             "${{ vars.CN_DOWNLOAD_BASE }}/launcher/${{ steps.v.outputs.version }}" \
             latest.cn.json --pub-date "${{ steps.v.outputs.date }}" --notes NOTE.txt
+          # ③ 官网那份：**第二个**端点。清单与安装包都由 www.agentpit.io 的静态媒体目录直出，
+          #    与 ② 互为备份 —— 哪一边挂了都能从另一边更新。
+          #    它不由这里上传，而是被 agentpit 仓库的 scripts/launcher-release-sync.sh
+          #    从桶里取走，落到 /media/hunter-launcher/latest/updater.json。
+          python3 scripts/make-latest-json.py staged "${{ steps.v.outputs.version }}" \
+            "${{ vars.SITE_DOWNLOAD_BASE || 'https://www.agentpit.io/media/hunter-launcher' }}/${{ steps.v.outputs.version }}" \
+            latest.site.json --pub-date "${{ steps.v.outputs.date }}" --notes NOTE.txt
           cat staged/latest.json
-          # 三个平台一个都不能少 —— 少了哪个，那个平台的用户就永远收不到更新
+          # 四个平台一个都不能少 —— 少了哪个，那个平台的用户就永远收不到更新。
+          # 三份都要查：国内用户吃的是 ② 或 ③，只查 GitHub 那份等于没查。
           python3 - <<'PY'
           import json, sys
-          m = json.load(open("staged/latest.json"))
           want = {"linux-x86_64", "windows-x86_64", "darwin-x86_64", "darwin-aarch64"}
-          missing = want - set(m["platforms"])
-          if missing:
-              print(f"::error::latest.json 里缺这些平台：{sorted(missing)}")
-              sys.exit(1)
-          print("OK：四个 target 键都在")
+          bad = False
+          for f in ("staged/latest.json", "latest.cn.json", "latest.site.json"):
+              m = json.load(open(f))
+              missing = want - set(m["platforms"])
+              if missing:
+                  print(f"::error::{f} 里缺这些平台：{sorted(missing)}")
+                  bad = True
+              else:
+                  print(f"OK：{f} 四个 target 键都在")
+          sys.exit(1 if bad else 0)
           PY
 
       - name: 生成 Release 说明
@@ -390,6 +405,9 @@ jobs:
           python3 scripts/cos-upload.py staged "launcher/${{ steps.v.outputs.version }}"
           # 国内版清单固定在 /launcher/latest.json，启动器的第一个 updater 端点就是它
           python3 scripts/cos-upload.py latest.cn.json "launcher/latest.json"
+          # 官网版清单放旁边，给 agentpit 服务器上的 launcher-release-sync.sh 取走
+          # （它落在 www.agentpit.io 的媒体目录里，是启动器的第二个 updater 端点）
+          python3 scripts/cos-upload.py latest.site.json "launcher/latest.site.json"
 
       - name: 清掉桶里已经没用的旧预发布包（待办池 P1-17）
         env:

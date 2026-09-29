@@ -3300,7 +3300,9 @@ mod tests {
         assert!(v.iter().any(|s| s.contains("ghcr")));
         // I17 · U4：这个源在界面上的名字改成了「中国国内云服务」
         assert!(v.iter().any(|s| s.contains("中国国内云服务")));
-        assert_eq!(default_tag(), "1.2.2");
+        // 比的是常量本身，不是某个写死的版本号 —— 否则每跟一次 Hunter 新版
+        // 这条测试都要跟着改一次（2026-09-29 跟 1.2.3 时撞到过）
+        assert_eq!(default_tag(), crate::config::BUNDLED_TAG);
     }
 
     /// `--code` 是**参数**不是子命令：`--feedback --code X` 要跑反馈，不是诊断。

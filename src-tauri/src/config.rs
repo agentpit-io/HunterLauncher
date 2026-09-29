@@ -26,12 +26,12 @@ use crate::registry::Candidate;
 /// 它只是**兜底**：全新安装时先问 GitHub 最新正式版（见 `flow::install_tag`），
 /// 问不到才用它。所以这里落后一两个版本不会让新用户装到旧版，但发 Hunter 新版时
 /// 顺手跟上，能让离线 / GitHub 不通的用户也装到新版。
-pub const BUNDLED_TAG: &str = "1.2.2";
+pub const BUNDLED_TAG: &str = "1.2.3";
 const BUNDLED_COMPOSE: &str =
-    include_str!("../../templates/docker-compose.hunter-community-1.2.2.yml");
+    include_str!("../../templates/docker-compose.hunter-community-1.2.3.yml");
 /// 内置副本的 sha256。下载回来的内容与它不一致时说明链路上有人动过手脚，宁可用内置的。
 pub const BUNDLED_COMPOSE_SHA256: &str =
-    "66004a2c2b82dae3037b19d6a52f24e4c38a775727b55d2c0ca73dac3657bdc1";
+    "81cde74e8eed1571bda7d012df1397b02961158ca9dedf9147b322019ea66ae3";
 
 const ENV_TEMPLATE: &str = include_str!("../../templates/env.template");
 
@@ -1815,7 +1815,7 @@ fn write_override_with(ports: &Ports, base_prefix: &str, bind: WebBind) -> AppRe
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComposeSource {
-    /// 从 raw.githubusercontent 按固定 tag 下载
+    /// 从远端按固定 tag 下载（国内源或 raw.githubusercontent）
     Download,
     /// 用启动器内置的同版本副本
     Bundled,
@@ -1824,67 +1824,74 @@ pub enum ComposeSource {
 /// 取 `docker-compose.yml`。
 ///
 /// 方案 §5.2 写的是「从 Release 资产下载」，但 M0 §3.2 实测 hunter-community 的 Release
-/// **没有任何 assets**，所以改走 raw.githubusercontent 的固定 tag 路径。
-/// 下载回来先校验内容，不过关就退回内置副本，全程不静默失败。
+/// **没有任何 assets**，所以改走两个固定 tag 路径，**国内源在前**：
+///
+/// ① 腾讯云香港（[`cn_compose_url`]）—— 国内直连可达，也是国内用户实际走的那条；
+/// ② raw.githubusercontent（[`raw_compose_url`]）—— 海外快线，兼作 ① 还没同步到这一版时的兜底。
+///
+/// 两条都拿不到就退回内置副本，全程不静默失败。
 pub fn fetch_compose(tag: &str, timeout: Duration) -> (String, ComposeSource, Option<String>) {
-    let url = format!(
-        "https://raw.githubusercontent.com/agentpit-io/hunter-community/v{tag}/docker-compose.yml"
-    );
-    match crate::http::get(&url, &[], timeout) {
-        Ok(r) if r.ok() => match validate_compose(&r.body) {
-            Ok(()) => {
-                let body = r.body.replace("\r\n", "\n");
-                let sha = sha256_hex(body.as_bytes());
-                if tag == BUNDLED_TAG && sha != BUNDLED_COMPOSE_SHA256 {
-                    let note = format!(
-                        "下载到的 {tag} compose 校验和是 {sha}，与启动器内置副本的 {BUNDLED_COMPOSE_SHA256} 不一致。\
-                         同一个 git tag 的内容不该变，这次改用内置副本。"
+    let urls = [cn_compose_url(tag), raw_compose_url(tag)];
+    let mut why: Vec<String> = Vec::new();
+    for url in &urls {
+        let host = crate::http::host_of(url);
+        match crate::http::get(url, &[], timeout) {
+            Ok(r) if r.ok() => match validate_compose(&r.body) {
+                Ok(()) => {
+                    let body = r.body.replace("\r\n", "\n");
+                    let sha = sha256_hex(body.as_bytes());
+                    if tag == BUNDLED_TAG && sha != BUNDLED_COMPOSE_SHA256 {
+                        let note = format!(
+                            "下载到的 {tag} compose 校验和是 {sha}，与启动器内置副本的 {BUNDLED_COMPOSE_SHA256} 不一致。\
+                             同一个 git tag 的内容不该变，这次改用内置副本。"
+                        );
+                        crate::lwarn!("{note}");
+                        return (bundled_compose(), ComposeSource::Bundled, Some(note));
+                    }
+                    crate::linfo!(
+                        "已从 {host} 取到 v{tag} 的 compose（{} 字节 · sha256 {}）",
+                        body.len(),
+                        &sha[..16]
                     );
-                    crate::lwarn!("{note}");
-                    return (bundled_compose(), ComposeSource::Bundled, Some(note));
+                    return (body, ComposeSource::Download, None);
                 }
-                crate::linfo!(
-                    "已从 raw.githubusercontent 取到 v{tag} 的 compose（{} 字节 · sha256 {}）",
-                    body.len(),
-                    &sha[..16]
-                );
-                (body, ComposeSource::Download, None)
-            }
-            Err(e) => {
-                let note = format!(
-                    "下载到的 compose 内容不合格（{}），改用启动器内置的 {BUNDLED_TAG} 副本。",
-                    e.msg
-                );
-                crate::lwarn!("{note}");
-                (bundled_compose(), ComposeSource::Bundled, Some(note))
-            }
-        },
-        Ok(r) => {
-            let note = format!(
-                "取 compose 失败 HTTP {}，改用启动器内置的 {BUNDLED_TAG} 副本。",
-                r.status
-            );
-            crate::lwarn!("{note}");
-            (bundled_compose(), ComposeSource::Bundled, Some(note))
-        }
-        Err(e) => {
-            let note = format!(
-                "取 compose 失败（{}），改用启动器内置的 {BUNDLED_TAG} 副本。",
-                e.msg
-            );
-            crate::lwarn!("{note}");
-            (bundled_compose(), ComposeSource::Bundled, Some(note))
+                Err(e) => why.push(format!("{host} 返回的内容不合格（{}）", e.msg)),
+            },
+            Ok(r) => why.push(format!("{host} HTTP {}", r.status)),
+            Err(e) => why.push(format!("{host} {}", e.msg)),
         }
     }
+    let note = format!(
+        "两个源都取不到 v{tag} 的 compose（{}），改用启动器内置的 {BUNDLED_TAG} 副本。",
+        why.join("；")
+    );
+    crate::lwarn!("{note}");
+    (bundled_compose(), ComposeSource::Bundled, Some(note))
 }
 
-/// 国内备用的 compose 地址（`plan/国内镜像与下载源.md` 的目录约定 `/hunter/<tag>/docker-compose.yml`）。
+/// 国内源上的 compose 地址（`plan/国内镜像与下载源.md` 的目录约定 `/hunter/<tag>/docker-compose.yml`）。
+/// 由 `cn-mirror.yml` 每 6 小时从 hunter-community 的对应 tag 同步过来。
 pub fn cn_compose_url(tag: &str) -> String {
     format!("{CN_DOWNLOAD_BASE}/hunter/{tag}/docker-compose.yml")
 }
 
+/// raw.githubusercontent 上的 compose 地址（海外快线）。
+pub fn raw_compose_url(tag: &str) -> String {
+    format!(
+        "https://raw.githubusercontent.com/agentpit-io/hunter-community/v{tag}/docker-compose.yml"
+    )
+}
+
 /// 国内下载源前缀。与 GitHub 仓库变量 `CN_DOWNLOAD_BASE` 保持一致。
 pub const CN_DOWNLOAD_BASE: &str = "https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com";
+
+/// 官网（AgentPit）上启动器的静态媒体目录。
+///
+/// `/media/` 由 nginx 直接 `alias` 到数据盘目录，**不经过 Next、换版本不用 build**
+/// （见 agentpit 仓库的 `scripts/launcher-release-sync.sh`）。`latest/` 下永远指向最新的一版。
+///
+/// 它是自更新的第二个端点（国内源是第一个）。两条路各自自洽：清单与安装包都放在自己那边。
+pub const SITE_LAUNCHER_CDN: &str = "https://www.agentpit.io/media/hunter-launcher/latest";
 
 /// **升级专用**的 compose 获取：拿不到就是拿不到，**绝不退回内置副本**。
 ///
@@ -1893,14 +1900,12 @@ pub const CN_DOWNLOAD_BASE: &str = "https://hunter-dl-hk-1253756459.cos.ap-hongk
 /// 这时候悄悄换成内置的 1.2.0 就是拿另一件事冒充他要的事 —— 他会以为自己升到了 9.9.9，
 /// 实际跑的是 1.2.0。宁可报错让他知道那个版本取不到（红线 1）。
 ///
-/// 两个源按顺序试：raw.githubusercontent（主）→ COS 香港（国内备用）。
+/// 两个源按顺序试：COS 香港（国内，主）→ raw.githubusercontent（海外备用）。
+///
+/// **顺序是 2026-09-29 反过来的**：原来是 GitHub 在前，国内用户每次升级都要先付
+/// 一次连接 GitHub 的超时（25 秒）才落到国内源上。国内是主要受众，所以国内源在前。
 pub fn fetch_compose_strict(tag: &str, timeout: Duration) -> AppResult<(String, String)> {
-    let urls = [
-        format!(
-            "https://raw.githubusercontent.com/agentpit-io/hunter-community/v{tag}/docker-compose.yml"
-        ),
-        cn_compose_url(tag),
-    ];
+    let urls = [cn_compose_url(tag), raw_compose_url(tag)];
     let mut why: Vec<String> = Vec::new();
     for url in urls {
         let host = crate::http::host_of(&url);

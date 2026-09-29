@@ -238,7 +238,9 @@ const en: Dict = {
     privacyTitle: 'What this app does and does not do',
     privacyDo: [
       'Writes your hunter key to ~/.hunter/app/.env (mode 600) on this machine only',
-      'Talks to hunter.agentpit.io (gateway), ghcr.io (images), api.github.com (version check)',
+      'Talks to hunter.agentpit.io (gateway) and an image registry (ghcr.io or the China mirror — whichever answers faster)',
+      'Talks to the download/update hosts (the China mirror and www.agentpit.io)',
+      'Only falls back to GitHub (api.github.com / raw.githubusercontent.com) when all of the above are unreachable',
       'Writes local logs under ~/.hunter/logs/',
     ],
     privacyDont: [
@@ -789,7 +791,7 @@ const en: Dict = {
     launcherLater: 'Later',
     launcherWorking: 'Downloading and installing…',
     launcherNotes: 'Release notes',
-    launcherRelease: 'Full release notes',
+    launcherRelease: 'Open download page',
     launcherNone: 'The launcher is up to date',
     launcherFail: (why: string) => `Could not check for launcher updates: ${why}`,
     launcherRestart: 'Installed. The launcher will restart now.',

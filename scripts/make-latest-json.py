@@ -17,8 +17,10 @@
 `.deb` 装在 /usr 下要 root。deb 用户走的是 selfupdate.rs 里那条「下好 + 给一条命令」的路，
 下载地址按固定规则拼，不读这个清单。
 
-生成两份的用法：GitHub 一份（地址指向 Release 资产），COS 一份（地址指向香港下载桶），
-差别只有 `<下载地址前缀>` 这个参数。
+生成三份的用法，差别只有 `<下载地址前缀>` 这个参数：
+GitHub 一份（指向 Release 资产）、腾讯云香港一份（指向下载桶）、官网一份
+（指向 www.agentpit.io 的静态媒体目录）—— 后两份是启动器的两个 updater 端点，
+互为备份，都不经过 GitHub。
 """
 import argparse
 import json

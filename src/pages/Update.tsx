@@ -13,6 +13,15 @@ import { useStore } from '../state/context'
 import type { BackupMeta, LauncherUpdate, Preflight, UpgradeStatus } from '../lib/types'
 
 /**
+ * 启动器的官网页面（下载页 + 版本说明）。
+ *
+ * 以前这里跳的是 GitHub 的 Release 页 —— 国内点开就是打不开的白页，
+ * 而点这一下本来就是想看「新版本是什么、怎么装」。官网这一页同样有版本号、
+ * 安装包大小、校验和与三个平台的下载按钮，而且国内直接可达。
+ */
+const LAUNCHER_PAGE = 'https://www.agentpit.io/hunter-launcher'
+
+/**
  * 更新页（技术方案 §5.6、§10）。视觉稿里没有这一页，按同一套设计令牌延展：
  * 左右两栏卡片、等宽字体显示版本号与路径、金色只用在"要用户决定的那一下"。
  *
@@ -131,11 +140,7 @@ function LauncherCard() {
             {d.version && (
               <Button
                 size="sm"
-                onClick={() =>
-                  void ipc.openExternal(
-                    `https://github.com/agentpit-io/HunterLauncher/releases/tag/launcher-v${d.version}`,
-                  )
-                }
+                onClick={() => void ipc.openExternal(LAUNCHER_PAGE)}
               >
                 {t.update.launcherRelease}
               </Button>

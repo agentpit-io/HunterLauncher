@@ -250,7 +250,9 @@ const zhCN = {
     privacyTitle: '这个程序会做什么、不会做什么',
     privacyDo: [
       '把你的 hunter key 写进本机 ~/.hunter/app/.env（权限 600），只有 Docker 容器读得到',
-      '访问 hunter.agentpit.io（网关）、ghcr.io（镜像）、api.github.com（版本检查）',
+      '访问 hunter.agentpit.io（网关）、镜像源（ghcr.io 与国内云服务，装的时候自动挑快的那个）',
+      '访问下载与更新用的站：国内云服务与 www.agentpit.io',
+      '只有在上面这些都不通时，才会去问 GitHub（api.github.com / raw.githubusercontent.com）',
       '在 ~/.hunter/logs/ 下写本地日志',
     ],
     privacyDont: [
@@ -840,7 +842,7 @@ const zhCN = {
     launcherLater: '以后再说',
     launcherWorking: '正在下载并安装…',
     launcherNotes: '更新说明',
-    launcherRelease: '看完整说明',
+    launcherRelease: '打开下载页',
     launcherNone: '启动器已经是最新版',
     launcherFail: (why: string) => `查不到启动器的最新版本：${why}`,
     launcherRestart: '装好了，启动器这就重启。',

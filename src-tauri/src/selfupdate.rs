@@ -3,19 +3,27 @@
 //! > Release 时 CI 生成 `latest.json` 与各平台安装包及签名；
 //! > 启动器每次启动 + 每 24 小时检查；有更新时托盘提示，用户点击下载安装，重启生效。
 //!
-//! 端点两个，按顺序试（`plan/国内镜像与下载源.md` 的要求：COS 在前、GitHub 在后）：
+//! 端点两个，按顺序试（`plan/国内镜像与下载源.md` 的要求：国内源在前）：
 //!
 //! ```text
-//! https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/latest.json
-//! https://github.com/agentpit-io/HunterLauncher/releases/latest/download/latest.json
+//! ① https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/latest.json
+//! ② https://www.agentpit.io/media/hunter-launcher/latest/updater.json
 //! ```
 //!
-//! ⚠ **GitHub 那个端点现在是死的，而且是有原因的**：`releases/latest/download/…` 解析的是
-//! 「最新的**正式** Release」，而本项目的 Release 因为没有代码签名**一律标 prerelease**
-//! （总控规则红线 7），所以 GitHub 那条路会 404。这不是笔误 ——
-//! 它是留给「用户决定买证书、把某一版转成正式版」那天用的，到时候不用改代码就会自己活过来。
-//! 在那之前，实际生效的是 COS 那一个端点（它是静态路径，不受 prerelease 影响）。
-//! 这意味着**当前自更新只有一条链路**，COS 不可达时查更新会失败并如实报原因（不会谎称已是最新）。
+//! **两条都是国内可达的**，各自自洽：① 的清单与安装包都在腾讯云香港桶上（快线）；
+//! ② 的清单与安装包都由官网的静态媒体目录直出（跟着启动器一起发版，见同步脚本）。
+//! 一条断了换另一条，不会出现「只有一条链路，它一挂就查不到更新」。
+//!
+//! ## 2026-09-29 换掉了原来那条 GitHub 端点
+//!
+//! 原来第二个端点是 `github.com/…/releases/latest/download/latest.json`。
+//! 它**当下就是 404**：`releases/latest/…` 解析的是「最新的**正式** Release」，
+//! 而本项目的 Release 因为没有代码签名一律标 prerelease（总控规则红线 7）。
+//! 也就是说「两条端点」实际上只有 COS 一条活着，而另一条既挡不住 COS 故障、
+//! 又把国内用户引到他们连不上的域名上（用户要求：安装部署不要走 GitHub）。
+//! 换成官网那条之后，两条都是真的。
+//!
+//! 清单里每个平台的下载地址也各自指向自己那一侧 —— 清单从哪来，包就从哪下。
 //!
 //! 清单是 minisign 签名的，公钥编译进程序（`tauri.conf.json` 的 `plugins.updater.pubkey`），
 //! 私钥只在开发机 `~/.hunter-launcher-keys/` 与仓库 secrets 里（总控规则红线 7）。
@@ -545,12 +553,15 @@ pub struct ManifestPlatform {
     pub url: String,
 }
 
-/// updater 的两个端点，与 `tauri.conf.json` 里那份**必须一致**。
+/// updater 的两个端点，与 `tauri.conf.json` 里那份**必须一致**（含顺序）。
 /// 有一条测试盯着它们不会各改各的。
+///
+/// 两条都是国内可达的：① 腾讯云香港（快线，清单与安装包都在桶上）；
+/// ② 官网的静态媒体目录（清单与安装包都随启动器发版一起同步过去）。
 pub fn endpoints() -> [String; 2] {
     [
         format!("{}/launcher/latest.json", crate::config::CN_DOWNLOAD_BASE),
-        format!("https://github.com/{REPO}/releases/latest/download/latest.json"),
+        format!("{}/updater.json", crate::config::SITE_LAUNCHER_CDN),
     ]
 }
 
@@ -1149,11 +1160,33 @@ mod headless_tests {
     }
 
     /// 端点也写在两个地方，同理。
+    ///
+    /// **顺序也要一致**：谁在前谁就是那个先被问的源。顺序反了不会让自更新失败
+    /// （两个都会试到），但会让国内用户每次都先等一次连不上的超时 ——
+    /// 这正是 2026-09-29 把 GitHub 端点换掉的原因，所以这里把它钉住。
     #[test]
-    fn 端点与_tauri_conf_里的一致() {
+    fn 端点与_tauri_conf_里的一致且顺序相同() {
         let conf = include_str!("../tauri.conf.json");
         for e in endpoints() {
             assert!(conf.contains(&e), "tauri.conf.json 里没有这个端点：{e}");
+        }
+        let eps = endpoints();
+        let first = conf.find(&eps[0]).expect("第一个端点在配置里");
+        let second = conf.find(&eps[1]).expect("第二个端点在配置里");
+        assert!(
+            first < second,
+            "两个端点在 tauri.conf.json 里出现的顺序与 endpoints() 反了"
+        );
+    }
+
+    /// 第二个端点必须是国内可达的域名 —— 用户明确要求安装与更新不走 GitHub。
+    #[test]
+    fn 两个端点都不指向_github() {
+        for e in endpoints() {
+            assert!(
+                !e.contains("github"),
+                "端点不该依赖 GitHub（国内连不上）：{e}"
+            );
         }
     }
 

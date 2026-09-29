@@ -17,16 +17,22 @@ import type { BackupSettings, LauncherSettings } from '../lib/types'
  * 出站地址白名单（技术方案第 15 节）。
  * 方案里写的 telemetry.agentpit.io 与 dl.agentpit.io **实测不存在**（M0），列上去是误导，去掉。
  * 这里列的是启动器**真的会连**的：网关、两个候选镜像源、Docker Hub（postgres/redis 的 manifest）、
- * GitHub（版本检查与 compose 文件）。自带模型 key 模式下还会连用户自己填的那个 BASE_URL。
+ * 国内下载源（compose / 内置运行时 / 自更新清单）、以及 GitHub（版本检查与 compose 的最后兜底）。
+ * 自带模型 key 模式下还会连用户自己填的那个 BASE_URL。
+ *
+ * **顺序按「先连哪个」排**：国内源在前，GitHub 在后 —— 它只在前面几个都不通时才被问到。
  */
 const OUTBOUND = [
   'hunter.agentpit.io',
   // I16：一键上传日志的接收地址。**只有用户点了那个按钮、或者开了「出错时自动上传」
   // 并且真的出了错**，启动器才会连这里 —— 但它确实会连，所以这份清单里必须有它
   'www.agentpit.io',
-  'ghcr.io',
+  // 腾讯云香港：compose 文件、内置运行时的包、自更新的清单都在这儿（国内直连可达）
+  'hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com',
   'hkccr.ccs.tencentyun.com',
+  'ghcr.io',
   'registry-1.docker.io',
+  // 最后兜底：国内源上还没有那一版时才会问到这两条（国内常常连不上）
   'api.github.com',
   'raw.githubusercontent.com',
 ]

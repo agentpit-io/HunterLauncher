@@ -60,6 +60,11 @@ const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(12);
 pub const RELEASE_TTL: Duration = Duration::from_secs(6 * 3600);
 
 const NET_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// 问「最新版本是多少」给多久。**比下载短得多** —— 它只要一份几 KB 的 JSON，
+/// 两个源各 12 秒；反正一个问不到还有另一个兜底，不必让用户干等。
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(12);
+
 const NOTES_LIMIT: usize = 500;
 
 /// hunter-community 的一次 Release。
@@ -134,24 +139,52 @@ pub fn latest_release_now() -> Option<ReleaseInfo> {
     flow::cached(release_slot(), Duration::ZERO, fetch_latest_release)
 }
 
+/// 查最新版本：**两个源依次试**。
+///
+/// ① GitHub 的 Release 接口 —— 字段最全（正文、链接、时间都在），海外快；
+/// ② 腾讯云香港桶上的 `hunter/latest.json` —— 国内专线，由 `cn-mirror.yml`
+///    每 6 小时跟着 hunter-community 的正式版同步一次。
+///
+/// **为什么要加 ②**：国内直连 GitHub 常年不稳，只问 ① 的话国内用户会落到
+/// 「查不到最新版」—— 全新安装退到内置的那一版，运行面板的「有新版本」角标
+/// 也永久不再出现。而 ② 那份 JSON 一直在传，只是以前没有任何代码读它。
+///
+/// 写法与仓库里其它多源下载一致（`config::fetch_compose_strict`、
+/// `selfupdate::fetch_manifest`）：逐个试，每个源为什么失败都记下来，
+/// 只在**两个都失败**时才认输、返回 `None`（红线 1：不猜）。
 fn fetch_latest_release() -> Option<ReleaseInfo> {
-    let r = crate::http::get(
-        "https://api.github.com/repos/agentpit-io/hunter-community/releases/latest",
-        &[("Accept", "application/vnd.github+json")],
-        Duration::from_secs(12),
-    )
-    .ok()?;
-    if !r.ok() {
-        lwarn!("查最新版本失败：GitHub 返回 HTTP {}", r.status);
-        return None;
+    match fetch_release_from_github(RELEASE_TIMEOUT) {
+        Ok(r) => return Some(r),
+        Err(why) => lwarn!("查最新版本：GitHub 问不到 —— {why}"),
     }
-    let v = r.json()?;
+    match fetch_release_from_cn(RELEASE_TIMEOUT) {
+        Ok(r) => return Some(r),
+        Err(why) => lwarn!("查最新版本：国内源也问不到 —— {why}"),
+    }
+    None
+}
+
+/// 源 ①：GitHub 的 Release 接口（海外快线）。
+fn fetch_release_from_github(timeout: Duration) -> Result<ReleaseInfo, String> {
+    const URL: &str = "https://api.github.com/repos/agentpit-io/hunter-community/releases/latest";
+    let r = crate::http::get(URL, &[("Accept", "application/vnd.github+json")], timeout)
+        .map_err(|e| format!("{URL} {}", e.msg))?;
+    if !r.ok() {
+        return Err(format!("{URL} 返回 HTTP {}", r.status));
+    }
+    let v = r.json().ok_or_else(|| format!("{URL} 的响应不是 JSON"))?;
+    release_from_github_json(&v).map_err(|why| format!("{URL} {why}"))
+}
+
+/// GitHub 那份 JSON → `ReleaseInfo`。**纯函数**，单测直接喂 JSON。
+fn release_from_github_json(v: &serde_json::Value) -> Result<ReleaseInfo, String> {
     let tag = v
-        .get("tag_name")?
-        .as_str()?
-        .trim_start_matches('v')
-        .to_string();
-    Some(ReleaseInfo {
+        .get("tag_name")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim_start_matches('v').to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or("里没有 tag_name")?;
+    Ok(ReleaseInfo {
         tag,
         notes: v
             .get("body")
@@ -163,6 +196,47 @@ fn fetch_latest_release() -> Option<ReleaseInfo> {
             .map(str::to_string),
         published_at: v
             .get("published_at")
+            .and_then(|x| x.as_str())
+            .map(str::to_string),
+    })
+}
+
+/// 源 ②：腾讯云香港桶上的 `hunter/latest.json`（国内专线）。
+///
+/// 它的形状比 GitHub 那份**小得多**，只有三个字段：
+/// `{"tag":"1.2.3","released_at":"…","notes_url":"…"}` ——
+/// **没有 Release 正文**，所以 `notes` 留空（界面上那一栏就不显示摘要）；
+/// `notes_url` 照带，那是 Hunter 真实的 Release 页地址。
+fn fetch_release_from_cn(timeout: Duration) -> Result<ReleaseInfo, String> {
+    let url = format!("{}/hunter/latest.json", config::CN_DOWNLOAD_BASE);
+    let r = crate::http::get(&url, &[], timeout).map_err(|e| format!("{url} {}", e.msg))?;
+    if !r.ok() {
+        return Err(format!("{url} 返回 HTTP {}", r.status));
+    }
+    let v = r.json().ok_or_else(|| format!("{url} 的响应不是 JSON"))?;
+    release_from_cn_json(&v).map_err(|why| format!("{url} {why}"))
+}
+
+/// 国内源那份 JSON → `ReleaseInfo`。**纯函数**，单测直接喂 JSON。
+///
+/// 字段名与 GitHub 那份不同（`tag` / `released_at`），因为它是 cn-mirror
+/// 自己攒的，不是 GitHub 的原样转发。
+fn release_from_cn_json(v: &serde_json::Value) -> Result<ReleaseInfo, String> {
+    let tag = v
+        .get("tag")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim_start_matches('v').to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or("里没有 tag")?;
+    Ok(ReleaseInfo {
+        tag,
+        notes: None,
+        notes_url: v
+            .get("notes_url")
+            .and_then(|x| x.as_str())
+            .map(str::to_string),
+        published_at: v
+            .get("released_at")
             .and_then(|x| x.as_str())
             .map(str::to_string),
     })
@@ -254,7 +328,8 @@ pub fn check(current: &str, force: bool) -> UpgradeCheck {
             published_at: None,
             major_jump: false,
             reason: Some(
-                "问不到 GitHub 的 Release 接口（网络不通，或者每小时 60 次的未认证限额用完了）"
+                "两个源都问不到 Hunter 的最新版本：GitHub 的 Release 接口（网络不通，\
+                 或者每小时 60 次的未认证限额用完了），以及腾讯云香港的国内专线"
                     .to_string(),
             ),
         },
@@ -1158,6 +1233,7 @@ pub fn quit_guard(armed_tag: Option<&str>) -> Option<QuitGuard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     // ── 上一次升级没做完（I16 · P1-2） ──────────────────────────────────
 
@@ -1410,5 +1486,67 @@ mod tests {
     #[test]
     fn 缓存时长与方案一致() {
         assert_eq!(RELEASE_TTL, Duration::from_secs(6 * 3600));
+    }
+
+    // ── 两个源各自怎么解析（2026-09-29 加：国内源兜底） ──────────────────
+    //
+    // 解析是纯函数，所以下面这些不碰网络 —— 网络那一段（哪个源先试、失败了换谁）
+    // 在 `fetch_latest_release` 里，靠真机验收，不靠单测假装。
+
+    /// 国内源那份的真实形状（照抄 COS 上 `hunter/latest.json` 的内容）。
+    #[test]
+    fn 国内源那份_json_认得出来() {
+        let v = json!({
+            "notes_url": "https://github.com/agentpit-io/hunter-community/releases/tag/v1.2.3",
+            "released_at": "2026-09-29T02:30:13Z",
+            "tag": "1.2.3"
+        });
+        let r = release_from_cn_json(&v).expect("这三个字段就够拼一个 ReleaseInfo 了");
+        assert_eq!(r.tag, "1.2.3");
+        assert_eq!(r.published_at.as_deref(), Some("2026-09-29T02:30:13Z"));
+        assert!(r
+            .notes_url
+            .as_deref()
+            .unwrap_or_default()
+            .contains("v1.2.3"));
+        // 这份 JSON 里**没有 Release 正文**，所以摘要必须是空的 ——
+        // 不能拿 tag 或者别的什么凑一句话出来（红线 1）
+        assert!(r.notes.is_none(), "国内源那份没有正文，摘要只能是空的");
+    }
+
+    #[test]
+    fn 国内源那份带前导_v_也去掉() {
+        let r = release_from_cn_json(&json!({ "tag": "v1.2.3" })).expect("认得出来");
+        assert_eq!(r.tag, "1.2.3", "写法要和 .env 里的 HUNTER_VERSION 一致");
+    }
+
+    #[test]
+    fn 国内源那份缺_tag_或缺成空串都算失败() {
+        for bad in [json!({}), json!({ "tag": "" }), json!({ "tag": 123 })] {
+            assert!(
+                release_from_cn_json(&bad).is_err(),
+                "解析不出 tag 时必须报错，不能返回一个空的版本号：{bad}"
+            );
+        }
+    }
+
+    /// GitHub 那份的形状：字段名与国内源那份不同（`tag_name` / `body` / `html_url`）。
+    #[test]
+    fn github_那份_json_认得出来() {
+        let v = json!({
+            "tag_name": "v1.2.3",
+            "body": "## 修复\n\n- 一条",
+            "html_url": "https://github.com/agentpit-io/hunter-community/releases/tag/v1.2.3",
+            "published_at": "2026-09-29T02:30:13Z"
+        });
+        let r = release_from_github_json(&v).expect("GitHub 官方的形状");
+        assert_eq!(r.tag, "1.2.3");
+        assert!(r.notes.as_deref().unwrap_or_default().contains("一条"));
+        assert_eq!(r.published_at.as_deref(), Some("2026-09-29T02:30:13Z"));
+    }
+
+    #[test]
+    fn github_那份缺_tag_name_算失败() {
+        assert!(release_from_github_json(&json!({ "body": "有正文没版本号" })).is_err());
     }
 }

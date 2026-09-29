@@ -5,7 +5,7 @@
 **把 [HunterCode 开源版](https://github.com/agentpit-io/hunter-community) 的部署，从「clone → 改 .env → 敲命令行」变成「下载 → 填一把 key → 等几分钟」。**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-amber.svg)](LICENSE)
-[![状态](https://img.shields.io/badge/状态-v0.1.9%20预发布%20·%20未签名-orange.svg)](https://github.com/agentpit-io/HunterLauncher/releases)
+[![状态](https://img.shields.io/badge/状态-v0.1.18%20预发布%20·%20未签名-orange.svg)](https://www.agentpit.io/hunter-launcher)
 [![平台](https://img.shields.io/badge/平台-Windows%20·%20macOS%20·%20Linux-1e293b.svg)](#三平台支持)
 
 </div>
@@ -29,8 +29,11 @@
 | **Linux** Ubuntu 22.04+ / Debian 12+ · x64 | `hunter-launcher_<版本>_amd64.deb` | 3.82 MiB | 推荐 |
 | | `hunter-launcher_<版本>_amd64.AppImage` | 78.01 MiB | 免安装；大是因为要自带整套 WebKitGTK，压不下去 |
 
-**GitHub 下载**：<https://github.com/agentpit-io/HunterLauncher/releases>
-**国内下载**（腾讯云香港，不用翻墙）：`https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/<版本>/`
+**下载（主入口，国内直接可达）**：<https://www.agentpit.io/hunter-launcher>
+**国内快线**（腾讯云香港，文件与官网逐字节相同）：
+`https://hunter-dl-hk-1253756459.cos.ap-hongkong.myqcloud.com/launcher/<版本>/`
+**海外**：<https://github.com/agentpit-io/HunterLauncher/releases>
+（国内访问 GitHub 不稳定，正常不用走这条；它只是给海外用户的备用入口。）
 
 装完打开，按向导走：**欢迎 → 填一把 key → 点一下「开始安装」→ 等它装完**。
 
@@ -242,8 +245,8 @@ Hunter 启动器是一个轻量的跨平台桌面程序，替这批用户做完�
              │ docker / docker compose CLI   │ HTTPS
              ▼                               ▼
    Docker Desktop / Engine / OrbStack   hunter.agentpit.io（网关）
-   └─ hunter 6 个容器                    api.github.com（版本检查）
-      web · api · opencode                ghcr.io（镜像）
+   └─ hunter 6 个容器                    腾讯云香港（下载与更新）
+      web · api · opencode                ghcr.io / 腾讯云香港（镜像）
       llm-shim · postgres · redis
 ```
 

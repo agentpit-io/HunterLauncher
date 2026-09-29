@@ -50,10 +50,14 @@ cat <<EOF
 | macOS 12+ | \`hunter-launcher_${V}_universal.dmg\` | 通用二进制（Intel + Apple Silicon） |
 | Ubuntu 22.04+ / Debian 12+ x64 | \`hunter-launcher_${V}_amd64.deb\`（推荐）/ \`hunter-launcher_${V}_amd64.AppImage\` | deb 约 3.8 MiB；AppImage 约 78 MiB（自带整套 WebKitGTK，这是格式的固有代价） |
 
-**国内下载**（腾讯云香港，不用翻墙）：
+**下载（主入口，国内直接可达）**：
+https://www.agentpit.io/hunter-launcher
+
+**国内快线**（腾讯云香港，不用翻墙；文件与官网逐字节相同）：
 \`${CN_BASE}/launcher/${V}/\`
 
-**GitHub 下载**：https://github.com/${REPO}/releases/tag/${TAG}
+**海外**：https://github.com/${REPO}/releases/tag/${TAG}
+（国内访问 GitHub 不稳定，正常不用走这条 —— 它只是给海外用户的备用入口。）
 
 Linux 上装 deb：
 
