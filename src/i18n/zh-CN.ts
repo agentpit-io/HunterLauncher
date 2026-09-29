@@ -414,13 +414,45 @@ const zhCN = {
   },
   dashboard: {
     running: 'Hunter 运行中',
+    // I17 · P0-1：网页打得开、但有的服务不正常（这一档以前被混进「运行中」里了）
+    runningPartial: 'Hunter 运行中 · 有服务不正常',
     stopped: 'Hunter 已停止',
+    // I17 · P0-1：`absent` / `incomplete` —— 这台机器上还没装好，说「已停止」不准确
+    notInstalled: '还没有装好',
     starting: 'Hunter 启动中',
     // I16 · P0-4：还没拿到 docker ps 的结果之前，不许说「运行中」也不许说「已停止」
     checking: '正在检查 Hunter 状态…',
-    subline: (tag: string, uptime: string, url: string) => `${tag} · 已运行 ${uptime} · ${url}`,
+    /**
+     * 副行（I17 · P0-1）。
+     *
+     * `uptime` 为 `null` 时**不显示时长那一截** —— 后端只在 web 探得通时才给时长，
+     * 读不到就不说。写 `?? 0` 会显示成「已运行 0 秒」，那是编的（红线 1），
+     * 0.1.17 那个假时长「已运行 1 小时 3 分」就是同一类问题的另一头。
+     */
+    subline: (tag: string, uptime: string | null, url: string) =>
+      uptime === null ? `${tag} · ${url}` : `${tag} · 已运行 ${uptime} · ${url}`,
     sublineStopped: (tag: string) => `${tag} · 容器已停止`,
     openHunter: '打开 Hunter',
+    // ── I17 · U1：起停服务是首页的一级大按钮 ────────────────────────────
+    //
+    // 用户 2026-09-29 的原话是「启动和关闭服务在首页有明显大按钮」——
+    // 原来它们是卡片底部一排 `size="sm"` 小按钮里的两个，和日志/更新/备份/反馈
+    // 挤在一起，要滚动才看得见。现在放在头部标题区，与「打开 Hunter」同一层高。
+    //
+    // **文案必须把两件事分开**（U2 的第 6 条）：
+    //   「停止服务」= 把容器停下（Hunter 不再占内存，要用得重新启动）
+    //   「退出启动器」= 只关这个窗口（Hunter 继续在后台跑）
+    startService: '启动服务',
+    stopService: '停止服务',
+    // ── I17 · U2：退出启动器 ───────────────────────────────────────────
+    quitLauncher: '退出启动器',
+    // 这一行小字是「不再询问」的代价换来的知情：用户不再被提醒容器还占着内存，
+    // 那就得在这里说清楚，而且「停止服务」就在旁边，回头的成本很低（方案 §8 风险 3）
+    quitHint: '退出后 Hunter 继续在后台运行，下次打开还在',
+    // ── I17 · U3：检查更新提到一级按钮 ─────────────────────────────────
+    checkUpdate: '检查更新',
+    /** 查到 Hunter 有新版本时按钮本身变强调态并带上版本号（U3） */
+    checkUpdateNew: (tag: string) => `检查更新 · ${tag}`,
     cardQuota: '今日模型额度',
     // 额度用尽：运行面板上必须说出来。I3 回归实测撞到过一次 ——
     // 网关侧 remaining 已经是 0、Hunter 里的对话被挡住了，而面板上只摆着两个数字
@@ -782,6 +814,24 @@ const zhCN = {
     cancelUpgrade: '取消升级',
     cancelling: '正在取消…',
     cancelHint: '点了就停在当前这一步，并把配置写回升级前那一份 —— 正在跑的容器一个都不会动。',
+    // ── I17 · §4.2②：升级前置体检 ────────────────────────────────────
+    //
+    // 0.1.17 是「先写新 .env → 再拉镜像」：配置先改了，才发现当前源没有这一版。
+    // 现在点「升级」之后先探一次 manifest（只读），探不通就在**配置还没动**的时候问一句。
+    // 国内源每 6 小时同步一次，发布之后可能确实要等 —— 这句话得让用户看见。
+    preflightTitle: (tag: string) => `当前镜像源上还没有 v${tag}`,
+    preflightChecking: '正在确认镜像源…',
+    /** 换到哪个源继续（按钮上的字） */
+    preflightSwitch: (label: string) => `换到「${label}」继续`,
+    preflightOffer: (label: string, prefix: string) =>
+      `「${label}」（${prefix}）上有这一版，换过去就能升。换源会改 launcher.toml 与 .env 里的镜像地址。`,
+    /** 换源要下多少。**读不到就说读不到**，不编一个数字（红线 1） */
+    preflightSize: (n: string) => `这次大约要下 ${n}（已有的层不会重复下载）。`,
+    preflightSizeUnknown: '要下多少这次没读出来，拉取时会实时显示。',
+    /** 两个源都没有时的实话 */
+    preflightNoOffer: '另一个源上也没有这一版。国内源每 6 小时同步一次，发布之后可能得等下一个同步窗口。',
+    preflightLater: '稍后再升',
+    preflightNothingChanged: '你选之前，配置文件与正在跑的容器一个字节都不会动。',
     // ── 启动器自更新（方案 §10） ──
     /** 卡片标题：有新版本时用它 */
     launcherTitle: '启动器有新版本',
@@ -846,13 +896,25 @@ const zhCN = {
     offlineIncomplete: (missing: string) => `这个包不完整，还缺：${missing}。缺的那几个仍然要联网拉。`,
     offlineReady: '镜像已在本机，跳过拉取',
   },
+  // ── I17 · U2 / P0-4：退出 ─────────────────────────────────────────────
+  //
+  // 0.1.17 的那套「要退出启动器吗？／保持后台运行／一起停止」按用户
+  // 2026-09-29 的要求**整个删掉了** —— 退出就是退出，默认不停容器、也不再问。
+  // 只剩一个例外：升级进行中退出会留下中间态，那一次要问（P0-4）。
   quit: {
-    title: '要退出启动器吗？',
-    body: 'Hunter 的容器现在还在运行。你可以让它们继续在后台跑，也可以一起停掉。',
-    keep: '保持后台运行',
-    stop: '一起停止',
-    keepHint: '保持后台运行：浏览器里照常能用 Hunter，下次打开启动器直接进运行面板。',
-    stopHint: '一起停止：执行 docker compose stop（不会删数据卷），下次要用得先启动。',
+    /** U2：首页那个按钮旁边的一行小字 */
+    hint: '退出后 Hunter 继续在后台运行，下次打开还在',
+    /** U2：界面上必须让用户分得清「停止服务」与「退出启动器」 */
+    stopHint: '想让它不再占内存，用旁边的「停止服务」，不是退出启动器。',
+  },
+  quitGuard: {
+    title: '升级还在进行中',
+    // 正文（现在退出会怎样、两条出路分别是什么）由后端给 —— 它知道正在升到哪一版，
+    // 界面不另编一句（红线 1 的同一条道理）
+    continueQuit: '继续退出',
+    cancelAndQuit: '取消升级并回滚后再退出',
+    cancelling: '正在把配置写回升级前那一份…',
+    cancelHint: '取消会杀掉拉取、把 .env 与 compose 写回升级前那一份，正在跑的容器一个都不动；做完自动退出。',
   },
   logs: {
     title: '日志',
@@ -941,12 +1003,24 @@ const zhCN = {
   interrupted: {
     title: '上一次升级没做完',
     badge: '实测',
-    detail: (config: string, running: string) =>
-      `配置里写的是 v${config}，正在跑的容器还是 v${running}，而 v${config} 的镜像在这台机器上还不齐 —— 上一次多半是拉镜像时被打断的（强退 / 断电 / 关机）。`,
+    // I17 · P0-3：`running` 现在可能是 `null` —— 判据不再要求「必须有容器在跑」，
+    // 客户 2026-09-29 那台 HL-GFV764 正是「六个容器全停」的那一格。
+    // 两种现场要两句话：有正在跑的就说正在跑的是哪一版，全停就**直说全停**
+    // （不说「正在跑的版本」，因为根本没有）。
+    detail: (config: string, running: string | null) =>
+      running
+        ? `配置里写的是 v${config}，正在跑的容器还是 v${running}，而 v${config} 的镜像在这台机器上还不齐 —— 上一次多半是拉镜像时被打断的（强退 / 断电 / 关机）。`
+        : `配置里写的是 v${config}，六个容器现在都停着，而 v${config} 的镜像在这台机器上还不齐 —— 上一次多半是拉镜像时被打断的（强退 / 断电 / 关机）。`,
     hint: '在你选之前，启动器不会按新配置去起容器：那会去拉一个还没下完的镜像，你又要看一次「卡住」。',
     continueUpgrade: (tag: string) => `继续升到 v${tag}`,
-    revert: (tag: string) => `回退到正在跑的 v${tag}`,
+    /** 有容器在跑时：回退目标就是它们跑着的那一版 */
+    revertRunning: (tag: string) => `回退到正在跑的 v${tag}`,
+    /** 全停时：回退目标改成「上一次真正成功的版本」。**不能再说「正在跑的」** —— 没有 */
+    revertStopped: (tag: string) => `回退到上一次成功的 v${tag}`,
+    /** 全停时补一句「上一次成功的是哪一版」—— 回退按钮指的就是它 */
+    lastGood: (tag: string) => `启动器上一次成功跑起来的是 v${tag}，回退就是回到它。`,
     revertHint: '只把配置写回去，不动正在跑的容器、不动数据、不拉任何镜像。',
+    revertHintStopped: '只把配置写回去，容器一个都没在跑，也不拉任何镜像、不动数据。',
     reverting: '正在写回…',
     evidence: '看依据',
     hideEvidence: '收起',

@@ -31,7 +31,9 @@
 //! | [`logship`] | I16 | 一键上传日志（脱敏后直接进我们的库，用户只要念一个追踪码） |
 
 use serde::Serialize;
-use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+// `Emitter` 在这个文件里已经用不到了：退出那条链路（I17 · U2 / P0-4）整个搬进了
+// `commands::request_quit`，事件从那里发。
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub mod assist;
 pub mod autostart;
@@ -182,12 +184,16 @@ pub fn run() {
             commands::export_logs,
             commands::tray_invoke,
             commands::quit_app,
+            // I17 · P0-4：升级进行中那句提示的第二个动作
+            commands::cancel_upgrade_and_quit,
             commands::missing_endpoints,
             commands::reveal_path,
             commands::check_launcher_update,
             commands::install_launcher_update,
             commands::check_hunter_update,
             commands::upgrade_hunter,
+            // I17 · §4.2②：升级前置体检（只读，界面在真的升级之前调它）
+            commands::upgrade_preflight,
             commands::upgrade_status,
             // I16 · 强退之后的中间态：查一遍 + 回退到正在跑的那一版
             commands::interrupted_upgrade,
@@ -266,15 +272,20 @@ pub fn run() {
                 Err(e) => lwarn!("托盘没建起来（不影响使用，界面上每一项都另有入口）：{e}"),
             }
 
-            // 关窗口 = 请求退出。容器还在跑就先问一句「保持后台运行 / 一起停止」（方案 §5.8）。
+            // 关窗口 = 请求退出。**三条退出入口（红点 / 托盘「退出」/ 面板上的按钮）
+            // 走的是同一个判定点**（I17 · U2 + P0-4）。
+            //
+            // U2 之前这里是：容器在跑就 `prevent_close` + 弹「保持后台运行 / 一起停止」。
+            // 用户 2026-09-29 明确要求不问、默认不停服务，所以那条链路整个删了；
+            // 现在唯一的例外是升级进行中（`commands::request_quit` 里判）。
             if let Some(w) = handle.get_webview_window("main") {
                 let h = handle.clone();
                 w.on_window_event(move |e| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = e {
-                        if compose::is_up() {
-                            api.prevent_close();
-                            let _ = h.emit(tray::EV_QUIT_REQUEST, true);
-                        }
+                        // 一律先拦下，再由 request_quit 决定是「直接退」还是「问一句」——
+                        // 三条入口的结果必须一模一样，不能有的退、有的只是关窗口。
+                        api.prevent_close();
+                        commands::request_quit(&h);
                     }
                 });
             }

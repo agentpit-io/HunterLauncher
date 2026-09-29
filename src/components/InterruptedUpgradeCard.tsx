@@ -38,12 +38,21 @@ export function InterruptedUpgradeCard({ onResolved }: { onResolved?: () => void
 
   if (!it) return null
 
+  /**
+   * **回退目标是哪一版**（I17 · P0-3）：有容器在跑就回它们跑着的那一版，
+   * 一个都没跑（客户 2026-09-29 那台的现场）就回「上一次真正成功的版本」。
+   *
+   * 这两种情况下按钮与提示的措辞不同 —— 全停时说「回退到正在跑的 vX」是假话。
+   */
+  const stopped = it.runningTag === null
+  const back = it.runningTag ?? it.lastGoodTag
+
   async function revert() {
     if (!it) return
     setBusy(true)
     setNote(null)
     try {
-      setNote(await ipc.revertToRunning(it.runningTag))
+      setNote(await ipc.revertToRunning(back))
       setNonce((n) => n + 1)
       onResolved?.()
     } catch (e) {
@@ -70,6 +79,13 @@ export function InterruptedUpgradeCard({ onResolved }: { onResolved?: () => void
           <div className="mt-[6px] text-sm leading-[1.5] text-body">
             {t.interrupted.detail(it.configTag, it.runningTag)}
           </div>
+          {stopped && (
+            // 全停这一种要额外说一句「上一次成功的是哪一版」——
+            // 回退按钮指的就是它，不说的话用户不知道会退到哪
+            <div className="mt-[4px] text-xs leading-[1.5] text-muted" data-testid="interrupted-last-good">
+              {t.interrupted.lastGood(it.lastGoodTag)}
+            </div>
+          )}
           <div className="mt-[4px] text-xs leading-[1.5] text-muted">{t.interrupted.hint}</div>
           {note && (
             <div className="mt-[8px] text-sm leading-[1.5] text-amber-text" data-testid="interrupted-note">
@@ -87,12 +103,18 @@ export function InterruptedUpgradeCard({ onResolved }: { onResolved?: () => void
               {t.interrupted.continueUpgrade(it.configTag)}
             </Button>
             <Button size="sm" data-testid="interrupted-revert" disabled={busy} onClick={() => void revert()}>
-              {busy ? t.interrupted.reverting : t.interrupted.revert(it.runningTag)}
+              {busy
+                ? t.interrupted.reverting
+                : stopped
+                  ? t.interrupted.revertStopped(back)
+                  : t.interrupted.revertRunning(back)}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
               {open ? t.interrupted.hideEvidence : t.interrupted.evidence}
             </Button>
-            <span className="text-xs text-muted">{t.interrupted.revertHint}</span>
+            <span className="text-xs text-muted">
+              {stopped ? t.interrupted.revertHintStopped : t.interrupted.revertHint}
+            </span>
           </div>
           {open && (
             <pre className="selectable tnum mt-[10px] max-h-[180px] overflow-auto whitespace-pre-wrap break-all rounded-md border border-line bg-log px-3 py-2.5 text-xs leading-[1.45] text-dim">

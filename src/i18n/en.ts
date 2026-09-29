@@ -408,9 +408,25 @@ const en: Dict = {
     stopped: 'Hunter is stopped',
     starting: 'Hunter is starting',
     checking: 'Checking Hunter…',
-    subline: (tag: string, uptime: string, url: string) => `${tag} · up ${uptime} · ${url}`,
+    // `uptime === null` means "we could not measure it" — then the segment is
+    // omitted rather than shown as "up 0s" (I17 · P0-1).
+    subline: (tag: string, uptime: string | null, url: string) =>
+      uptime === null ? `${tag} · ${url}` : `${tag} · up ${uptime} · ${url}`,
     sublineStopped: (tag: string) => `${tag} · containers stopped`,
     openHunter: 'Open Hunter',
+    // I17 · P0-1: the title now has four tiers (running / running-but-degraded /
+    // stopped / not installed yet), and the subline omits the uptime when null.
+    runningPartial: 'Hunter is running · some services are unhealthy',
+    notInstalled: 'Not set up yet',
+    // ── I17 · U1: start/stop are first-class buttons on the dashboard ───
+    startService: 'Start services',
+    stopService: 'Stop services',
+    // ── I17 · U2: quit the launcher ─────────────────────────────────────
+    quitLauncher: 'Quit launcher',
+    quitHint: 'Hunter keeps running in the background; it will be there next time.',
+    // ── I17 · U3: check for updates, promoted to a first-class button ───
+    checkUpdate: 'Check for updates',
+    checkUpdateNew: (tag: string) => `Check for updates · ${tag}`,
     cardQuota: 'Daily model quota',
     quotaExhaustedCard: 'used up',
     quotaExhaustedTitle: "Today's model quota is used up",
@@ -754,6 +770,18 @@ const en: Dict = {
     cancelUpgrade: 'Cancel upgrade',
     cancelling: 'Cancelling…',
     cancelHint: 'Stops at the current step and rewrites the config back to what it was before — running containers are not touched.',
+    // ── I17 · §4.2②: pre-upgrade registry check ─────────────────────────
+    preflightTitle: (tag: string) => `v${tag} is not on the registry you use`,
+    preflightChecking: 'Checking the registry…',
+    preflightSwitch: (label: string) => `Switch to "${label}" and continue`,
+    preflightOffer: (label: string, prefix: string) =>
+      `"${label}" (${prefix}) has this version. Switching rewrites the image address in launcher.toml and .env.`,
+    preflightSize: (n: string) => `About ${n} will be downloaded this time (layers you already have are not re-downloaded).`,
+    preflightSizeUnknown: 'The download size could not be read this time; the pull will show it live.',
+    preflightNoOffer:
+      'The other registry does not have this version either. The China mirror syncs every 6 hours, so it may need to wait for the next window.',
+    preflightLater: 'Upgrade later',
+    preflightNothingChanged: 'Nothing in your config or running containers is touched until you choose.',
     launcherTitle: 'A newer launcher is available',
     launcherCard: 'Launcher',
     launcherLine: (from: string, to: string) => `v${from} → v${to}`,
@@ -810,13 +838,23 @@ const en: Dict = {
     offlineIncomplete: (missing: string) => `Incomplete package — still missing: ${missing}. Those will still be pulled online.`,
     offlineReady: 'Images already present — pull skipped',
   },
+  // ── I17 · U2 / P0-4: quitting ─────────────────────────────────────────
+  //
+  // The 0.1.17 "Quit the launcher? / Keep running / Stop them too" prompt was
+  // removed entirely at the user's request on 2026-09-29: quitting just quits,
+  // containers keep running, nothing is asked. One exception remains — quitting
+  // during an upgrade would strand the machine (P0-4).
   quit: {
-    title: 'Quit the launcher?',
-    body: 'Hunter containers are still running. You can leave them running in the background, or stop them too.',
-    keep: 'Keep running',
-    stop: 'Stop them too',
-    keepHint: 'Keep running: Hunter stays usable in the browser; next launch goes straight to the dashboard.',
-    stopHint: 'Stop them too: runs docker compose stop (volumes are never removed).',
+    hint: 'Hunter keeps running in the background after you quit; it will be there next time.',
+    stopHint: 'To free up memory, use "Stop services" next to it — not "Quit launcher".',
+  },
+  quitGuard: {
+    title: 'An upgrade is still running',
+    continueQuit: 'Quit anyway',
+    cancelAndQuit: 'Cancel the upgrade, roll back, then quit',
+    cancelling: 'Writing the config back to the pre-upgrade version…',
+    cancelHint:
+      'Cancelling kills the pull and rewrites .env and compose back to the pre-upgrade version; running containers are untouched. The launcher quits when it is done.',
   },
   logs: {
     title: 'Logs',
@@ -905,12 +943,19 @@ const en: Dict = {
   interrupted: {
     title: 'The last upgrade never finished',
     badge: 'measured',
-    detail: (config: string, running: string) =>
-      `The config says v${config}, the running containers are still v${running}, and the v${config} images are not all present on this machine — the last attempt was most likely interrupted while pulling images (force quit, power loss, shutdown).`,
+    // I17 · P0-3: `running` can now be `null` — the check no longer requires a
+    // container to be up, so the all-stopped case needs its own sentence.
+    detail: (config: string, running: string | null) =>
+      running
+        ? `The config says v${config}, the running containers are still v${running}, and the v${config} images are not all present on this machine — the last attempt was most likely interrupted while pulling images (force quit, power loss, shutdown).`
+        : `The config says v${config}, all six containers are stopped, and the v${config} images are not all present on this machine — the last attempt was most likely interrupted while pulling images (force quit, power loss, shutdown).`,
     hint: 'Until you choose, the launcher will not bring containers up against the new config: that would pull a half-downloaded image and you would be stuck again.',
     continueUpgrade: (tag: string) => `Continue upgrading to v${tag}`,
-    revert: (tag: string) => `Go back to the running v${tag}`,
+    revertRunning: (tag: string) => `Go back to the running v${tag}`,
+    revertStopped: (tag: string) => `Go back to the last good v${tag}`,
+    lastGood: (tag: string) => `The launcher last ran v${tag} successfully; going back means returning to it.`,
     revertHint: 'Only rewrites the config. Running containers, your data and images are untouched.',
+    revertHintStopped: 'Only rewrites the config. No container is running, and no image or data is touched.',
     reverting: 'Rewriting…',
     evidence: 'Show the evidence',
     hideEvidence: 'Hide',

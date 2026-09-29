@@ -1556,19 +1556,93 @@ pub fn tray_invoke(app: tauri::AppHandle, id: String) -> Result<()> {
     Ok(())
 }
 
-/// 退出。`stop_containers = true` 时先把容器停掉再退（方案 §5.8 的两条分支）。
+/// **退出启动器**（I17 · U2 / P0-4）。三条退出入口（右上角红点 / 托盘「退出」/
+/// 运行面板上那个按钮）走的都是 [`request_quit`]，它是三者之间**唯一**的分岔点。
+///
+/// ## U2：退出＝关窗口，Hunter 继续在后台跑
+///
+/// 0.1.17 之前这里有一个 `stop_containers` 参数：容器在跑时要问用户
+/// 「保持后台运行 / 一起停止」（方案 §5.8）。用户 2026-09-29 明确要求
+/// **不要问、默认不停服务**，所以：
+///
+/// * 参数整个删掉了 —— 不是「传 false」，是**没有地方能传 true**。
+///   少一个开关就少一类「有时问、有时不问」的分叉（方案 §8 风险 4 说的就是这件事）。
+/// * 「停止服务」是运行面板上的一个一级大按钮，要停随时能停，回头成本很低。
+///
+/// ## P0-4：唯一一个例外
+///
+/// 升级正卡在「配置已经改了、还没收尾」那一段时（[`AppState::upgrade_in_flight`]），
+/// **不静默退出**，先弹一句：现在退出会留下中间态。这是唯一会弹东西的窗口 ——
+/// 常规退出一个提示都不许有（A4-6）。`force` 是那个弹窗里「继续退出」用的。
 #[tauri::command]
-pub fn quit_app(app: tauri::AppHandle, stop_containers: bool) {
+pub fn quit_app(app: tauri::AppHandle, force: Option<bool>) {
+    if force.unwrap_or(false) {
+        crate::linfo!("退出：用户在升级提示里选了「继续退出」");
+        exit_now(&app);
+        return;
+    }
+    request_quit(&app);
+}
+
+/// 三条退出入口的**同一个**判定点。
+pub fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let armed = app.state::<AppState>().upgrade_in_flight();
+    if let Some(g) = crate::upgrade::quit_guard(armed.as_deref()) {
+        crate::linfo!(
+            "退出被拦下：正在升级到 v{}，现在退出会留下中间态",
+            g.target_tag
+        );
+        crate::tray::show_main(app);
+        let _ = app.emit(crate::tray::EV_UPGRADE_QUIT_GUARD, g);
+        return;
+    }
+    exit_now(app);
+}
+
+/// 真的退出。**容器一个都不动** —— 这是 U2 的全部要点。
+pub fn exit_now<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let h = app.clone();
     std::thread::spawn(move || {
-        if stop_containers {
-            crate::linfo!("退出：用户选了「一起停止」");
-            match compose::stop() {
-                Ok(()) => crate::linfo!("容器已停止，准备退出"),
-                Err(e) => crate::lerror!("退出前停容器失败：{}", e.msg),
+        crate::linfo!("退出启动器：Hunter 继续在后台运行，容器与数据卷都不动");
+        h.exit(0);
+    });
+}
+
+/// **取消升级、等它回滚完，再退出**（I17 · P0-4 弹窗的第二个动作）。
+///
+/// 复用既有的取消路径（`state.cancel`）：升级线程看到它就杀掉拉取子进程、
+/// 调 [`crate::upgrade::rollback`] 把配置写回升级前那一份，然后照常收尾。
+/// 这里只做一件事：**等它收完尾再退** —— 半路退掉等于又留一个中间态，
+/// 那正是这个弹窗要防的事。
+///
+/// 等待的判据是「升级那个标记被撤掉了」（升级线程在回滚之后才撤），
+/// 兜底再认一次 `busy` 已经放掉；两者都不成立时最多等 [`ROLLBACK_WAIT`]，
+/// 到点如实记一行日志再退（不能让用户永远关不掉程序）。
+#[tauri::command]
+pub fn cancel_upgrade_and_quit(app: tauri::AppHandle) {
+    const ROLLBACK_WAIT: Duration = Duration::from_secs(420);
+    crate::linfo!("退出时选择「取消升级并回滚」：先把配置写回去，再退");
+    app.state::<AppState>().cancel.store(true, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + ROLLBACK_WAIT;
+        loop {
+            let done = {
+                let st = app.state::<AppState>();
+                st.upgrade_in_flight().is_none() || !st.busy.load(Ordering::SeqCst)
+            };
+            if done {
+                break;
             }
-        } else {
-            crate::linfo!("退出：用户选了「保持后台运行」，容器不动");
+            if std::time::Instant::now() >= deadline {
+                crate::lwarn!(
+                    "等了 {} 秒升级还没收尾，先退出；配置可能停在中间态，下次打开会给出提示",
+                    ROLLBACK_WAIT.as_secs()
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
         }
+        crate::linfo!("回滚已收尾，退出启动器");
         app.exit(0);
     });
 }
@@ -1647,9 +1721,32 @@ fn upgrade_slot() -> &'static std::sync::Mutex<UpgradeStatus> {
 /// 升级事件：每一步的文字。前端也可以只靠 [`upgrade_status`] 轮询。
 pub const EV_UPGRADE: &str = "hunter://upgrade";
 
-/// 开始升级。立刻返回，进度走 `hunter://upgrade`（步骤文字）与 `hunter://pull`（拉取进度）。
+/// **升级前置体检**（I17 · §4.2②）。**只读**：探 manifest，不改任何配置、不拉任何层。
+///
+/// 界面在用户点下「升级」之后、真的开始升级之前调它一次：
+///
+/// * `currentOk` 为真 → 照原路升（**不额外多问**，A4-3）
+/// * 为假且带了 `offer` → 弹一句「当前源还没有这一版」，两个选择：
+///   换到 `offer.id` 继续（并说清要下多少），或者稍后再升（什么都不改）
+///
+/// 探不通就如实回 `currentOk: false` + `reason`，**不猜**。
 #[tauri::command]
-pub fn upgrade_hunter(app: tauri::AppHandle, tag: String) -> Result<()> {
+pub async fn upgrade_preflight(
+    app: tauri::AppHandle,
+    tag: String,
+) -> Result<crate::upgrade::Preflight> {
+    blocking(move || {
+        let cfg = state(&app).config();
+        Ok(crate::upgrade::preflight(&cfg, &tag))
+    })
+    .await
+}
+
+/// 开始升级。立刻返回，进度走 `hunter://upgrade`（步骤文字）与 `hunter://pull`（拉取进度）。
+///
+/// `registry` 是**用户在前置体检那一步选定**要换过去的源 id（没有就是 `None`）。
+#[tauri::command]
+pub fn upgrade_hunter(app: tauri::AppHandle, tag: String, registry: Option<String>) -> Result<()> {
     {
         let st = state(&app);
         if st.busy.swap(true, Ordering::SeqCst) {
@@ -1676,7 +1773,7 @@ pub fn upgrade_hunter(app: tauri::AppHandle, tag: String) -> Result<()> {
             let _ = h_step.emit(EV_UPGRADE, line);
         };
         let h_pull = handle.clone();
-        let r = crate::upgrade::upgrade(&st, &tag, note, move |p| {
+        let r = crate::upgrade::upgrade(&st, &tag, registry.as_deref(), note, move |p| {
             let _ = h_pull.emit(EV_PULL, p);
         });
         let mut failed: Option<(String, String)> = None;

@@ -47,6 +47,17 @@ pub struct AppState {
     pub compose_note: Mutex<Option<String>>,
     pub cancel: Arc<AtomicBool>,
     pub busy: AtomicBool,
+    /// **这一轮升级正在升到哪一版，而且配置已经被改写**（I17 · P0-4）。
+    ///
+    /// `Some(tag)` = 升级已经走过第 ③ 步（`.env` / compose 都换成新版本了），
+    /// 而这一轮还没收尾（成功、失败回滚、用户取消回滚都算收尾）。
+    /// **这个窗口里退出会留下一个说不清的中间态** —— 就是客户 2026-09-29
+    /// 那台 Windows 上出现的那一档。三条退出入口都靠它决定要不要拦一下。
+    ///
+    /// 与 [`Self::busy`] 的区别：`busy` 是「有操作在跑」（备份、重启、回退都算），
+    /// 这个只在升级真的动了配置之后才有值 —— ①② 两步失败时什么都没变，
+    /// 那时候退出不该弹任何东西。
+    pub upgrade_armed: Mutex<Option<String>>,
     pub start_note: Mutex<Option<String>>,
     /// 这一轮安装的镜像是**离线包导入**来的（方案 §9）。为真时 [`pull`] 直接跳过拉取。
     ///
@@ -90,6 +101,7 @@ impl AppState {
             compose_note: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
             busy: AtomicBool::new(false),
+            upgrade_armed: Mutex::new(None),
             start_note: Mutex::new(None),
             // 从落盘的配置里读回来 —— `--import-images` 与真正的安装是两个进程
             offline: AtomicBool::new(cfg_offline),
@@ -106,6 +118,25 @@ impl AppState {
         if let Ok(mut g) = self.cfg.lock() {
             *g = c;
         }
+    }
+
+    /// 升级刚改完配置（第 ③ 步之后）—— 从现在起退出会留下中间态（I17 · P0-4）。
+    pub fn arm_upgrade(&self, target: &str) {
+        if let Ok(mut g) = self.upgrade_armed.lock() {
+            *g = Some(target.to_string());
+        }
+    }
+
+    /// 这一轮升级收尾了（成功、回滚、取消都走这里）。
+    pub fn disarm_upgrade(&self) {
+        if let Ok(mut g) = self.upgrade_armed.lock() {
+            *g = None;
+        }
+    }
+
+    /// 升级正卡在「退出会留下中间态」的那一段吗？是的话回正在升到的那一版。
+    pub fn upgrade_in_flight(&self) -> Option<String> {
+        self.upgrade_armed.lock().ok().and_then(|g| g.clone())
     }
 
     /// 拿 hunter key：先看内存，没有就从 `.env` 里读回来

@@ -25,6 +25,7 @@ import { useStore } from './state/context'
 import { useAsync } from './lib/useAsync'
 import * as ipc from './lib/ipc'
 import type { Overlay as OverlayName } from './state/context'
+import type { QuitGuard } from './lib/types'
 
 export function App() {
   const { overlay, setOverlay, send } = useStore()
@@ -80,75 +81,94 @@ export function App() {
       <main className="flex min-h-0 flex-1 flex-col">
         {overlay ? <Overlay which={overlay} /> : <Page />}
       </main>
-      <QuitDialog />
+      <UpgradeQuitGuard />
     </div>
   )
 }
 
 /**
- * 退出询问（技术方案 §5.8）：「容器还在跑，退出启动器时要不要一起停掉？」
+ * **升级进行中那次退出被拦下了**（I17 · P0-4）。
  *
- * 两个来源都会走到这里：托盘的「退出」、窗口右上角的关闭按钮。
- * Rust 侧只在 `compose::is_up()` 为真时才发这个事件 —— 容器没在跑就直接退，不烦用户。
+ * ## 为什么只有这一处会弹
+ *
+ * U2 把 0.1.17 那条「退出时问要不要一起停容器」的链路整个删掉了：退出就是退出，
+ * 容器继续在后台跑，不问。**唯一的例外**是升级进行中 —— 客户 2026-09-29 那台
+ * Windows 就是在这里点了「应用退出」：进程一死，那条会回滚的取消路径不会跑，
+ * 机器于是停在「`.env` 已是 1.2.3、镜像不齐、容器全停」这种说不清的状态里。
+ *
+ * 常规退出**一个提示都不许有**（A4-6 专门防这个回归），所以这个组件只在后端
+ * 明确发来事件时才出现；后端不发，它就一直什么都不做。
+ *
+ * ## 两个动作
+ *
+ * * **继续退出** —— 用户说了算，照旧退（`quitApp(true)` 绕过后端那道判定）。
+ * * **取消升级并回滚后再退出** —— 复用既有的取消路径（`state.cancel`）：
+ *   升级线程会杀拉取、把配置写回升级前那一份，做完后端自动退出。
+ *   这一步要等几十秒，所以按钮置灰并写明在做什么。
  */
-function QuitDialog() {
+function UpgradeQuitGuard() {
   const { t } = useStore()
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState<'keep' | 'stop' | null>(null)
+  const [g, setG] = useState<QuitGuard | null>(null)
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     let un: (() => void) | undefined
-    void ipc.onQuitRequest(() => setOpen(true)).then((f) => {
+    void ipc.onUpgradeQuitGuard(setG).then((f) => {
       un = f
     })
     return () => un?.()
   }, [])
 
-  if (!open) return null
+  if (!g) return null
 
-  async function quit(stop: boolean) {
-    setBusy(stop ? 'stop' : 'keep')
+  async function forceQuit() {
+    setBusy(true)
     try {
-      await ipc.quitApp(stop)
+      await ipc.quitApp(true)
     } catch {
       // 退出命令发出去以后进程就没了，这里收不到有意义的错误
     }
   }
 
+  async function cancelAndQuit() {
+    setBusy(true)
+    try {
+      // 这个调用**不会返回**：后端等回滚收尾之后自己退进程。
+      // 所以这里不能 await 完再收尾，置灰的状态就留在那儿 —— 正是想要的。
+      await ipc.cancelUpgradeAndQuit()
+    } catch {
+      setBusy(false)
+    }
+  }
+
   return (
     <Modal
-      testId="quit-dialog"
-      title={t.quit.title}
+      testId="upgrade-quit-guard"
+      title={t.quitGuard.title}
+      onClose={() => setG(null)}
       footer={
         <>
-          <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setOpen(false)}>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setG(null)}>
             {t.common.cancel}
           </Button>
-          <Button
-            size="sm"
-            data-testid="quit-keep"
-            disabled={busy !== null}
-            onClick={() => void quit(false)}
-          >
-            {busy === 'keep' ? t.common.working : t.quit.keep}
+          <Button size="sm" disabled={busy} data-testid="quit-guard-force" onClick={() => void forceQuit()}>
+            {t.quitGuard.continueQuit}
           </Button>
           <Button
             size="sm"
             variant="primary"
-            data-testid="quit-stop"
-            disabled={busy !== null}
-            onClick={() => void quit(true)}
+            disabled={busy}
+            data-testid="quit-guard-cancel-upgrade"
+            onClick={() => void cancelAndQuit()}
           >
-            {busy === 'stop' ? t.common.working : t.quit.stop}
+            {busy ? t.quitGuard.cancelling : t.quitGuard.cancelAndQuit}
           </Button>
         </>
       }
     >
-      <p>{t.quit.body}</p>
-      <ul className="mt-[12px] flex flex-col gap-[6px] text-sm text-muted">
-        <li>· {t.quit.keepHint}</li>
-        <li>· {t.quit.stopHint}</li>
-      </ul>
+      <p>{g.headline}</p>
+      <p className="mt-[12px] leading-[1.6] text-muted">{g.body}</p>
+      <p className="mt-[12px] text-xs leading-[1.5] text-muted">{t.quitGuard.cancelHint}</p>
     </Modal>
   )
 }

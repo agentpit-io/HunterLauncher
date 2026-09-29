@@ -663,7 +663,7 @@ mod tests {
             endpoint: ENDPOINT.into(),
             stage: "upgrade".into(),
             error_code: "E_PULL_STALLED".into(),
-            summary: "升级时从腾讯云香港拉镜像 90 秒没有数据进来".into(),
+            summary: "升级时从国内镜像源拉镜像 90 秒没有数据进来".into(),
             meta_lines: Vec::new(),
             scan_hit: None,
             auto_on_error: false,

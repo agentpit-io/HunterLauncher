@@ -77,7 +77,7 @@ const DEMO_STATES: Record<string, State> = {
     code: 'E_PULL_STALLED',
     from: 'AutoInstalling',
     detail:
-      '从「腾讯云 · 香港」拉了 1 分 30 秒，已下载 12.4 MB / 共 748 MB。这个源试过了 —— 连得上、就是不给数据。',
+      '从「中国国内云服务」拉了 1 分 30 秒，已下载 12.4 MB / 共 748 MB。这个源试过了 —— 连得上、就是不给数据。',
   },
   // I16：一键上传日志的两屏（预览 / 传完拿到追踪码），从运行面板的诊断区点开
   'upload-preview': { name: 'Ready' },

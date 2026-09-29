@@ -37,6 +37,8 @@ import type {
   LogshipPreview,
   LogshipOutcome,
   InterruptedUpgrade,
+  QuitGuard,
+  Preflight,
   OwnKeyCheck,
   PullProgress,
   RegistryProbe,
@@ -226,7 +228,8 @@ export const demoOwnKeyCheck: OwnKeyCheck = {
 /** 镜像源测速的演示值。真实探测在 Rust 侧，这里只是让截图有内容。 */
 export const demoProbes: RegistryProbe[] = [
   { id: 'ghcr', label: 'GHCR · GitHub', prefix: DEMO_REGISTRY, available: true, elapsedMs: 1993, detail: null },
-  { id: 'tencent', label: '腾讯云 · 香港', prefix: 'hkccr.ccs.tencentyun.com/agentpit', available: true, elapsedMs: 10765, detail: null },
+  // I17 · U4：这个源在界面上的名字改成了「中国国内云服务」（prefix 一个字节都没动）
+  { id: 'tencent', label: '中国国内云服务', prefix: 'hkccr.ccs.tencentyun.com/agentpit', available: true, elapsedMs: 10765, detail: null },
 ]
 
 /** 六个镜像的大小取自 M0 §4.1（linux/amd64 压缩后字节数）。 */
@@ -289,6 +292,9 @@ export const demoPull: PullProgress = {
 
 export const demoRuntime: RuntimeStatus = {
   hunterTag: DEMO_HUNTER_TAG,
+  // I17 · P0-1：大标题按 posture 分档，演示数据也要如实给
+  posture: 'healthy',
+  webOk: true,
   quota: {
     usedToday: 42300,
     limitDaily: 300000,
@@ -830,8 +836,12 @@ export const demoRuntimeLanExposed: RuntimeStatus = {
  */
 export const demoRuntimeAllStopped: RuntimeStatus = {
   ...demoRuntime,
+  // I17 · P0-1：**这里原来是 `uptimeSeconds: 0`** —— 界面于是显示「已运行 0 秒」。
+  // 后端现在只在 web 探得通时才给时长，探不通就是 `null`，界面**不显示这一截**。
+  posture: 'stopped',
+  webOk: false,
   running: false,
-  uptimeSeconds: 0,
+  uptimeSeconds: null,
   webUrl: null,
   postInstallNotes: [],
   services: demoRuntime.services.map((s) => ({
@@ -854,8 +864,10 @@ export const demoRuntimeAllStopped: RuntimeStatus = {
  */
 export const demoRuntimeDown: RuntimeStatus = {
   ...demoRuntime,
+  posture: 'runtime-down',
+  webOk: false,
   running: false,
-  uptimeSeconds: 0,
+  uptimeSeconds: null,
   webUrl: null,
   postInstallNotes: [],
   // ps 问不出来 ⇒ 一个服务都拿不到
@@ -1062,7 +1074,7 @@ export const demoAutoSnapshot: AssistAutoSnapshot = {
       kind: 'step',
       status: 'ok',
       title: '挑下载源、算端口、写配置',
-      detail: '下载源 腾讯云 · 香港 · 端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480',
+      detail: '下载源 中国国内云服务 · 端口 web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480',
       elapsedMs: 6_100,
       at: '2026-09-21 10:30:08',
     },
@@ -1281,7 +1293,7 @@ export const demoAutoTakeoverOffer: AssistAutoSnapshot = {
       parent: 2,
       kind: 'resolved',
       status: 'ok',
-      title: '有 1 个下载源连不上，已自动改用「腾讯云 · 香港」',
+      title: '有 1 个下载源连不上，已自动改用「中国国内云服务」',
       detail: '你不用做任何事，启动器自己挑了一个测得通的源',
       tech: ['GHCR · GitHub（请求 ghcr.io 失败：timeout: connect）'],
       at: '2026-09-21 18:30:24',
@@ -1586,7 +1598,7 @@ export const demoLogshipPreview: LogshipPreview = {
   endpoint: 'https://www.agentpit.io/api/v1/launcher/logs',
   stage: 'upgrade',
   errorCode: 'E_PULL_STALLED',
-  summary: '升级时从腾讯云香港拉镜像 90 秒没有数据进来',
+  summary: '升级时从国内镜像源拉镜像 90 秒没有数据进来',
   metaLines: [
     '镜像源: tencent (hkccr.ccs.tencentyun.com/agentpit)',
     '这台机器配了网络代理: false',
@@ -1607,16 +1619,96 @@ export const demoLogshipOutcome: LogshipOutcome = {
   localLogPath: '~/.hunter/logs/launcher.log',
 }
 
-/** 「上一次升级没做完」的演示态 —— 就是客户 2026-09-25 强退之后那个现场。 */
+/**
+ * 「上一次升级没做完」的演示态 —— 客户 2026-09-25 强退之后那个现场：
+ * 配置已是新版、容器还在旧版、新版镜像不齐。
+ *
+ * I17 · P0-3 之后这个结构多了 `lastGoodTag`（全停时的回退目标），
+ * `runningTag` 也允许是 `null` —— 另一种现场见 [`demoInterruptedAllStopped`]。
+ */
 export const demoInterruptedUpgrade: InterruptedUpgrade = {
   configTag: '1.2.2',
   runningTag: '1.2.0',
+  lastGoodTag: '1.2.0',
   missingImages: ['web', 'api', 'opencode'],
   headline: '上一次升级没做完：配置已经是 v1.2.2，跑着的还是 v1.2.0，而 v1.2.2 的镜像本机不齐',
   lines: [
     '配置（.env 与 compose）写的是 v1.2.2',
     '正在跑的 4 个容器用的是 v1.2.0',
+    '启动器上一次成功跑起来的是 v1.2.0',
     'v1.2.2 的镜像本机还缺 3 个：web、api、opencode',
     '所以上一次升级多半是拉镜像时被打断的（强退 / 断电 / 关机）。在你选之前，启动器不会按新配置去起容器 —— 那只会再卡一次。',
+    '回退会先把配置写回 v1.2.0，容器一个都不动。',
   ],
+}
+
+/**
+ * **六个容器全停**的那种中间态 —— 客户 2026-09-29 那台 Windows（HL-GFV764）的现场，
+ * 也正是 0.1.17 恰好判不出来、卡片不出现的那一格（I17 · P0-3）。
+ *
+ * `runningTag` 是 `null`：一个容器都没跑，所以没有「正在用的版本」，
+ * 回退目标是 `lastGoodTag`。界面在这一档上的措辞与上一档不同 —— 这是截图要看的重点。
+ */
+export const demoInterruptedAllStopped: InterruptedUpgrade = {
+  configTag: '1.2.3',
+  runningTag: null,
+  lastGoodTag: '1.2.2',
+  missingImages: ['web', 'api', 'opencode', 'llm-shim'],
+  headline: '上一次升级没做完：配置已经是 v1.2.3，本机还缺 4 个镜像，而容器都停着',
+  lines: [
+    '配置（.env 与 compose）写的是 v1.2.3',
+    '6 个容器现在都停着（一个在跑的都没有，所以没有「正在用的版本」可比）',
+    '启动器上一次成功跑起来的是 v1.2.2',
+    'v1.2.3 的镜像本机还缺 4 个：web、api、opencode、llm-shim',
+    '所以上一次升级多半是拉镜像时被打断的（强退 / 断电 / 关机）。在你选之前，启动器不会按新配置去起容器 —— 那只会再卡一次。',
+    '回退会先把配置写回 v1.2.2，容器一个都不动。',
+  ],
+}
+
+/**
+ * **前置体检通过**（I17 · §4.2②）：当前源上有这一版，界面**不问任何问题**直接升。
+ * 演示态默认走它 —— 与 0.1.17 的升级行为一致（A4-3 要的就是这个）。
+ */
+export const demoUpgradePreflight: Preflight = {
+  target: '1.2.2',
+  currentLabel: '中国国内云服务',
+  currentPrefix: 'hkccr.ccs.tencentyun.com/agentpit',
+  currentOk: true,
+  offer: null,
+  offerBytes: null,
+  reason: null,
+}
+
+/**
+ * **前置体检发现当前源还没有这一版**（I17 · §4.2②，截图脚本
+ * `HUNTER_DEMO_PAGE=update-no-tag`）。
+ *
+ * 就是客户 2026-09-29 那个现场：国内源当时还没有 v1.2.3（同步窗口差一次），
+ * 而 GHCR 上有。0.1.17 会**先把 `.env` 改成 1.2.3** 再去拉，然后在拉取阶段
+ * 以一句 `not found` 收场；现在这一步只探 manifest，配置一个字节都没动。
+ */
+export const demoUpgradePreflightNoTag: Preflight = {
+  target: '1.2.4',
+  currentLabel: '中国国内云服务',
+  currentPrefix: 'hkccr.ccs.tencentyun.com/agentpit',
+  currentOk: false,
+  offer: { id: 'ghcr', label: 'GHCR · GitHub', prefix: 'ghcr.io/agentpit-io' },
+  offerBytes: 715_000_000,
+  reason: '「中国国内云服务」上没有 v1.2.4 这一版（manifest 探不到）',
+}
+
+/**
+ * **升级进行中点了退出**那一句（I17 · P0-4）。
+ *
+ * 只有这一个窗口会弹它 —— 常规退出（U2）一个提示都没有。
+ * 文案与后端 `upgrade::quit_guard` 生成的一模一样（截图脚本用它出图）。
+ */
+export const demoQuitGuard: QuitGuard = {
+  targetTag: '1.2.4',
+  headline: '正在升级到 v1.2.4，现在退出会留下一个说不清的中间态',
+  body:
+    '升级已经改写了配置（`.env` 与 compose 都指向 v1.2.4），\
+但这一轮还没跑完。现在退出的话，回滚那一步不会执行 —— \
+机器会停在「配置是新版本、镜像还没拉齐」这种状态里，下次打开要多处理一次。\
+要中断请点「取消升级并回滚后再退出」（会把配置写回升级前那一份）。',
 }

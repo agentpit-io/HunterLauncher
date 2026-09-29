@@ -2410,6 +2410,10 @@ fn cmd_upgrade(st: &AppState, args: &Args) -> AppResult<()> {
     let r = crate::upgrade::upgrade(
         st,
         &target,
+        // `--registry ghcr --upgrade 1.2.3` 就是这个意思：用户在命令行上已经定了换源。
+        // 不带它而当前源又没有这一版时，`upgrade` 会在**改任何配置之前**停住并说明白
+        // （I17 · §4.2②），而不是改完配置再以一句 `not found` 收场。
+        args.registry.as_deref(),
         |line| println!("  {line}"),
         |p| {
             let should = if tty {
@@ -3294,7 +3298,8 @@ mod tests {
         let v = list_registries();
         assert_eq!(v.len(), 2);
         assert!(v.iter().any(|s| s.contains("ghcr")));
-        assert!(v.iter().any(|s| s.contains("腾讯云")));
+        // I17 · U4：这个源在界面上的名字改成了「中国国内云服务」
+        assert!(v.iter().any(|s| s.contains("中国国内云服务")));
         assert_eq!(default_tag(), "1.2.2");
     }
 

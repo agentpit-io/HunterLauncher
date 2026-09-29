@@ -2,6 +2,8 @@
 //!
 //! 方案原本列的三个源（阿里云 ACR / Docker Hub `agentpit` / GHCR）里前两个 M0 实测都是 `denied`；
 //! 用户后来决定改用腾讯云个人版（`hkccr.ccs.tencentyun.com/agentpit`）。
+//! **界面上它的显示名是「中国国内云服务」**（I17 · U4，用户 2026-09-29 定的）；
+//! 主机名与仓库路径与显示名无关，一个字都没动。
 //!
 //! **只有真实探到的源才参与选择**（总控规则红线 1）：每个候选都走一遍标准的 registry v2
 //! 匿名拉取流程（`GET /v2/` 拿 challenge → 换 token → `HEAD /v2/<repo>/manifests/<tag>`），
@@ -61,7 +63,10 @@ pub static CANDIDATES: [Candidate; 2] = [
         id: Cow::Borrowed("tencent"),
         prefix: Cow::Borrowed("hkccr.ccs.tencentyun.com/agentpit"),
         base_prefix: Cow::Borrowed("hkccr.ccs.tencentyun.com/agentpit"),
-        label: Cow::Borrowed("腾讯云 · 香港"),
+        // I17 · U4：用户 2026-09-29 要求改的叫法。**只改这一个字段** ——
+        // `prefix` / `base_prefix` / `host` / `probe_repo` 一个字节都不动，
+        // 那四个是地址，改了就是换源事故（`scripts/check-retired-mirrors.sh` 也盯着）。
+        label: Cow::Borrowed("中国国内云服务"),
         host: Cow::Borrowed("hkccr.ccs.tencentyun.com"),
         probe_repo: Cow::Borrowed("agentpit/hunter-community-web"),
     },
@@ -670,8 +675,8 @@ mod tests {
         // 国内源下 postgres/redis 也走镜像（plan/国内镜像与下载源.md）
         assert_eq!(cn.base_prefix, "hkccr.ccs.tencentyun.com/agentpit");
         assert_eq!(
-            cn.label, "腾讯云 · 香港",
-            "视觉稿写的「阿里云 · 杭州」已作废"
+            cn.label, "中国国内云服务",
+            "I17 · U4：用户 2026-09-29 定的叫法（视觉稿写的「阿里云 · 杭州」已作废）"
         );
     }
 

@@ -67,6 +67,8 @@ import type {
   LogshipPreview,
   LogshipOutcome,
   InterruptedUpgrade,
+  QuitGuard,
+  Preflight,
 } from './types'
 import * as demo from './demo'
 
@@ -432,10 +434,30 @@ export async function trayInvoke(id: string): Promise<void> {
   await call<void>('tray_invoke', { id })
 }
 
-/** 退出。stopContainers=true 时先把容器停掉再退（方案 §5.8 的两条分支）。 */
-export async function quitApp(stopContainers: boolean): Promise<void> {
+/**
+ * **退出启动器**（I17 · U2）。
+ *
+ * 语义只有一条：关掉这个窗口，**Hunter 继续在后台运行** —— 容器、数据卷都不动。
+ * 0.1.17 那个「要不要一起停容器」的选择按用户 2026-09-29 的要求删掉了，
+ * `stop_containers` 参数在 Rust 侧已经不存在（没有地方能传 true）。
+ *
+ * `force` 只在 P0-4 那个弹窗里用它：升级进行中时第一次调用会被拦下（弹一句），
+ * 用户点「继续退出」才是 `force = true`。
+ */
+export async function quitApp(force = false): Promise<void> {
   if (DEMO) return
-  await call<void>('quit_app', { stopContainers })
+  await call<void>('quit_app', { force })
+}
+
+/**
+ * 升级进行中退出时的第二个动作：**取消升级、等它回滚完，再退出**（I17 · P0-4）。
+ *
+ * 进程不会立刻消失 —— 后端要等升级线程把配置写回升级前那一份才退。
+ * 半路退掉等于又留一个中间态，那正是这个弹窗要防的事。
+ */
+export async function cancelUpgradeAndQuit(): Promise<void> {
+  if (DEMO) return
+  await call<void>('cancel_upgrade_and_quit')
 }
 
 // ── M4 · 启动器自更新（方案 §10） ────────────────────────────────────────
@@ -466,10 +488,26 @@ export async function checkHunterUpdate(force = false): Promise<UpgradeCheck> {
   return call<UpgradeCheck>('check_hunter_update', { force })
 }
 
-/** 开始升级。立刻返回，进度靠 upgradeStatus() 轮询与 hunter://pull 事件。 */
-export async function upgradeHunter(tag: string): Promise<void> {
+/**
+ * **升级前置体检**（I17 · §4.2②）。**只读**：探一次 manifest，不改任何配置。
+ *
+ * 界面在用户点下「升级」之后、真的开始升级之前调它：`currentOk` 为真就直接升，
+ * 为假就把「换到哪个源、要下多少」摆出来（那时 `.env` 与 `VERSION` 还是原样）。
+ */
+export async function upgradePreflight(tag: string): Promise<Preflight> {
+  if (DEMO) return demoPage() === 'update-no-tag' ? demo.demoUpgradePreflightNoTag : demo.demoUpgradePreflight
+  return call<Preflight>('upgrade_preflight', { tag })
+}
+
+/**
+ * 开始升级。立刻返回，进度靠 upgradeStatus() 轮询与 hunter://pull 事件。
+ *
+ * `registry` 是**用户在前置体检那一步选定**要换过去的源 id（比如 `'ghcr'`）；
+ * 不换源就不传 —— 后端那边体检不过会直接停住，**不会静默替你改配置**。
+ */
+export async function upgradeHunter(tag: string, registry?: string): Promise<void> {
   if (DEMO) return
-  await call<void>('upgrade_hunter', { tag })
+  await call<void>('upgrade_hunter', { tag, registry: registry ?? null })
 }
 
 export async function upgradeStatus(): Promise<UpgradeStatus> {
@@ -638,7 +676,7 @@ const EV_PULL = 'hunter://pull'
 const EV_START = 'hunter://start'
 const EV_LOG = 'hunter://log'
 const EV_NAVIGATE = 'hunter://navigate'
-const EV_QUIT_REQUEST = 'hunter://quit-request'
+const EV_UPGRADE_QUIT_GUARD = 'hunter://upgrade-quit-guard'
 const EV_TRAY_ACTION = 'hunter://tray-action'
 const EV_UPGRADE = 'hunter://upgrade'
 const EV_LAUNCHER_UPDATE = 'hunter://launcher-update'
@@ -709,9 +747,19 @@ export function onNavigate(cb: (page: string) => void): Promise<UnlistenFn> {
   return on<string>(EV_NAVIGATE, cb)
 }
 
-/** 请求退出：容器还在跑，要问「保持后台运行 / 一起停止」（方案 §5.8）。 */
-export function onQuitRequest(cb: () => void): Promise<UnlistenFn> {
-  return on<boolean>(EV_QUIT_REQUEST, () => cb())
+/**
+ * **升级进行中那次退出被拦下了**（I17 · P0-4）：弹一句，给两个动作。
+ *
+ * 只有这一个窗口会发它 —— 常规退出（U2）后端直接退，不发任何事件。
+ */
+export function onUpgradeQuitGuard(cb: (g: QuitGuard) => void): Promise<UnlistenFn> {
+  // 演示模式下后端不存在，这个框永远弹不出来 —— 截图脚本用 `quit-guard` 这一页
+  // 直接把那一句话喂进来（和 `interruptedUpgrade()` 同一套做法）
+  if (DEMO) {
+    if (demoPage() === 'quit-guard') cb(demo.demoQuitGuard)
+    return Promise.resolve(() => {})
+  }
+  return on<QuitGuard>(EV_UPGRADE_QUIT_GUARD, cb)
 }
 
 /** 托盘操作的结果，运行面板拿去显示一行提示。 */
@@ -928,7 +976,13 @@ export async function logshipUpload(): Promise<LogshipOutcome> {
  * 而那在真机上是个罕见现场，不该出现在「一切正常」的那几张图里。
  */
 export async function interruptedUpgrade(): Promise<InterruptedUpgrade | null> {
-  if (DEMO) return demoPage() === 'dashboard-interrupted' ? demo.demoInterruptedUpgrade : null
+  // 两个演示态各出一次图（I17 · P0-3）：有容器在跑的那一档、以及**六个全停**那一档
+  // （客户 2026-09-29 的现场，0.1.17 恰好判不出来）。两种文案不一样，都得留档。
+  if (DEMO) {
+    if (demoPage() === 'dashboard-interrupted') return demo.demoInterruptedUpgrade
+    if (demoPage() === 'dashboard-interrupted-stopped') return demo.demoInterruptedAllStopped
+    return null
+  }
   return call<InterruptedUpgrade | null>('interrupted_upgrade', {})
 }
 

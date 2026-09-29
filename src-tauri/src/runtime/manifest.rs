@@ -16,7 +16,7 @@
 //! | 源 | 地址 |
 //! |---|---|
 //! | GitHub / docker.com（海外） | 各家官方地址 |
-//! | 腾讯云香港桶（国内） | `<CN_DOWNLOAD_BASE>/runtime/<组件>/<版本>/<文件名>` |
+//! | 国内镜像源（中国国内云服务） | `<CN_DOWNLOAD_BASE>/runtime/<组件>/<版本>/<文件名>` |
 //!
 //! 两边**并列测速择优**（沿用 [`crate::registry`] 那一套的思路），两边都拿不到
 //! 才交给诊断员。国内那一份由 `.github/workflows/runtime-mirror.yml` 同步，
@@ -42,7 +42,7 @@
 //!   ubuntu-24.04-minimal-cloudimg-amd64-docker.raw.gz': ... connection timed out
 //! ```
 //!
-//! 也就是说：**前四个组件我们自己下（腾讯云香港，很快），第五个文件 colima 自己去
+//! 也就是说：**前四个组件我们自己下（国内镜像源，很快），第五个文件 colima 自己去
 //! GitHub 下**（341 MB，直连超时，而且它不看用户的系统代理）。一条链上有一半不在
 //! 我们手里，那一半就是会断的那一半。
 //!

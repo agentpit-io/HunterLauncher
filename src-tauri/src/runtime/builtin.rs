@@ -463,7 +463,7 @@ pub fn sources_for(item: &Item) -> Vec<Source> {
         },
         Source {
             id: "tencent-hk",
-            label: "腾讯云 · 香港",
+            label: "中国国内云服务",
             url: item.cn_url(),
         },
     ];
@@ -929,7 +929,7 @@ pub fn vm_proxy_note() -> Option<String> {
     if p.for_vm().is_empty() {
         Some(format!(
             "{}。不过它只监听你这台电脑本机（127.0.0.1），虚拟机里访问不到，\
-             所以没有把它传进虚拟机 —— 虚拟机拉镜像会走腾讯云香港的源。",
+             所以没有把它传进虚拟机 —— 虚拟机拉镜像会走国内镜像源（中国国内云服务）。",
             p.one_line()
         ))
     } else {
@@ -1456,7 +1456,7 @@ mod tests {
             },
             Source {
                 id: "tencent-hk",
-                label: "腾讯云 · 香港",
+                label: "中国国内云服务",
                 url: item.cn_url(),
             },
         ] {

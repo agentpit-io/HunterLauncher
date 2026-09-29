@@ -371,8 +371,25 @@ export interface RuntimeStatus {
   /** 今日额度，来自网关的 /api/saas/llm/quota；拿不到就是 null */
   quota: QuotaInfo | null
   latestTag: string | null
+  /**
+   * 「网页现在打得开吗」—— **面板大标题唯一的依据**（I17 · P0-1）。
+   *
+   * 0.1.17 及以前 Rust 侧算的是「任意一个服务在跑」，于是备份留下的一个孤儿
+   * postgres 就能把大标题点亮成「Hunter 运行中」，还给一个指向死端口的按钮。
+   * 现在它等于「web 在跑 **且** 本机 HTTP 探得通」。
+   */
   running: boolean
+  /**
+   * 现状复查的结论（I17 · P0-1）。**和错误页、开机判定用的是同一个判定**
+   * （Rust 侧 `selfcheck::Posture`，`Posture` 这个类型见本文件下半部分）。
+   * 大标题在「在跑 / 没跑」两档里再按它细分（见 `Dashboard.tsx` 里的 `title`）。
+   */
+  posture: Posture
+  /** 本机 GET `http://127.0.0.1:{web_port}/` **有没有拿到 HTTP 应答**（I17 · P0-1） */
+  webOk: boolean
+  /** **只在 `webOk` 为真时**才有值；否则是 `null`，界面不显示这一截（不是显示 0） */
   uptimeSeconds: number | null
+  /** 只在 `webOk` 为真时给出 */
   webUrl: string | null
   /**
    * 网页端口现在是不是**不止本机**能打开。
@@ -569,18 +586,76 @@ export interface LogshipOutcome {
 // ── 上一次升级没做完（I16 · P1-2） ───────────────────────────────────────
 
 /**
- * 「配置说的是一版、跑着的是另一版、而新版镜像本机还不齐」的现场。
+ * 「配置说的是一版、上一次成功的是另一版、而配置那一版的镜像本机还不齐」的现场。
  *
  * 强退会留下它：`.env` 已经写成新版本、镜像还没拉全、回滚没走到。
  * 这时候**不许默默按新配置 `up`** —— 那会去拉一个还没下完的镜像，
- * 用户又看到一次「卡住」。界面上给两个按钮：继续升级 / 回退到正在跑的那一版。
+ * 用户又看到一次「卡住」。界面上给两个按钮：继续升级 / 回退。
+ *
+ * **I17 · P0-3 改了两处形状**（客户 2026-09-29 那台 HL-GFV764 就是踩在这里）：
+ *
+ * * `runningTag` 现在是 `string | null` —— 判据不再要求「必须有容器在跑」。
+ *   六个容器全停着（客户那台的现场）时它就是 `null`，卡片照样出。
+ * * 新增 `lastGoodTag` —— 「上一次真正成功的版本」（`launcher.toml` 的 `hunter.tag`）。
+ *   全停时**回退目标就是它**，所以回退按钮与回退提示一律用
+ *   `runningTag ?? lastGoodTag`。
  */
 export interface InterruptedUpgrade {
   configTag: string
-  runningTag: string
+  /** 正在跑的容器用的版本；**一个都没跑时为 `null`** */
+  runningTag: string | null
+  /** 上一次真正成功的版本（全停时的回退目标） */
+  lastGoodTag: string
   missingImages: string[]
   headline: string
   lines: string[]
+}
+
+// ── 升级前置体检（I17 · §4.2②） ─────────────────────────────────────────
+
+/** 「换到哪个源能通」。 */
+export interface SwapOffer {
+  /** 候选源 id（写进 launcher.toml 的那一个） */
+  id: string
+  label: string
+  prefix: string
+}
+
+/**
+ * 升级前置体检的结论（**只读**，在改任何配置之前跑）。
+ *
+ * 0.1.17 的顺序是「先写新 `.env` → 再拉镜像」——**配置先改了，才发现拉不动**。
+ * 现在点下「升级」之后先探一次 manifest：当前源有这一版就照原路走（不额外多问），
+ * 没有就把「换到哪个源、要下多少」摆给用户，**一个字节的配置都不改**。
+ */
+export interface Preflight {
+  target: string
+  currentLabel: string
+  currentPrefix: string
+  /** 现在这个源上有这一版吗 */
+  currentOk: boolean
+  /** 当前源没有时，另一个能通的源 */
+  offer: SwapOffer | null
+  /** 换过去大概要下多少字节；读不到就是 null（不编） */
+  offerBytes: number | null
+  /** 当前源上没有这一版的原因原话（或者「跳过体检」的说明） */
+  reason: string | null
+}
+
+// ── 升级进行中的退出拦截（I17 · P0-4） ───────────────────────────────────
+
+/**
+ * 「现在退出会留下一个说不清的中间态」那一句话。
+ *
+ * **只在升级进行中（配置已改写、这一轮还没收尾）出现** —— 常规退出一个提示都没有
+ * （U2 的要求，A4-6 专门防这个回归）。界面收到它就弹一个框，两个动作：
+ * 「继续退出」与「取消升级并回滚后再退出」。
+ */
+export interface QuitGuard {
+  /** 这一轮正在升到的那一版 */
+  targetTag: string
+  headline: string
+  body: string
 }
 
 // ── AI 诊断助手（I4 §三） ────────────────────────────────────────────────

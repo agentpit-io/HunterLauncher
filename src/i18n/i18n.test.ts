@@ -95,3 +95,84 @@ describe('R2 · 自动备份那行状态分得清两条机制', () => {
     expect(d.autoLimitShortLived(120)).toContain('重新计时')
   })
 })
+
+/**
+ * I17 · U2：**退出与停止必须是两件事，而且退出不再询问。**
+ *
+ * 用户 2026-09-29 的原话是「关闭应用默认不关闭服务，不要再提醒用户选择」。
+ * 0.1.17 那条「要退出启动器吗？／保持后台运行／一起停止」的询问链路整个删掉了，
+ * 这一组测试盯三件事：两件事的说法分得开、退出旁那句小字说清了「还在后台跑」、
+ * 升级进行中那一句提示的两个动作都在。
+ */
+describe('I17 · U2 退出与停止分得开', () => {
+  it('「停止服务」与「退出启动器」不是同一句话', () => {
+    const d = zhCN.dashboard
+    expect(d.stopService).not.toBe(d.quitLauncher)
+    expect(d.startService).not.toBe(d.stopService)
+    expect(d.quitLauncher.length).toBeGreaterThan(0)
+    // 英文那边同样
+    expect(en.dashboard.stopService).not.toBe(en.dashboard.quitLauncher)
+  })
+
+  it('退出旁边那行小字说清了「Hunter 继续在后台运行」', () => {
+    for (const hint of [zhCN.dashboard.quitHint, zhCN.quit.hint]) {
+      expect(hint).toContain('后台运行')
+    }
+    // 还得说明白想停服务该点哪儿 —— 用户不再被提醒容器占着内存，这是补偿
+    expect(zhCN.quit.stopHint).toContain('停止服务')
+  })
+
+  it('升级进行中那一句有两个动作，且第二个是「回滚后再退」', () => {
+    const q = zhCN.quitGuard
+    expect(q.continueQuit).not.toBe(q.cancelAndQuit)
+    expect(q.cancelAndQuit).toContain('回滚')
+    expect(q.cancelAndQuit).toContain('退出')
+    expect(en.quitGuard.continueQuit).not.toBe(en.quitGuard.cancelAndQuit)
+  })
+})
+
+/**
+ * I17 · P0-3：**「全停」那一种现场要有自己的话。**
+ *
+ * 客户 2026-09-29 那台（HL-GFV764）是「配置 1.2.3、镜像不齐、六个容器全停」——
+ * 0.1.17 在这里返回 `None`，卡片压根不出现。现在它出得来，而且说法与
+ * 「有容器在跑」那一档不同：全停时**不能**说「正在跑的 vX」，因为没有。
+ */
+describe('I17 · P0-3 中断卡片的两种现场', () => {
+  it('有容器在跑 / 全停，两句话不一样', () => {
+    const i = zhCN.interrupted
+    const running = i.detail('1.2.3', '1.2.2')
+    const stopped = i.detail('1.2.3', null)
+    expect(running).not.toBe(stopped)
+    // 全停那一句必须直说「都停着」，而不是编一个「正在跑的版本」
+    expect(stopped).toContain('停')
+    expect(stopped).not.toContain('正在跑')
+    expect(running).toContain('1.2.2')
+  })
+
+  it('回退按钮两种说法不同，且全停时说的是「上一次成功的」', () => {
+    const i = zhCN.interrupted
+    expect(i.revertRunning('1.2.2')).not.toBe(i.revertStopped('1.2.2'))
+    expect(i.revertStopped('1.2.2')).toContain('上一次成功')
+    expect(i.revertHintStopped).not.toBe(i.revertHint)
+  })
+})
+
+/**
+ * I17 · U3 / U4：首页那个「检查更新」按钮，以及镜像源的新名字。
+ */
+describe('I17 · U3 / U4 文案', () => {
+  it('查到新版本时按钮上带版本号，且与常态不是同一句', () => {
+    const d = zhCN.dashboard
+    expect(d.checkUpdateNew('v1.2.4')).toContain('v1.2.4')
+    expect(d.checkUpdateNew('v1.2.4')).not.toBe(d.checkUpdate)
+  })
+
+  it('界面文案里不再出现「腾讯云香港」（I17 · U4 改名为「中国国内云服务」）', () => {
+    const hits: string[] = []
+    walk(dictOf('zh-CN'), '', (p, s) => {
+      if (s.includes('腾讯云香港') || s.includes('腾讯云 · 香港')) hits.push(p)
+    })
+    expect(hits, `这些文案还写着旧名字：\n${hits.join('\n')}`).toEqual([])
+  })
+})

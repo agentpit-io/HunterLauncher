@@ -161,7 +161,7 @@ const SYSTEM_PROMPT: &str = "\
 
 背景知识（这些是实测过的事实，可以直接用）：
 - macOS 上从访达/程序坞启动的 GUI 程序，PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，**不含 /usr/local/bin**。所以「终端里 docker 能跑」和「启动器找得到 docker」是两回事。启动器已经按已知位置探过了，明细在诊断信息里。
-- 国内网络直连 ghcr.io 经常超时，腾讯云香港的镜像源（id 是 tencent）一般能通。
+- 国内网络直连 ghcr.io 经常超时，国内镜像源（中国国内云服务，id 是 tencent）一般能通。
 - Hunter 用 5 个端口：web 3100、api 8100、opencode 3921、postgres 5442、redis 6479，被占时可以自动往上挪。
 ";
 

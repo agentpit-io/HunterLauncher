@@ -48,7 +48,7 @@ pub const OWN_IMAGE_NAMES: &[&str] = &[
 /// 而它们根本不是启动器拉下来的。
 ///
 /// 所以判据收紧成：仓库必须是 `<我们的某个镜像源前缀>/<那四个名字之一>`。
-/// 前缀取自 [`crate::registry::CANDIDATES`]（ghcr 与腾讯云香港）**再加上**
+/// 前缀取自 [`crate::registry::CANDIDATES`]（ghcr 与国内镜像源）**再加上**
 /// 用户当前配置里那一个（他可能填了自建源）—— 只有这些地方的镜像是我们拉的。
 pub fn own_repos() -> BTreeSet<String> {
     let cfg = config::LauncherConfig::load();

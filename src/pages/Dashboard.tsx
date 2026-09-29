@@ -186,6 +186,37 @@ export function Dashboard() {
   const running = state.name === 'Ready' && (d?.running ?? false)
   const hasUpdate = !!d?.latestTag && !!d.hunterTag && d.latestTag !== d.hunterTag
   /**
+   * **大标题的四档文案**（I17 · P0-1）。
+   *
+   * 权威是后端的 `running`（＝ web 在跑 **且** 本机 HTTP 探得通），
+   * `posture` 只用来在「在跑」与「没跑」两档里再细分：
+   *
+   * | 现场 | 标题 |
+   * |---|---|
+   * | 6/6 健康 | Hunter 运行中 |
+   * | 有服务不正常但网页打得开 | Hunter 运行中 · 有服务不正常 |
+   * | 只有 postgres 在跑 / 六个全停 | Hunter 已停止 |
+   * | 还没装好 | 还没有装好 |
+   *
+   * **为什么不是纯按 `posture` 分档**（方案 §2.1⑤ 的字面写法）：只有 postgres 活着时
+   * `selfcheck` 给的是 `Partial`（六个容器都在、至少一个在跑、有的不正常），
+   * 纯按 posture 就会写成「Hunter 运行中 · 有服务不正常」—— 而 A1-1 要的是
+   * 「Hunter 已停止」（网页打不开，说「运行中」正是客户被误导的那一句）。
+   * 所以「在不在跑」认 `running`，「为什么不正常」才认 `posture`。
+   */
+  const stoppedish = d?.posture === 'absent' || d?.posture === 'incomplete'
+  const title = state.name === 'Upgrading'
+    ? t.dashboard.starting
+    : !d
+      ? t.dashboard.checking
+      : running
+        ? d.posture === 'partial'
+          ? t.dashboard.runningPartial
+          : t.dashboard.running
+        : stoppedish
+          ? t.dashboard.notInstalled
+          : t.dashboard.stopped
+  /**
    * **R1：磁盘上装过，但运行时问不出来。**
    *
    * 这种机器 0.1.16 之前会被判成「没装过」，于是又走一遍安装、重新填一次 key
@@ -209,20 +240,17 @@ export function Dashboard() {
                 出现了「Hunter 运行中」＋下一行「v1.2.2 · 容器已停止」这种自相矛盾的一屏。
                 还没拿到数据的那几秒说「正在检查」—— 那时候说「已停止」是冤枉自己。 */}
             <h1 className="text-3xl font-semibold leading-none text-ink" data-testid="dash-title">
-              {state.name === 'Upgrading'
-                ? t.dashboard.starting
-                : !d
-                  ? t.dashboard.checking
-                  : running
-                    ? t.dashboard.running
-                    : t.dashboard.stopped}
+              {title}
             </h1>
-            <div className="tnum mt-[14px] text-md leading-none text-body">
+            <div className="tnum mt-[14px] text-md leading-none text-body" data-testid="dash-subline">
               {d
                 ? running
                   ? t.dashboard.subline(
                       `v${d.hunterTag ?? '—'}`,
-                      duration(d.uptimeSeconds ?? 0, locale),
+                      // **拿不到时长就不显示这一截**（I17 · P0-1）。后端现在只在 web
+                      // 探得通时给 `uptimeSeconds`，写 `?? 0` 会把「读不到」变成
+                      // 「已运行 0 秒」—— 那是编的（红线 1），0.1.17 的假时长就是这么来的。
+                      d.uptimeSeconds === null ? null : duration(d.uptimeSeconds, locale),
                       d.webUrl ?? '—',
                     )
                   : t.dashboard.sublineStopped(`v${d.hunterTag ?? '—'}`)
@@ -234,15 +262,93 @@ export function Dashboard() {
             </div>
           </div>
         </div>
-        <Button
-          variant="primary"
-          trailing={<ChevronRight />}
-          disabled={!d?.webUrl}
-          className="h-[46px] px-6 text-lg"
-          onClick={() => d?.webUrl && void ipc.openExternal(d.webUrl)}
-        >
-          {t.dashboard.openHunter}
-        </Button>
+        {/*
+          I17 · U1 / U2 / U3：**一级按钮组**。
+          用户 2026-09-29 的要求：启动/停止服务要在首页有明显大按钮、检查更新要是一级
+          入口、退出启动器要有个明显按钮。0.1.17 这三个都埋在卡片底部那排 `size="sm"`
+          小按钮里（和日志/备份/反馈/上传日志/更多挤在一起），**要滚动才看得见**。
+
+          层高统一用 `h-[46px] px-6 text-lg` —— 和原来那个「打开 Hunter」一模一样，
+          视觉上它们现在是同一档的东西。日志/备份/反馈/上传日志/更多 留在下面次要区，
+          语义一个都没动。
+        */}
+        <div className="flex shrink-0 flex-col items-end gap-[8px]">
+          <div className="flex flex-wrap items-center justify-end gap-[10px]">
+            {/* 起停二选一：在跑给「停止服务」，停着给「启动服务」。
+                两个方向相反的按钮并排会让用户点错，所以一次只出现一个 */}
+            {running ? (
+              <Button
+                variant="primary"
+                data-testid="stack-stop"
+                disabled={busy !== null}
+                className="h-[46px] px-6 text-lg"
+                onClick={() => void openStop()}
+              >
+                {busy === 'stop' ? t.common.working : t.dashboard.stopService}
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                data-testid="stack-start"
+                disabled={busy !== null}
+                className="h-[46px] px-6 text-lg"
+                onClick={() => void act('start')}
+              >
+                {busy === 'start'
+                  ? t.common.working
+                  : runtimeDown
+                    ? t.dashboard.runtimeDownStart
+                    : t.dashboard.startService}
+              </Button>
+            )}
+            <Button
+              data-testid="stack-restart"
+              disabled={busy !== null}
+              className="h-[46px] px-6 text-lg"
+              onClick={() => {
+                setPickedService('')
+                setDialog('restart')
+              }}
+            >
+              {busy === 'restart' ? t.common.working : t.common.restart}
+            </Button>
+            {/* U3：检查更新不再只靠环境卡片右上角那个小角标 —— 它现在是首页一级按钮。
+                查到 Hunter 有新版本时**按钮本身变强调态并带版本号**（方案 §三 U3） */}
+            <Button
+              variant={hasUpdate ? 'primary' : 'secondary'}
+              data-testid="open-update"
+              className="h-[46px] px-6 text-lg"
+              onClick={() => setOverlay('update')}
+            >
+              {hasUpdate && d?.latestTag
+                ? t.dashboard.checkUpdateNew(`v${d.latestTag}`)
+                : t.dashboard.checkUpdate}
+            </Button>
+            <Button
+              variant="primary"
+              trailing={<ChevronRight />}
+              disabled={!d?.webUrl}
+              className="h-[46px] px-6 text-lg"
+              onClick={() => d?.webUrl && void ipc.openExternal(d.webUrl)}
+            >
+              {t.dashboard.openHunter}
+            </Button>
+          </div>
+          {/*
+            U2：**「退出启动器」与「停止服务」必须分得开。**
+            退出＝只关这个窗口，Hunter 继续在后台跑（`quit_app` 已经没有任何地方
+            能传「一起停容器」了）；要让它不再占内存，用上面那个「停止服务」。
+            旁边这行小字是「不再询问」的代价换来的知情 —— 用户不再被提醒容器还占着内存。
+          */}
+          <div className="flex items-center gap-[10px]">
+            <span className="text-xs leading-[1.4] text-muted" data-testid="quit-hint">
+              {t.dashboard.quitHint}
+            </span>
+            <Button variant="ghost" data-testid="quit-launcher" className="h-[34px] px-4 text-sm" onClick={() => void ipc.quitApp()}>
+              {t.dashboard.quitLauncher}
+            </Button>
+          </div>
+        </div>
       </header>
 
       {/* R1：**磁盘上装过，但运行时问不出来**（内置虚拟机 / Docker 没在跑，
@@ -613,46 +719,14 @@ export function Dashboard() {
               )}
             </div>
           )}
+          {/*
+            I17 · U1 / U3：**起停 / 重启 / 检查更新 已经搬到头部一级按钮区**，
+            这里不再重复放一遍（同一件事有两个入口、其中一个还要滚动才看得见，
+            正是用户 2026-09-29 提的那条问题）。剩下这几个的语义一个都没动。
+          */}
           <div className="mt-auto flex flex-wrap gap-[10px] pt-4">
-            {/* 已经停了的时候主按钮是「启动」——「停止」在那儿没有意义。
-                R1：运行时问不出来的时候说的是「启动运行时」—— 这一步要先把内置
-                虚拟机 / Docker 起起来（`stack_op` 的 start 本来就含这一步），
-                按钮上就得说清这一点，免得用户以为点了没反应 */}
-            {running ? (
-              <Button size="sm" data-testid="stack-stop" disabled={busy !== null} onClick={() => void openStop()}>
-                {busy === 'stop' ? t.common.working : t.common.stop}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="primary"
-                data-testid="stack-start"
-                disabled={busy !== null}
-                onClick={() => void act('start')}
-              >
-                {busy === 'start'
-                  ? t.common.working
-                  : runtimeDown
-                    ? t.dashboard.runtimeDownStart
-                    : t.common.start}
-              </Button>
-            )}
-            <Button
-              size="sm"
-              data-testid="stack-restart"
-              disabled={busy !== null}
-              onClick={() => {
-                setPickedService('')
-                setDialog('restart')
-              }}
-            >
-              {busy === 'restart' ? t.common.working : t.common.restart}
-            </Button>
             <Button size="sm" onClick={() => setOverlay('logs')}>
               {t.common.logs}
-            </Button>
-            <Button size="sm" data-testid="open-update" onClick={() => setOverlay('update')}>
-              {t.update.hunterCheck}
             </Button>
             <Button size="sm" data-testid="open-backup" onClick={() => setOverlay('backup')}>
               {t.dashboard.openBackup}

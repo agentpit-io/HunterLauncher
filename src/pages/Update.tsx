@@ -10,7 +10,7 @@ import { isoToShanghai } from '../lib/format'
 import * as ipc from '../lib/ipc'
 import { bytes } from '../lib/format'
 import { useStore } from '../state/context'
-import type { BackupMeta, LauncherUpdate, UpgradeStatus } from '../lib/types'
+import type { BackupMeta, LauncherUpdate, Preflight, UpgradeStatus } from '../lib/types'
 
 /**
  * 更新页（技术方案 §5.6、§10）。视觉稿里没有这一页，按同一套设计令牌延展：
@@ -178,11 +178,42 @@ function HunterCard() {
     }, 1000)
   }
 
-  async function start(tag: string) {
+  /**
+   * **点「升级」之后先体检，再决定要不要真升**（I17 · §4.2②）。
+   *
+   * 0.1.17 的顺序是「先写新 `.env` → 再拉镜像」——配置先改了才发现拉不动，
+   * 客户 2026-09-29 那台的中间态就是这么留下的。现在这一步只探 manifest：
+   * 当前源有这一版就直接升（**不额外多问**，A4-3）；没有就把「换到哪个源、要下多少」
+   * 摆给用户，此刻 `.env` 与 `VERSION` **一个字节都还没动**。
+   */
+  async function preflightThenStart(tag: string) {
     setConfirm(false)
+    setChecking(true)
+    try {
+      const pf = await ipc.upgradePreflight(tag)
+      if (pf.currentOk) {
+        await start(tag)
+        return
+      }
+      setAsk(pf)
+    } catch (e) {
+      setSt({
+        running: false,
+        steps: [],
+        result: null,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  async function start(tag: string, registry?: string) {
+    setConfirm(false)
+    setAsk(null)
     setSt({ running: true, steps: [], result: null, error: null })
     try {
-      await ipc.upgradeHunter(tag)
+      await ipc.upgradeHunter(tag, registry)
       poll()
     } catch (e) {
       setSt({
@@ -196,6 +227,10 @@ function HunterCard() {
 
   const running = st?.running ?? false
   const [cancelling, setCancelling] = useState(false)
+  /** 前置体检进行中（几秒的事，按钮上要说一句） */
+  const [checking, setChecking] = useState(false)
+  /** 体检发现「当前源还没有这一版」时的那一问（I17 · §4.2②） */
+  const [ask, setAsk] = useState<Preflight | null>(null)
 
   /** 取消升级。后端收到之后会杀子进程、回滚配置，然后照常把结果写进 upgradeStatus。 */
   async function cancel() {
@@ -305,10 +340,14 @@ function HunterCard() {
             size="sm"
             variant="primary"
             data-testid="hunter-upgrade"
-            disabled={running}
+            disabled={running || checking}
             onClick={() => setConfirm(true)}
           >
-            {running ? t.update.hunterUpgrading : t.update.hunterUpgrade}
+            {running
+              ? t.update.hunterUpgrading
+              : checking
+                ? t.update.preflightChecking
+                : t.update.hunterUpgrade}
           </Button>
         )}
         {d?.notesUrl && (
@@ -332,15 +371,63 @@ function HunterCard() {
                 size="sm"
                 variant="primary"
                 data-testid="upgrade-go"
-                onClick={() => void start(d.latest!)}
+                disabled={checking}
+                onClick={() => void preflightThenStart(d.latest!)}
               >
-                {t.update.hunterUpgrade}
+                {checking ? t.update.preflightChecking : t.update.hunterUpgrade}
               </Button>
             </>
           }
         >
           <p className="leading-[1.6]">{t.update.backupNote('~/.hunter/backups/')}</p>
           <p className="mt-[12px] leading-[1.6] text-muted">{t.update.rollbackNote}</p>
+        </Modal>
+      )}
+
+      {/*
+        I17 · §4.2②：**前置体检**发现「当前镜像源上还没有这一版」。
+        这一刻 `.env` 与 `VERSION` 还是升级前那一份 —— 体检只探 manifest，什么都不改。
+        两个出路：换到探得通的那个源继续（说清要下多少）、或者稍后再升（什么都不改）。
+      */}
+      {ask && (
+        <Modal
+          testId="upgrade-preflight"
+          title={t.update.preflightTitle(ask.target)}
+          onClose={() => setAsk(null)}
+          footer={
+            <>
+              <Button size="sm" variant="ghost" data-testid="preflight-later" onClick={() => setAsk(null)}>
+                {t.update.preflightLater}
+              </Button>
+              {ask.offer && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  data-testid="preflight-switch"
+                  onClick={() => void start(ask.target, ask.offer!.id)}
+                >
+                  {t.update.preflightSwitch(ask.offer.label)}
+                </Button>
+              )}
+            </>
+          }
+        >
+          <p className="leading-[1.6]">{ask.reason ?? t.update.preflightTitle(ask.target)}</p>
+          {ask.offer ? (
+            <>
+              <p className="mt-[12px] leading-[1.6]">
+                {t.update.preflightOffer(ask.offer.label, ask.offer.prefix)}
+              </p>
+              <p className="tnum mt-[8px] leading-[1.6] text-muted">
+                {ask.offerBytes === null
+                  ? t.update.preflightSizeUnknown
+                  : t.update.preflightSize(bytes(ask.offerBytes))}
+              </p>
+            </>
+          ) : (
+            <p className="mt-[12px] leading-[1.6] text-muted">{t.update.preflightNoOffer}</p>
+          )}
+          <p className="mt-[12px] leading-[1.6] text-muted">{t.update.preflightNothingChanged}</p>
         </Modal>
       )}
     </Card>

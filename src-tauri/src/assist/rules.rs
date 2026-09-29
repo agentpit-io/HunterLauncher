@@ -875,8 +875,9 @@ mod tests {
         let s = diagnose(&r);
         assert_eq!(s.rule, "pull-failed-switch-registry");
         assert_eq!(s.actions[0].id, "switch_registry");
+        // I17 · U4：标题里的源名跟着 label 走，现在是「中国国内云服务」
         assert!(
-            s.actions[0].title.contains("腾讯云"),
+            s.actions[0].title.contains("中国国内云服务"),
             "{}",
             s.actions[0].title
         );

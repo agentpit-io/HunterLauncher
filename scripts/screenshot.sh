@@ -53,7 +53,15 @@ SETTLE="${SETTLE:-9}"
 #     看的是「不再被判成没装过」—— 进的是运行面板（不是欢迎页），
 #     顶上一块说清「装过、只是运行时没在跑」，主按钮是「启动运行时」
 #   dashboard-schedule-broken —— 定时备份根本没挂上的那条红横幅（0.1.15 界面上一个字都没有）
-PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
+# I17 新增四页：
+#   dashboard-interrupted-stopped —— **六个容器全停**的那种中间态（客户 2026-09-29 的现场
+#     HL-GFV764）。0.1.17 恰好判不出这一格：卡片不出现，面板反而说「点『启动』就能用」。
+#     和 dashboard-interrupted 分开截 —— 全停时回退目标与措辞都不一样
+#   update-no-tag —— 升级前置体检发现「当前源还没有这一版」（方案 §4.2②）。
+#     看的是**配置还没被改**的时候就把话说出来了，并且摆出换源要下多少
+#   quit-guard —— 升级进行中点退出被拦下的那一句（P0-4）。U2 之后这是唯一会弹的提示
+#   （dashboard 那一页这一轮也变了：起停/重启/检查更新/退出启动器 全在首屏一级按钮区）
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped update-no-tag quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
 
 mkdir -p "$OUT"
 [ -x "$BIN" ] || { echo "找不到可执行文件：$BIN"; exit 1; }

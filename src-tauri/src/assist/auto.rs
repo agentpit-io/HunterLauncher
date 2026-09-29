@@ -3071,7 +3071,7 @@ pub const AUTO_SYSTEM_PROMPT: &str = "\
 
 背景（实测过的事实）：
 - macOS 的 GUI 程序 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin，不含 /usr/local/bin，所以「终端里能跑 docker」不等于「启动器找得到 docker」。
-- 国内直连 ghcr.io 经常超时，腾讯云香港的源（id 是 tencent）一般能通。
+- 国内直连 ghcr.io 经常超时，国内镜像源（中国国内云服务，id 是 tencent）一般能通。
 - Hunter 要 5 个端口：web 3100、api 8100、opencode 3921、postgres 5442、redis 6479，被占时可以往上挪。
 - 启动器会**只读地**沿用用户在系统里配好的网络代理（直连失败时自动走一次代理重试，子进程与虚拟机也会带上）。所以「直连超时」这件事已经自动兜过一层了；不要提议去改代理、DNS、hosts —— 那些动作不存在，提了也只会被拒绝。
 - 这台电脑上没有 Docker 时，启动器会自动依次试三条路把它装好（内置运行时 → OrbStack 官方安装包 → Homebrew），**全部由启动器执行**。把这件事推给用户是不允许的，也没有这样的工具可调。

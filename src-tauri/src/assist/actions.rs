@@ -163,7 +163,7 @@ pub const ACTIONS: &[Spec] = &[
         id: "switch_registry",
         level: Level::Safe,
         title: "换一个镜像源",
-        why: "国内直连 ghcr.io 经常超时，换成腾讯云香港的镜像一般就通了",
+        why: "国内直连 ghcr.io 经常超时，换成国内镜像源（中国国内云服务）一般就通了",
         desc: "切换镜像源并写进设置。参数 registry 只能是候选源的 id（用 list 里给出的那些）。",
         params: &[("registry", "镜像源 id")],
         user_only: false,

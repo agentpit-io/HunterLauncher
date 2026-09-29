@@ -48,6 +48,10 @@ use crate::err::{AppError, AppResult, Code};
 use crate::flow::{self, AppState, InstallOptions};
 use crate::{linfo, lwarn, registry};
 
+/// 前置体检探一次 manifest 给多久。**比拉取短得多** —— 它只问一句
+/// 「这一版在这个源上有没有」，不下载任何一层。
+const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(12);
+
 /// Release 信息的缓存时长。方案 §11.3 写的就是 6 小时。
 ///
 /// **缓存不是优化，是必需**：GitHub 对未认证请求的限额是每小时 60 次，
@@ -257,15 +261,176 @@ pub fn check(current: &str, force: bool) -> UpgradeCheck {
     }
 }
 
+// ── 升级前置体检（I17 · §4.2②） ──────────────────────────────────────────
+
+/// 前置体检的结论。**只读**：探 manifest，不下载、不改任何配置。
+///
+/// ## 它为什么存在
+///
+/// 0.1.17 的顺序是「③ 先写新 `.env` 与新 compose → ⑤ 再拉镜像」——
+/// **配置先改了，才发现拉不动**。客户 2026-09-29 那次就是这么留下中间态的：
+/// 国内源当时还没有 v1.2.3（同步窗口差一次），启动器按设计换到 GHCR 重试，
+/// 而他在那中间点了退出。
+///
+/// `upgrade.rs:33-37` 那段注释原本的理由是「`pull` 本来就要做同样的事，
+/// 提前探一遍只是把网络往返做两次」。反过来说：探一次 manifest 只是一个很小的请求，
+/// 换来的是**在改配置之前就把「当前源还没有这一版」说出来** ——
+/// 让用户当场决定是等、是换源，而不是等它在拉取阶段以一句 `not found` 收场。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preflight {
+    pub target: String,
+    /// 现在用的源（界面上显示的名字）
+    pub current_label: String,
+    pub current_prefix: String,
+    /// 现在这个源上有这一版吗
+    pub current_ok: bool,
+    /// 现在这个源没有时，另一个能通的源（都没有就是 `None`）
+    pub offer: Option<SwapOffer>,
+    /// 换到 `offer` 那个源之后大概要下多少字节（读不到 manifest 就是 `None`，不编）
+    pub offer_bytes: Option<u64>,
+    /// 当前源上没有这一版的原因原话（探得通时是 `None`）
+    pub reason: Option<String>,
+}
+
+/// 「换到哪个源能通」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapOffer {
+    /// 候选源 id（写进 `launcher.toml` 的那一个）
+    pub id: String,
+    pub label: String,
+    pub prefix: String,
+}
+
+/// 体检之后该走哪条路。**纯判据，好测**。
+///
+/// * [`Verdict::Proceed`] —— 当前源有这一版。**照原路走，不新增阻塞、不新增提问**（A4-3）。
+/// * [`Verdict::OfferSwap`] —— 当前源没有、另一个源有。把「换到哪个源、要下多少」交给用户定。
+/// * [`Verdict::Nowhere`] —— 两个源都没有。**如实说**，别让它在拉取阶段以 `not found` 收场。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Proceed,
+    OfferSwap,
+    Nowhere,
+}
+
+pub fn preflight_verdict(current_ok: bool, other_ok: bool) -> Verdict {
+    match (current_ok, other_ok) {
+        (true, _) => Verdict::Proceed,
+        (false, true) => Verdict::OfferSwap,
+        (false, false) => Verdict::Nowhere,
+    }
+}
+
+/// 一个镜像源上有没有 `tag` 这一版。**只看 manifest**，不下载任何一层
+/// （`registry::compressed_size` 就是干这个的：它要把多架构 index 里本机那一份
+/// 挑出来，所以顺带证明了 tag 在不在）。
+///
+/// 自定义源没有探测用的仓库路径，探不了 —— 返回 `Err` 让调用方如实说出来，**不猜**。
+fn has_tag(c: &registry::Candidate, tag: &str) -> AppResult<bool> {
+    if c.probe_repo.is_empty() {
+        return Err(AppError::new(
+            Code::PullFailed,
+            format!("「{}」是自定义源，没有配探测用的仓库路径，探不了", c.label),
+        ));
+    }
+    let arch = registry::oci_arch();
+    match registry::compressed_size(&c.host, &c.probe_repo, tag, arch, PREFLIGHT_TIMEOUT) {
+        Ok(_) => Ok(true),
+        // 404 是「这个源上没有这一版」，是**结论**不是错误；其余（网络、401）也一律
+        // 当成「没有」—— 但它们的原因要带回去给用户看，所以下面把原话拼进 reason
+        Err(_) => Ok(false),
+    }
+}
+
+/// 当前配置用的是哪个候选源。自定义源（`registry_id == "custom"`）也认得出来。
+fn current_candidate(cfg: &config::LauncherConfig) -> registry::Candidate {
+    registry::by_id(&cfg.hunter.registry_id)
+        .cloned()
+        .unwrap_or_else(|| registry::custom(&cfg.hunter.registry_prefix))
+}
+
+/// 换到 `offer` 那个源之后大概要下多少。读不到就是 `None`（红线 1：不编一个数字）。
+fn estimate_bytes(prefix: &str, base_prefix: &str, tag: &str) -> Option<u64> {
+    let specs = config::images(prefix, base_prefix, tag);
+    let arch = registry::oci_arch();
+    let mut total = 0u64;
+    let mut any = false;
+    for s in &specs {
+        if let Ok(n) = registry::compressed_size(&s.host, &s.repo, &s.tag, arch, PREFLIGHT_TIMEOUT) {
+            total += n;
+            any = true;
+        }
+    }
+    any.then_some(total)
+}
+
+/// 去探一次。**只读**：不碰容器、不碰卷、不改配置。
+pub fn preflight(cfg: &config::LauncherConfig, target: &str) -> Preflight {
+    let cur = current_candidate(cfg);
+    let (current_ok, reason) = match has_tag(&cur, target) {
+        Ok(true) => (true, None),
+        Ok(false) => (
+            false,
+            Some(format!(
+                "「{}」上没有 v{target} 这一版（manifest 探不到）",
+                cur.label
+            )),
+        ),
+        // 自定义源探不了 —— **不拦**（我们不知道它有没有），但把话说清楚
+        Err(e) => (true, Some(format!("跳过体检：{}", e.msg))),
+    };
+    if current_ok {
+        return Preflight {
+            target: target.to_string(),
+            current_label: cur.label.to_string(),
+            current_prefix: cur.prefix.to_string(),
+            current_ok: true,
+            offer: None,
+            offer_bytes: None,
+            reason,
+        };
+    }
+    // 当前源没有 → 顺手看看另一个候选源有没有，把「换到哪个能通」一起算出来
+    let mut offer = None;
+    let mut offer_bytes = None;
+    for c in registry::CANDIDATES.iter() {
+        if c.id == cur.id {
+            continue;
+        }
+        if has_tag(c, target).unwrap_or(false) {
+            offer_bytes = estimate_bytes(&c.prefix, &c.base_prefix, target);
+            offer = Some(SwapOffer {
+                id: c.id.to_string(),
+                label: c.label.to_string(),
+                prefix: c.prefix.to_string(),
+            });
+            break;
+        }
+    }
+    Preflight {
+        target: target.to_string(),
+        current_label: cur.label.to_string(),
+        current_prefix: cur.prefix.to_string(),
+        current_ok: false,
+        offer,
+        offer_bytes,
+        reason,
+    }
+}
+
 // ── 升级 ──────────────────────────────────────────────────────────────────
 
 /// 把 Hunter 升到 `target` 这个 tag。失败自动回滚到升级前那一整套配置。
 ///
 /// `note` 收每一步的文字（界面上的步骤条与 headless 的终端输出共用它），
-/// `on_pull` 收拉取进度。
+/// `on_pull` 收拉取进度，`switch_registry` 是**用户已经在前端选定**要换过去的源 id
+/// （I17 · §4.2②：界面上先体检、给了「换到 X 继续 / 稍后再升」，这里收的就是那个答案）。
 pub fn upgrade(
     state: &AppState,
     target: &str,
+    switch_registry: Option<&str>,
     mut note: impl FnMut(&str),
     on_pull: impl FnMut(&PullProgress),
 ) -> AppResult<UpgradeResult> {
@@ -300,6 +465,73 @@ pub fn upgrade(
         new_yml.len()
     ));
 
+    // ①.5 **前置体检**（I17 · §4.2②）：在改任何配置之前，先问一句
+    // 「当前这个源上到底有没有这一版」。
+    //
+    // 0.1.17 是先改配置（③）再拉（⑤），于是「拉不动」这件事只能在配置已经
+    // 被改掉之后才发现 —— 客户 2026-09-29 那台就是在那一刻退出的，中间态就此留下。
+    // 这一步只探 manifest、只读，探不通就直接停在这里，**一个字节的配置都不动**。
+    let mut cfg_work = cfg0.clone();
+    if let Some(id) = switch_registry {
+        // 用户在前端已经看到「当前源没有这一版」，并选了换到另一个源
+        let c = registry::by_id(id).ok_or_else(|| {
+            AppError::new(Code::UpdateFailed, format!("不认识的镜像源 id：{id}"))
+        })?;
+        cfg_work.apply_registry(c);
+        note(&format!(
+            "按你的选择把镜像源换成「{}」（{}）",
+            c.label, c.prefix
+        ));
+    }
+    let pf = preflight(&cfg_work, target);
+    match preflight_verdict(pf.current_ok, pf.offer.is_some()) {
+        Verdict::Proceed => {
+            if let Some(r) = &pf.reason {
+                // 自定义源探不了：跳过体检这件事**要说出来**，不能装作探过了
+                note(r);
+            }
+        }
+        Verdict::OfferSwap => {
+            let o = pf.offer.as_ref().expect("OfferSwap 必然带一个出路");
+            let size = pf
+                .offer_bytes
+                .map(flow::human_bytes)
+                .unwrap_or_else(|| "大小读不到".to_string());
+            // 走到这里说明前端**没有**先体检过（headless / 直接调用）。
+            // 不静默替用户换源：换源会改 launcher.toml 与 .env 里的镜像地址，
+            // 那是用户的配置，得他说了算。
+            return Err(AppError::new(
+                Code::UpdateFailed,
+                format!(
+                    "「{}」上还没有 v{target} 这一版，先不升级（配置一个字节都没改）。\
+                     换到「{}」可以继续，要下大约 {size}；\
+                     命令行下加 `--registry {}` 就是这个意思，界面上会直接问你要不要换。",
+                    pf.current_label, o.label, o.id
+                ),
+            ));
+        }
+        Verdict::Nowhere => {
+            return Err(AppError::new(
+                Code::UpdateFailed,
+                format!(
+                    "两个镜像源上都还没有 v{target} 这一版，先不升级（配置一个字节都没改）。\
+                     国内源每 6 小时同步一次，发布之后可能要等下一个窗口；\
+                     可以用 scripts/verify-mirrors.sh {target} 确认两源齐了没有。",
+                ),
+            ));
+        }
+    }
+    // 体检通过、而且用户选过换源 —— **到这一刻才把新源落盘**
+    if cfg_work.hunter.registry_id != cfg0.hunter.registry_id {
+        cfg_work.save()?;
+        state.set_config(cfg_work.clone());
+        linfo!(
+            "升级前把镜像源换成 {}（{}）",
+            cfg_work.hunter.registry_id,
+            cfg_work.hunter.registry_prefix
+        );
+    }
+
     // ② 备份
     note("正在备份（数据库 + 配置）…");
     let backup = crate::backup::create(crate::backup::Kind::PreUpgrade, &from, &mut note)?;
@@ -320,8 +552,9 @@ pub fn upgrade(
     }
 
     // ─── 从这里开始，失败要回滚 ───
-    let r = do_upgrade(state, &cfg0, target, &new_yml, &mut note, on_pull);
-    match r {
+    // 用 `cfg_work`（可能换过源）；回滚仍然用 `cfg0` —— 失败就该连源一起回到升级前
+    let r = do_upgrade(state, &cfg_work, target, &new_yml, &mut note, on_pull);
+    let out = match r {
         Ok(()) => {
             let mut cfg = state.config();
             cfg.hunter.tag = target.to_string();
@@ -429,7 +662,12 @@ pub fn upgrade(
                 format!("升到 v{target} 失败：{}。{tail}", e.msg),
             ))
         }
-    }
+    };
+    // 三个分支（成功 / 取消回滚 / 失败回滚）都在上面走完了该走的收尾，
+    // **到这里才把「退出会留下中间态」那个标记撤掉**（I17 · P0-4）：
+    // 回滚本身也是改配置，回滚到一半被退掉同样会留下说不清的现场。
+    state.disarm_upgrade();
+    out
 }
 
 /// ③④⑤⑥ —— 真正会改变现状的那几步。任何一处出错都由调用方回滚。
@@ -447,6 +685,13 @@ fn do_upgrade(
     let mut cfg = cfg0.clone();
     cfg.hunter.tag = target.to_string();
     flow::rewrite_env_and_override(state, &cfg, target)?;
+    // **从这里开始，退出会留下中间态**（I17 · P0-4）。
+    //
+    // 客户 2026-09-29 那次就是在下一步（拉镜像）里点了「应用退出」：进程一死，
+    // 下面那条会回滚的取消路径根本不会跑，于是 `.env` 已经是 1.2.3、镜像不齐、
+    // 容器全停 —— 一个说不清的中间态。三条退出入口都读这个标记，在这个窗口里
+    // 先问一句。（第 ③ 步之前失败时什么都没改，那时候退出不该弹任何东西。）
+    state.arm_upgrade(target);
     note(&format!(
         "已写入新的 compose 与 .env（HUNTER_VERSION={target}，端口不变）"
     ));
@@ -689,8 +934,10 @@ pub fn judge_interrupted(
             "正在跑的 {} 个容器用的是 v{rt}",
             running_tags.len()
         )),
+        // 这一行原来写的是 `**…**`。界面上没有任何 Markdown 渲染器（`i18n.test.ts`
+        // 那条测试讲的就是这件事），所以用户看到的是四个星号。I17 顺手去掉。
         None => lines.push(format!(
-            "**{} 个容器现在都停着**（一个在跑的都没有，所以没有「正在用的版本」可比）",
+            "{} 个容器现在都停着（一个在跑的都没有，所以没有「正在用的版本」可比）",
             crate::selfcheck::EXPECTED.len()
         )),
     }
@@ -863,6 +1110,49 @@ pub fn revert_to_running(
     Ok(msg)
 }
 
+// ── 升级进行中的退出拦截（I17 · P0-4） ────────────────────────────────────
+
+/// 「现在退出会留下一个说不清的中间态」那一句话，连带它说的是哪一版。
+///
+/// 界面拿到它就弹一个框：**继续退出**（用户说了算）或
+/// **取消升级并回滚后再退出**（复用既有的取消路径）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuitGuard {
+    /// 这一轮正在升到的那一版
+    pub target_tag: String,
+    /// 一句话说清现在退出会怎样
+    pub headline: String,
+    /// 两条出路各是什么意思
+    pub body: String,
+}
+
+/// 纯判据：**升级正卡在「配置已经改了、还没收尾」那一段时给一句话，否则 `None`。**
+///
+/// 这个窗口只有一段（第 ③ 步写配置之后 → 成功 / 回滚收尾之前），
+/// 判据就一个布尔量 —— 它在 [`crate::flow::AppState::upgrade_armed`] 里。
+/// 单独抽成函数是为了**考得了**：
+///
+/// * 没有升级在跑 → `None`。**这是 A4-6 的判据层**：常规退出一个提示都不许有，
+///   0.1.17 那条「退出时问要不要一起停容器」的链路已经整个删掉了，
+///   这里再守住「不升级就不说话」。
+/// * 升级进行中（已经改了配置）→ `Some`，且句子里带上是哪一版。
+///
+/// 注意它**不看有没有容器在跑**：客户那次六个容器全停着，照样是中间态。
+pub fn quit_guard(armed_tag: Option<&str>) -> Option<QuitGuard> {
+    let target = armed_tag.map(str::trim).filter(|t| !t.is_empty())?;
+    Some(QuitGuard {
+        target_tag: target.to_string(),
+        headline: format!("正在升级到 v{target}，现在退出会留下一个说不清的中间态"),
+        body: format!(
+            "升级已经改写了配置（`.env` 与 compose 都指向 v{target}），\
+             但这一轮还没跑完。现在退出的话，回滚那一步不会执行 —— \
+             机器会停在「配置是新版本、镜像还没拉齐」这种状态里，下次打开要多处理一次。\
+             要中断请点「取消升级并回滚后再退出」（会把配置写回升级前那一份）。"
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,6 +1254,73 @@ mod tests {
         // 有人在启动器之外把它起来了（或手工改了 launcher.toml 之外的配置）：
         // 配置与正在跑的一致，那就不是「升级没做完」
         assert!(judge_interrupted("1.2.2", "1.2.0", &running("1.2.2"), &["web".into()]).is_none());
+    }
+
+    // ── 前置体检（I17 · §4.2②） ────────────────────────────────────────
+
+    /// **A4-3 的判据层：当前源有这一版就照原路走，不额外多问、不额外阻塞。**
+    #[test]
+    fn 当前源有这一版就直接升级不问() {
+        assert_eq!(preflight_verdict(true, true), Verdict::Proceed);
+        // 另一个源有没有都不影响 —— 当前源能拉就绝不多问一句
+        assert_eq!(preflight_verdict(true, false), Verdict::Proceed);
+    }
+
+    /// **A4-2 的判据层：当前源没有、另一个源有 → 把「换到哪个源」摆给用户。**
+    #[test]
+    fn 当前源没有而另一个源有就摆出换源这条路() {
+        assert_eq!(preflight_verdict(false, true), Verdict::OfferSwap);
+    }
+
+    /// 两个源都没有：如实说，别让它在拉取阶段以一句 `not found` 收场。
+    #[test]
+    fn 两个源都没有时如实说而不是硬拉() {
+        assert_eq!(preflight_verdict(false, false), Verdict::Nowhere);
+    }
+
+    /// 体检的结论结构：当前源探得通时不带任何出路（界面据此**不问**）。
+    #[test]
+    fn 体检结论在当前源可用时不带出路() {
+        let ok = Preflight {
+            target: "1.2.4".into(),
+            current_label: "中国国内云服务".into(),
+            current_prefix: "hkccr.ccs.tencentyun.com/agentpit".into(),
+            current_ok: true,
+            offer: None,
+            offer_bytes: None,
+            reason: None,
+        };
+        assert!(ok.offer.is_none());
+        assert!(ok.reason.is_none());
+        assert_eq!(
+            preflight_verdict(ok.current_ok, ok.offer.is_some()),
+            Verdict::Proceed
+        );
+    }
+
+    // ── 升级进行中的退出拦截（I17 · P0-4） ──────────────────────────────
+
+    /// **A4-6 的判据层：不在升级里，退出就是退出，一个提示都不许有。**
+    ///
+    /// 这一条是防回归的主防线 —— U2 把 0.1.17 那条「退出时问要不要一起停容器」
+    /// 整个删掉了，谁要是再把「有没有容器在跑」当成问不问的判据，这里会先红。
+    #[test]
+    fn 没有升级在跑时退出不弹任何提示() {
+        assert!(quit_guard(None).is_none(), "常规退出不该弹任何东西");
+        assert!(quit_guard(Some("")).is_none(), "空字符串等于没有");
+        assert!(quit_guard(Some("   ")).is_none(), "只有空白也等于没有");
+    }
+
+    /// A4-5 的判据层：升级拉取进行中（配置已改写）点退出 → 有那一句话，
+    /// 且句子里带上是哪一版 —— 用户得知道自己正要放弃的是什么。
+    #[test]
+    fn 升级进行中退出要给一句话并带上版本() {
+        let g = quit_guard(Some("1.2.4")).expect("升级中退出必须被拦一下");
+        assert_eq!(g.target_tag, "1.2.4");
+        assert!(g.headline.contains("1.2.4"), "{}", g.headline);
+        // 两条出路都要在话里说清：继续退出会怎样、取消升级会怎样
+        assert!(g.body.contains("取消升级"), "{}", g.body);
+        assert!(g.body.contains("写回"), "{}", g.body);
     }
 
     #[test]

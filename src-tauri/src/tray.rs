@@ -12,10 +12,14 @@
 //! 2. **状态项不可点**，它就是一行字：`运行中 · 6/6 健康` / `已停止` / `启动中…`。
 //!    后台每 5 秒问一次 `docker compose ps` 刷新它，同时刷新托盘的 tooltip。
 //!    刷新用的是和运行面板同一套 `compose::ps()`，不另开一套判定。
-//! 3. **退出要问一句**。方案原文：「退出时若容器运行中，询问『保持后台运行』或『一起停止』」。
-//!    这个询问做成**界面里的弹窗**而不是系统对话框：一来风格和其余页面一致，
-//!    二来 Xvfb 下截得了图、点得动，验收时能真验（系统对话框在无桌面环境里没法自动点）。
-//!    托盘点「退出」时先把主窗口叫出来再弹这个框。
+//! 3. ~~**退出要问一句**~~ —— **I17 · U2 把这一条删了**。方案原文写的是
+//!    「退出时若容器运行中，询问『保持后台运行』或『一起停止』」，用户 2026-09-29
+//!    明确要求「关闭应用默认不关闭服务，不要再提醒用户选择」。现在：
+//!    退出＝直接退出，容器继续在后台跑；托盘这一项和右上角红点、运行面板上的
+//!    「退出启动器」按钮走**同一个**判定点（`commands::request_quit`）。
+//!
+//!    唯一保留提示的是**升级进行中**那一个窗口（I17 · P0-4）：那时候退出会在机器上
+//!    留下一个说不清的中间态，得先问一句。见 [`EV_UPGRADE_QUIT_GUARD`]。
 //!
 //! ## Xvfb 下的已知限制
 //!
@@ -69,8 +73,13 @@ pub const MENU_IDS: [&str; 12] = [
 
 /// 前端监听的事件名。托盘只负责「把人带到那一页」，具体的界面逻辑在前端。
 pub const EV_NAVIGATE: &str = "hunter://navigate";
-/// 退出询问：前端收到就弹「保持后台运行 / 一起停止」。
-pub const EV_QUIT_REQUEST: &str = "hunter://quit-request";
+/// **升级进行中被拦下的那一次退出**（I17 · P0-4）：前端收到就弹一句话，
+/// 两个动作 —— 「继续退出」与「取消升级并回滚后再退出」。
+///
+/// 注意它和 0.1.17 的 `EV_QUIT_REQUEST`（「保持后台运行 / 一起停止」）**不是一回事**，
+/// 那条链路按 U2 的要求已经整个删掉了：这个只在**升级进行中**这一个窗口里出现，
+/// 常规退出一个提示都没有（A4-6）。
+pub const EV_UPGRADE_QUIT_GUARD: &str = "hunter://upgrade-quit-guard";
 /// 托盘触发的栈操作有了结果，让运行面板刷新一次。
 pub const EV_TRAY_ACTION: &str = "hunter://tray-action";
 
@@ -451,15 +460,10 @@ pub fn run_action<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let _ = app.emit(EV_TRAY_ACTION, msg);
         }
         Action::RequestQuit => {
-            // 容器还在跑就把窗口叫出来问一句；没在跑就直接退
-            let running = compose::is_up();
-            crate::linfo!("托盘退出：容器在运行={running}");
-            if running {
-                show_main(app);
-                let _ = app.emit(EV_QUIT_REQUEST, true);
-            } else {
-                app.exit(0);
-            }
+            // I17 · U2：托盘的「退出」**不再问要不要一起停容器**（用户 2026-09-29 的决定），
+            // 和右上角红点、面板上的「退出启动器」走同一个判定点。
+            // 唯一会拦一下的是升级进行中（P0-4），那时 request_quit 会发事件让界面弹一句。
+            crate::commands::request_quit(app);
         }
     }
 }
@@ -479,7 +483,8 @@ fn check_launcher_update_blocking<R: Runtime>(app: &AppHandle<R>) -> String {
     }
 }
 
-fn show_main<R: Runtime>(app: &AppHandle<R>) {
+/// 把主窗口叫到前面来。退出被拦下（P0-4）时也用它 —— 那句话得让用户看见。
+pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
