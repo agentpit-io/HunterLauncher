@@ -870,6 +870,68 @@ pub fn write_version_file(tag: &str) {
     }
 }
 
+/// `.env` 里写的 `HUNTER_VERSION` —— **配置意图的那一版**（I17 · P0-3）。
+///
+/// 和 [`crate::selfcheck::missing_config_images`] 读的是同一个字段，但那个函数
+/// 读不到时会退回 `launcher.toml` 的 `hunter.tag`（它要拿一个版本来查镜像），
+/// 于是「读不到」与「就是这一版」在那里分不开。这里要分的正是这件事：
+/// **读不到就返回 `None`，不猜**（红线 1）。
+fn env_config_tag() -> Option<String> {
+    config::parse_env_file(&crate::paths::env_file())
+        .get("HUNTER_VERSION")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// **启动成功之后，把「配置比 `launcher.toml` 超前」这处不一致补齐**（I17 · A3-4）。
+///
+/// 现场长这样：`.env` 已经写成 v1.2.3、1.2.3 的四个镜像也都在本机、六个容器全停着，
+/// 而 `launcher.toml` 的 `hunter.tag` 还停在 1.2.2 —— 上一次升级只走到第 ③ 步
+/// （写配置）就断了，第 ⑥ 步之后那句「升级成功，记下新版本」从来没执行过。
+///
+/// 这一轮是**真的用 1.2.3 的镜像起来的**，跑着的就是 1.2.3，所以把记录改成 1.2.3 是
+/// 如实记账，不是猜。不补的话面板会一直显示一个比实际旧的版本号，而且
+/// 「配置版 ≠ `hunter.tag`」这个判据会让每一屏都带着一处本来已经被解决的不一致。
+///
+/// 判据只有一条：**配置那一版的镜像确实齐**。不齐就什么都不做 —— 那正是
+/// 「上一次升级没做完」，该由卡片去问人，不该在这里悄悄改写记录。
+fn catch_up_config_tag(cfg: &mut config::LauncherConfig) {
+    let Some(tag) = decide_catch_up(
+        env_config_tag().as_deref(),
+        &cfg.hunter.tag,
+        // `missing_config_images()` 返回 `Some` ＝ 配置那一版还缺镜像 ⇒ 中间态，别动
+        crate::selfcheck::missing_config_images().is_some(),
+    ) else {
+        return;
+    };
+    crate::linfo!(
+        "启动成功：.env 是 v{tag}、镜像也齐，把 launcher.toml 的版本记录从 v{} 补齐到 v{tag}",
+        cfg.hunter.tag
+    );
+    cfg.hunter.tag = tag;
+}
+
+/// [`catch_up_config_tag`] 的判据，单独抽出来是为了**考得了**（总控规则第五节：
+/// 纯函数才算真测试）。三种情况各一条断言，见 `catch_up` 那组用例。
+///
+/// 返回「应当记成哪一版」；`None` ＝ 什么都不改。
+pub fn decide_catch_up(
+    env_tag: Option<&str>,
+    config_tag: &str,
+    config_images_missing: bool,
+) -> Option<String> {
+    let tag = env_tag.map(str::trim).filter(|t| !t.is_empty())?;
+    if tag == config_tag.trim() {
+        return None;
+    }
+    // **缺镜就不补**：那正是「上一次升级没做完」，该由中断卡片去问人。
+    // 在这里把记录改掉等于把中间态抹平，卡片就再也不出现了。
+    if config_images_missing {
+        return None;
+    }
+    Some(tag.to_string())
+}
+
 /// 卡住之后该怎么办（I16）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StallDecision {
@@ -950,6 +1012,8 @@ pub fn start(
             // `adopted = false` —— 这一条是安装流程自己走完写的，不是「检测到它在跑」补的
             cfg.mark_installed(false);
             cfg.touch_healthy();
+            // I17 · A3-4：配置超前但镜像齐的那一档，起来之后把版本记录补齐
+            catch_up_config_tag(&mut cfg);
             let _ = cfg.save();
             state.set_config(cfg.clone());
             // I13 · R6：装完就把每天的自动备份挂上（默认开）。
@@ -1597,6 +1661,42 @@ mod tests {
             assert!(!running_now(p, true), "{p:?} 不该说在跑");
             assert!(!running_now(p, false), "{p:?} 不该说在跑");
         }
+    }
+
+    // ── 启动成功后补齐版本记录（I17 · A3-4） ────────────────────────────
+
+    /// A3-4 的现场：配置 1.2.3、1.2.3 的镜像齐、六个容器全停着，
+    /// 而 `launcher.toml` 还停在 1.2.2。起来之后要记成 1.2.3。
+    #[test]
+    fn 配置超前而镜像齐_起来之后补齐版本记录() {
+        assert_eq!(
+            decide_catch_up(Some("1.2.3"), "1.2.2", false),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    /// **缺镜就一个字都不许改。** 那正是「上一次升级没做完」，
+    /// 该由中断卡片去问人；在这里把记录改成 1.2.3 等于把中间态抹平，
+    /// 卡片从此不出现（P0-3 修的就是这件事，不能在这里又漏回去）。
+    #[test]
+    fn 配置超前但缺镜_不补记录() {
+        assert_eq!(decide_catch_up(Some("1.2.3"), "1.2.2", true), None);
+    }
+
+    /// 配置与记录一致 → 没什么可补的（这是绝大多数机器上的常态）。
+    #[test]
+    fn 配置与记录一致_什么都不做() {
+        assert_eq!(decide_catch_up(Some("1.2.2"), "1.2.2", false), None);
+    }
+
+    /// 读不到 / 空串 → 不猜（红线 1）。`VERSION` 文件与 `.env` 都可能没有这一项。
+    #[test]
+    fn 读不到配置版本就不补() {
+        assert_eq!(decide_catch_up(None, "1.2.2", false), None);
+        assert_eq!(decide_catch_up(Some(""), "1.2.2", false), None);
+        assert_eq!(decide_catch_up(Some("   "), "1.2.2", false), None);
+        // 前后空白要按去空白之后比 —— `.env` 里手写时常带空格
+        assert_eq!(decide_catch_up(Some(" 1.2.2 "), "1.2.2", false), None);
     }
 
     // ── 卡住之后换不换源（I16 · P0-1） ──────────────────────────────────

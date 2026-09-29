@@ -358,7 +358,8 @@ fn estimate_bytes(prefix: &str, base_prefix: &str, tag: &str) -> Option<u64> {
     let mut total = 0u64;
     let mut any = false;
     for s in &specs {
-        if let Ok(n) = registry::compressed_size(&s.host, &s.repo, &s.tag, arch, PREFLIGHT_TIMEOUT) {
+        if let Ok(n) = registry::compressed_size(&s.host, &s.repo, &s.tag, arch, PREFLIGHT_TIMEOUT)
+        {
             total += n;
             any = true;
         }
@@ -474,9 +475,8 @@ pub fn upgrade(
     let mut cfg_work = cfg0.clone();
     if let Some(id) = switch_registry {
         // 用户在前端已经看到「当前源没有这一版」，并选了换到另一个源
-        let c = registry::by_id(id).ok_or_else(|| {
-            AppError::new(Code::UpdateFailed, format!("不认识的镜像源 id：{id}"))
-        })?;
+        let c = registry::by_id(id)
+            .ok_or_else(|| AppError::new(Code::UpdateFailed, format!("不认识的镜像源 id：{id}")))?;
         cfg_work.apply_registry(c);
         note(&format!(
             "按你的选择把镜像源换成「{}」（{}）",

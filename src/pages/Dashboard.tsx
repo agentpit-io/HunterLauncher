@@ -324,15 +324,23 @@ export function Dashboard() {
                 ? t.dashboard.checkUpdateNew(`v${d.latestTag}`)
                 : t.dashboard.checkUpdate}
             </Button>
-            <Button
-              variant="primary"
-              trailing={<ChevronRight />}
-              disabled={!d?.webUrl}
-              className="h-[46px] px-6 text-lg"
-              onClick={() => d?.webUrl && void ipc.openExternal(d.webUrl)}
-            >
-              {t.dashboard.openHunter}
-            </Button>
+            {/*
+              A1-1：**网页打不开的时候这个按钮根本不出现**（不是变灰）。
+              后端只在 `webOk` 为真时才给 `webUrl`，所以「有没有 URL」就是
+              「网页能不能打开」的权威答案。0.1.17 是「顶着绿点给一个可点的
+              打开 Hunter，点过去 ERR_CONNECTION_REFUSED」—— 客户说的「空白页」。
+              留一个灰按钮在那儿仍然在暗示「这里本该能点」，不如不给。
+            */}
+            {d?.webUrl && (
+              <Button
+                variant="primary"
+                trailing={<ChevronRight />}
+                className="h-[46px] px-6 text-lg"
+                onClick={() => void ipc.openExternal(d.webUrl!)}
+              >
+                {t.dashboard.openHunter}
+              </Button>
+            )}
           </div>
           {/*
             U2：**「退出启动器」与「停止服务」必须分得开。**
