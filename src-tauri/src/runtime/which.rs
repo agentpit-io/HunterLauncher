@@ -257,6 +257,12 @@ pub fn builtin_dirs() -> Vec<&'static str> {
             r"C:\Program Files\Docker\Docker\resources\bin",
             r"C:\Program Files\Docker\Docker\resources",
             r"~\AppData\Local\Programs\Docker\Docker\resources\bin",
+            // I18 · P0-1：**Docker Desktop 自己的可执行文件**就在这一层
+            // （`Docker Desktop.exe`，不是 CLI）。「装了没在跑」时要替用户把它点起来，
+            // 走的正是这个定位器 —— 所以它的安装目录得在清单里。
+            // 排在几个 `resources\bin` 之后：它们探的是 docker CLI，优先级更高
+            r"C:\Program Files\Docker\Docker",
+            r"~\AppData\Local\Programs\Docker\Docker",
             r"C:\ProgramData\DockerDesktop\version-bin",
             r"~\.docker\bin",
             r"C:\Program Files\RedHat\Podman",

@@ -339,6 +339,14 @@ impl PullAggregator {
 
     pub fn set_attempt(&mut self, n: u32) {
         self.attempt = n;
+        // 换了源，速度样本就不再是同一回事了 —— **作废重算**（I18 · U5 §3.3③）。
+        //
+        // 不清掉的话，那个 20 秒的滑动窗口会把两条完全不同的链路掺在一起：
+        // 国内源上 404 秒回的那一段（`transferred` 没涨、时间在走）会把新源刚起来
+        // 那几秒算成「很慢」，ETA 跟着变大；反过来也一样能虚高。
+        // 清掉之后 `speed` / `eta` 自然回到 `None`，界面上就是那句
+        // 「剩余时间未知」，等新样本攒够了自己再出来 —— 不编数字。
+        self.samples.clear();
     }
 
     /// 吃一行原始输出。**解析不了的行直接丢弃**，不报错 ——
@@ -2282,6 +2290,48 @@ mod tests {
         let specs = config::images("ghcr.io/agentpit-io", "docker.io/library", tag);
         let m: BTreeMap<String, u64> = sizes.iter().map(|(k, v)| ((*k).to_string(), *v)).collect();
         PullAggregator::new(&specs, &m, "ghcr.io/agentpit-io", "GHCR · GitHub")
+    }
+
+    /// **I18 · U5 §3.3③：换了源，速度样本要作废重算。**
+    ///
+    /// 那个 20 秒的滑动窗口会把两条完全不同的链路掺在一起：国内源上 404 秒回的那一段
+    /// （`transferred` 没涨、时间在走）会把新源刚起来那几秒算成「很慢」，ETA 跟着变大。
+    /// 用户看不到任何解释，只会以为「换了源还是这么慢」。
+    ///
+    /// 清掉样本之后 `speed` / `eta` 自然回到 `None`，界面上就是那句「剩余时间未知」——
+    /// 等新样本攒够了自己再出来。**宁可少显示一个数，也不显示一个错的数。**
+    #[test]
+    fn 换源之后速度样本作废重算() {
+        let mut a = agg_for("1.2.2", &[("web", 748_000_000)]);
+        a.feed(r#"{"id":"L1","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Downloading","current":1000000,"total":748000000}"#);
+        // 采样是在 `snapshot` 里推的，所以要先取一次样，第二个样本才有得比
+        let _ = a.snapshot(PullPhase::Pulling, None);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        a.feed(r#"{"id":"L1","parent_id":"Image ghcr.io/agentpit-io/hunter-community-web:1.2.2","status":"Working","text":"Downloading","current":3000000,"total":748000000}"#);
+        let before = a.snapshot(PullPhase::Pulling, None);
+        assert!(
+            before.speed_bps.is_some(),
+            "攒够一秒的样本之后该有速度：{before:?}"
+        );
+        assert!(
+            before.eta_seconds.is_some(),
+            "有速度、也有剩余字节，该有 ETA"
+        );
+
+        // 换源重试 → `attempt` 变 → 样本清零
+        a.set_attempt(2);
+        let after = a.snapshot(PullPhase::Pulling, None);
+        assert_eq!(after.attempt, 2);
+        assert_eq!(
+            after.speed_bps, None,
+            "换源之后不许再把两条链路的速度掺在一起"
+        );
+        assert_eq!(
+            after.eta_seconds, None,
+            "ETA 跟着速度一起归零，界面显示「剩余时间未知」"
+        );
+        // 但**已经下过的字节不能丢** —— 那是用户真正关心的进度
+        assert_eq!(after.net_bytes, before.net_bytes);
     }
 
     /// **进度没变 = 没有进展**，哪怕管道上一直有字节。

@@ -403,10 +403,20 @@ pub async fn detect_docker(app: tauri::AppHandle) -> Result<docker::DockerInfo> 
     .await
 }
 
-/// Linux 上试着 `systemctl start docker`；mac / Windows 上如实告诉用户要自己点。
+/// 试着把运行时拉起来 —— **三平台都做**（I18 · P0-1）。
+///
+/// 只在「已经装了、只是没在跑」时动手；拉起之后等它就绪（最多一分钟），
+/// 等不到就如实说超时。拉不起来**不算错**，但也不再把「请手动启动」当唯一答案。
+///
+/// 这个命令会阻塞到「等就绪」结束（最长一分钟出头），所以走 `blocking`
+/// （`spawn_blocking`），不占住异步运行时。
 #[tauri::command]
 pub async fn start_daemon() -> Result<String> {
-    blocking(docker::try_start_daemon).await
+    blocking(move || {
+        let mut say = |t: &str| crate::linfo!("启动运行时：{t}");
+        docker::try_start_daemon(&mut say)
+    })
+    .await
 }
 
 // ── key ───────────────────────────────────────────────────────────────────
@@ -940,8 +950,22 @@ pub async fn stack_op(
 
 /// 启动之前先把运行环境弄好（R3 的「启动」那一行）。
 ///
-/// 只对**内置运行时**做事：用户自己的 OrbStack / Docker Desktop 该不该起
-/// 是他自己的事，启动器不去替他开别的程序（这一条 I9 起就是这样）。
+/// ## I18 · P0-1：这里的边界按口径 A 改过（用户 2026-09-29 深夜拍板）
+///
+/// 原来这段注释写的是 I9 起的那条自我约束：
+///
+/// > 只对**内置运行时**做事：用户自己的 OrbStack / Docker Desktop 该不该起
+/// > 是他自己的事，启动器不去替他开别的程序。
+///
+/// 那句的前提（「启动器替他点不了」）在 macOS 上早就被同仓库的实现推翻了
+/// （`assist::actions::start_runtime_argv` 用 `open -a`，不需要管理员），
+/// 在 Windows 上从来没有被验证过 —— 客户 2026-09-29 那台机器就卡在这里：
+/// Docker Desktop 装着、引擎没在跑，面板上那个「启动运行时」按钮什么也做不了，
+/// 于是 Hunter 起不来、备份做不了、升级也做不了，**产品给不出任何出路**。
+///
+/// 口径 A 把它抹平：**只在「已经装了、只是没在跑」时替用户拉起来**。
+/// 「装没装」仍然不插手（那要管理员、要重启，是另一个量级的工程）——
+/// 所以下面 `installed == false` 时一个字节都不动，照旧交给它自己的错误路径去说。
 fn ensure_runtime_up(
     steps: &mut Vec<String>,
     say: &mut impl FnMut(&str),
@@ -951,9 +975,7 @@ fn ensure_runtime_up(
         return Ok(());
     }
     if !eff.builtin_down() {
-        // 内置运行时不是这台机器的主角，而 docker 又不通 —— 这是另一个问题，
-        // 交给它自己的错误路径去说，别在这里装作能修
-        return Ok(());
+        return ensure_user_runtime_up(steps, say);
     }
     let mut line = |t: &str| {
         say(t);
@@ -984,6 +1006,51 @@ fn ensure_runtime_up(
         Ok(d) if d.healthy() => line(&format!("虚拟机的 DNS 没问题（{}）", d.one_line())),
         Ok(d) => line(&format!("虚拟机的 DNS 还是不行：{}", d.one_line())),
         Err(e) => line(&format!("没查成虚拟机的 DNS：{}", e.msg)),
+    }
+    Ok(())
+}
+
+/// **这一格要不要替用户把运行时拉起来**（I18 · 口径 A）。纯函数，两态各一条单测。
+///
+/// * `installed == false`：**不碰** —— 「装 Docker」要管理员、要重启，是另一个量级的
+///   工程，本轮明确不做；这里装作能修只会把用户往错误的方向引。
+/// * `installed && !daemon_running`：**动手** —— 这正是客户 2026-09-29 那台机器，
+///   产品在那条路上给不出任何出路。
+/// * `wsl == Some(false)`（Windows）：**不动手** —— Docker Desktop 拉起来也是白拉，
+///   缺的是 WSL2，得先把 WSL2 装上（别把「WSL 缺」讲成「Docker 缺」）。
+fn should_start_user_runtime(installed: bool, daemon_running: bool, wsl: Option<bool>) -> bool {
+    installed && !daemon_running && wsl != Some(false)
+}
+
+/// 内置运行时不是这台机器的主角（用户在跑他自己装的那一套）。
+///
+/// **只有「装了、只是没在跑」这一格才替用户动手**（口径 A）。「没装」是另一件事，
+/// 这里一个字节都不动 —— 那要管理员、要重启，交给它自己的错误路径去说更诚实。
+fn ensure_user_runtime_up(
+    steps: &mut Vec<String>,
+    say: &mut impl FnMut(&str),
+) -> crate::err::AppResult<()> {
+    let d = crate::runtime::docker::detect();
+    if !should_start_user_runtime(d.installed, d.daemon_running, d.wsl) {
+        return Ok(());
+    }
+    let label = d
+        .runtime_label
+        .clone()
+        .unwrap_or_else(|| "容器运行时".to_string());
+    let mut line = |t: &str| {
+        say(t);
+        steps.push(t.to_string());
+    };
+    line(&format!("{label} 装着但没在跑，先替你把它拉起来"));
+    let mut s = |t: &str| {
+        crate::linfo!("启动运行时：{t}");
+    };
+    // **拉不起来不算错**：这一步失败了下面 `compose::up()` 会用它自己的错误码
+    // 如实报出来，不必在这里提前中断 —— 用户看到的仍然是一句真话，只是短了一点
+    match crate::runtime::docker::try_start_daemon(&mut s) {
+        Ok(msg) => line(&msg),
+        Err(e) => line(&format!("没能把 {label} 拉起来：{}", e.msg)),
     }
     Ok(())
 }
@@ -2417,8 +2484,38 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow> {
 #[cfg(test)]
 mod tests {
     use super::url_allowed;
-    use super::{route_of, BootRoute};
+    use super::{route_of, should_start_user_runtime, BootRoute};
     use crate::selfcheck::Posture;
+
+    /// **I18 · P0-1 口径 A 的边界，钉死。**
+    ///
+    /// 只有在「**已经装了**、只是没在跑」这一格才替用户动一次手；
+    /// `installed=false`（装 Docker 要管理员、要重启，本轮明确不做）与
+    /// Windows 上 `wsl=false`（拉起来也是白拉，缺的是 WSL2）都**一个字节都不碰**。
+    ///
+    /// 客户 2026-09-29 那台机器正好落在唯一那一格上：`installed=true daemon=false`。
+    #[test]
+    fn 只在装了但没在跑时才替用户拉起运行时() {
+        for (installed, daemon, wsl, want) in [
+            // installed=false：不插手（「装」是另一件事）
+            (false, false, None, false),
+            (false, false, Some(false), false),
+            // 已经跑着：什么都不用做
+            (true, true, None, false),
+            (true, true, Some(true), false),
+            // **客户那一格**
+            (true, false, None, true),
+            (true, false, Some(true), true),
+            // Windows 上 WSL2 都不在：Docker Desktop 拉起来也是白拉
+            (true, false, Some(false), false),
+        ] {
+            assert_eq!(
+                should_start_user_runtime(installed, daemon, wsl),
+                want,
+                "installed={installed} daemon={daemon} wsl={wsl:?}"
+            );
+        }
+    }
 
     #[test]
     fn https_一律放行() {

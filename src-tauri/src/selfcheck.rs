@@ -320,6 +320,30 @@ pub fn missing_config_images() -> Option<(String, Vec<String>)> {
 /// `deep` 为真时多做一件事：起一个 `--rm` 的一次性容器问「解析得动模型网关吗」。
 /// 那一下要几秒到几十秒，所以错误页上的低频复查用浅查，
 /// 安装前的预检用深查（**容器连不上网关的话，六个绿灯也没有意义** —— I10 的结论）。
+/// [`Posture::RuntimeDown`] 那一档的 headline，**按「装没装」两态分开**（I18 · P0-2）。
+///
+/// 两态给用户的下一步完全不同：
+///
+/// * **装了、只是没在跑** → 点「启动运行时」；I18 起那个按钮在 Windows 上真的能把
+///   Docker Desktop 拉起来（P0-1，用户 2026-09-29 拍板的口径 A），所以这里可以放心地
+///   把它当出路说出来；
+/// * **没装 / 读不到** → 照旧只说清「装过、不用重装、不用重填 key」这一件事 ——
+///   装 Docker 要管理员、要重启，不在产品能替用户做的范围里（别在这里许一个做不到的诺）。
+///
+/// `d` 为 `None` 时（没去问）走第二句：**读不到就不说**，不猜。
+fn runtime_down_headline(d: Option<&crate::runtime::docker::DockerInfo>) -> String {
+    match d {
+        Some(d) if d.installed && !d.daemon_running => format!(
+            "Hunter 装在这台电脑上，{} 也装着、只是没在跑 —— 点「启动运行时」让启动器替你把它拉起来；不用重新安装，也不用重新填 key",
+            d.runtime_label
+                .clone()
+                .unwrap_or_else(|| "Docker".to_string())
+        ),
+        _ => "Hunter 装在这台电脑上，只是运行时没在跑 —— 不用重新安装，也不用重新填 key"
+            .to_string(),
+    }
+}
+
 pub fn review(deep: bool) -> Review {
     let t0 = Instant::now();
     let mut lines: Vec<String> = Vec::new();
@@ -376,6 +400,17 @@ pub fn review(deep: bool) -> Review {
                 "另一个位置的 Hunter 正占着「{PROJECT}」这个项目名，启动器现在管不了这一套 —— \
                  你的数据和配置都没动，这里也不会重新安装"
             );
+        } else if p == Posture::RuntimeDown {
+            // **I18 · P0-2：这一档要分两态说。**
+            //
+            // 「装了没在跑」（客户 2026-09-29 那台，`installed=true daemon=false`）
+            // 与「根本没装」给用户的下一步完全不同：前者点「启动运行时」就能拉起来，
+            // 后者才要去装 —— 而启动器**装不了**（要管理员、要重启）。
+            //
+            // 这次检测**只在这一档做**：运行时都问不出来了，多跑一次 `docker version`
+            // 是值得的；别的档位一个字节都不多花。
+            let d = crate::runtime::docker::detect();
+            r.headline = runtime_down_headline(Some(&d));
         }
         return r;
     }
@@ -615,7 +650,8 @@ fn finish_full(
             services.len()
         ),
         // **R1**：装过是磁盘说的事实，问不出来只是问不出来。
-        // 这句要同时说清三件事：装过、不用重装、不用重填 key
+        // 这句要同时说清三件事：装过、不用重装、不用重填 key。
+        // I18 · P0-2：再按「装没装」分两态 —— 见 [`runtime_down_headline`]
         Posture::RuntimeDown => {
             "Hunter 装在这台电脑上，只是运行时没在跑 —— 不用重新安装，也不用重新填 key".to_string()
         }
@@ -1296,5 +1332,53 @@ mod tests {
             "网页打得开、只是有服务没就绪，说「在跑」没错：{}",
             r2.headline
         );
+    }
+
+    // ── I18 · P0-2：`RuntimeDown` 的两态 ────────────────────────────────
+
+    /// 造一份「装没装 / 跑没跑」的检测结果。
+    fn docker_info(installed: bool, daemon_running: bool) -> crate::runtime::docker::DockerInfo {
+        let mut d = crate::runtime::docker::DockerInfo::empty();
+        d.installed = installed;
+        d.daemon_running = daemon_running;
+        d.runtime_label = Some("Docker Desktop".to_string());
+        d
+    }
+
+    /// **A2-2**：`installed=true, daemon=false`（客户 2026-09-29 那台）——
+    /// headline 要说清「Docker Desktop 也装着、只是没在跑」，并指出那条出路。
+    ///
+    /// 原来那一句（「只是运行时没在跑」）对**没装**的人是对的，
+    /// 对装了没在跑的人少说了一半 —— 他不知道启动器能不能替他拉起来。
+    #[test]
+    fn 运行时没在跑时_headline_要说清是装了没跑() {
+        let h = runtime_down_headline(Some(&docker_info(true, false)));
+        assert!(h.contains("装在这台电脑上"), "{h}");
+        assert!(h.contains("Docker Desktop"), "{h}");
+        assert!(h.contains("没在跑"), "{h}");
+        assert!(h.contains("启动运行时"), "要指出那条出路：{h}");
+        // 这两句一个都不能丢（R1 的原始要求）
+        assert!(
+            h.contains("不用重新安装") && h.contains("不用重新填 key"),
+            "{h}"
+        );
+        assert!(!h.contains("还没有装"), "不能再说成「没装」：{h}");
+    }
+
+    /// 没装 / 读不到时走原来那一句 —— **读不到就不说**，不猜成「装了没在跑」。
+    #[test]
+    fn 问不出来时不猜是装了没跑() {
+        for d in [
+            Some(docker_info(false, false)), // 没装
+            Some(docker_info(true, true)),   // 装着也在跑（走到这一档说明是别的问题）
+            None,                            // 压根没去问
+        ] {
+            let h = runtime_down_headline(d.as_ref());
+            assert!(
+                h.contains("装在这台电脑上") && h.contains("运行时没在跑"),
+                "{d:?}：{h}"
+            );
+            assert!(!h.contains("启动运行时"), "问不出来就别指那条按钮：{h}");
+        }
     }
 }

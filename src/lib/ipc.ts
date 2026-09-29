@@ -512,7 +512,15 @@ export async function upgradeHunter(tag: string, registry?: string): Promise<voi
 }
 
 export async function upgradeStatus(): Promise<UpgradeStatus> {
-  if (DEMO) return { running: false, steps: [], result: null, error: null }
+  if (DEMO) {
+    // I18 · U5：`update-running` / `update-retry` 这两页就是「升级正在进行中」那一屏，
+    // 演示模式下直接报「在跑」—— 真机上这一态是点「升级」点出来的
+    // （要真点两下才出得来，截图脚本不好稳定定位，I17 的 `update-no-tag` 就吃过这个亏）
+    if (demoPage() === 'update-running' || demoPage() === 'update-retry') {
+      return { running: true, steps: demo.demoUpgradeSteps, result: null, error: null }
+    }
+    return { running: false, steps: [], result: null, error: null }
+  }
   return call<UpgradeStatus>('upgrade_status')
 }
 
@@ -687,7 +695,20 @@ async function on<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn
   return listen<T>(name, (e) => cb(e.payload))
 }
 
+/**
+ * 订阅拉取进度（I18 · U5 起升级/安装界面在用它）。
+ *
+ * 演示模式是一个**有意的例外**：`on()` 在演示下什么都不发，而 U5 那一块
+ * 只有收到事件才画得出来 —— 于是这里按**一秒一次**把演示进度喂进去
+ * （真实事件流是每条进度都发，由界面自己限到一秒一次，节奏是一致的）。
+ * 不这么做那两页截出来会是一片空的「正在升级…」，等于没验。
+ */
 export function onPullProgress(cb: (p: PullProgress) => void): Promise<UnlistenFn> {
+  if (DEMO) {
+    const p = demoPage() === 'update-retry' ? demo.demoPullRetry : demo.demoPull
+    const h = window.setInterval(() => cb(p), 1000)
+    return Promise.resolve(() => window.clearInterval(h))
+  }
   return on<PullProgress>(EV_PULL, cb)
 }
 

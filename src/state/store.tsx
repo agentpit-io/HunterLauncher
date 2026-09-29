@@ -103,6 +103,15 @@ const DEMO_STATES: Record<string, State> = {
   // 截图里那一屏改成**真点两下**（运行面板上没有这一版时点「升级」→ 确认框里再点
   // 「升级」）。详见 I17 迭代报告「截图」一节。
   'update-no-tag': { name: 'Ready' },
+  // I18 · U5：**升级进行中**那一屏（含字节进度、网速、预计剩余）。
+  //
+  // 这一页与 `update-no-tag` 不一样：它要的「正在升级」那一块**只由 `st.running`
+  // 决定**，而 `st` 在真机上是点出来的。演示模式下由 `ipc.upgradeStatus()` 的
+  // 演示分支直接给（见 `ipc.ts`），页面自己不需要点任何东西 —— 截图脚本因此点得稳。
+  'update-running': { name: 'Ready' },
+  // 换源重试那一档（`attempt=2`）：ETA 已作废重算，显示的是「剩余时间未知」，
+  // 同时明细展开（A5-3 / A5-4）
+  'update-retry': { name: 'Ready' },
   // I9：上一次没装成功留下的内置运行时残骸（用户 Mac 上 0.1.8 那次的现场）。
   // 这一页同时也是「启动器已经替你做了这几步」那一块的样子
   'error-builtin': {
@@ -127,6 +136,8 @@ function initialOverlay(): Overlay {
   if (page === 'backup' || page === 'backup-restore') return 'backup'
   // I17：前置体检那一屏是**更新页**上的一问，不是独立一页
   if (page === 'update-no-tag') return 'update'
+  // I18 · U5：升级进行中那两屏也是更新页
+  if (page === 'update-running' || page === 'update-retry') return 'update'
   return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
     ? page
     : null

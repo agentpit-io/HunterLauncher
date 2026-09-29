@@ -104,6 +104,20 @@ export function Docker() {
         <div className="min-w-0">
           <div className="text-xl font-medium leading-tight text-ink">{headline}</div>
           {hint && <div className="mt-2 max-w-[660px] text-md leading-[1.5] text-body">{hint}</div>}
+          {/* I18 · P0-2：**「装了没在跑」要单独说一句**，而不是只把 docker 的原话摆出来。
+              docker 的原话（`d.problem`）说的是「连不上后台服务」，没有告诉用户下一步是什么；
+              这一句说的是「启动器会替你拉起来」—— 而它现在真的拉得动（P0-1）。 */}
+          {daemonDown && !docker.loading && (
+            <div className="mt-2 max-w-[660px] text-sm leading-[1.5] text-body" data-testid="daemon-down-hint">
+              {t.docker.daemonDownHint}
+            </div>
+          )}
+          {/* 拉起 + 等就绪最长要一分钟出头，这中间不能一声不吭（A1-1 / A1-4） */}
+          {starting && (
+            <div className="mt-2 max-w-[660px] text-sm leading-[1.5] text-amber-text" data-testid="daemon-starting">
+              {t.docker.daemonStarting}
+            </div>
+          )}
           {startMsg && <div className="mt-2 max-w-[660px] text-sm leading-[1.5] text-amber-text">{startMsg}</div>}
         </div>
       </div>

@@ -3153,10 +3153,23 @@ fn cannot_do(e: &AppError) -> Option<(String, String)> {
                     .unwrap_or_else(|| "授权没有通过（你可能点了取消）。".to_string())
             ),
         )),
-        Code::DockerMissing if !cfg!(target_os = "macos") => Some((
-            "这台电脑上没有 Docker".to_string(),
-            crate::runtime::chain::platform_cannot_install(),
-        )),
+        // I18 · P0-2：`E_DOCKER_MISSING` 这一个码底下其实是三件事 ——
+        // 没装、装了没在跑、装了在跑但版本不够。原来无论哪一种标题都写「没有 Docker」，
+        // 对后两种就是假话（客户 2026-09-29 那台是「装了没在跑」）
+        Code::DockerMissing if !cfg!(target_os = "macos") => {
+            let d = crate::runtime::docker::detect();
+            let title = if !d.installed {
+                "这台电脑上还没有装 Docker"
+            } else if d.daemon_running {
+                "Docker 的版本不满足要求"
+            } else {
+                "Docker 装着，但后台服务没在跑"
+            };
+            Some((
+                title.to_string(),
+                crate::runtime::chain::platform_cannot_install(&d),
+            ))
+        }
         Code::DockerMissing => Some((
             "三条路都没能把 Docker 装起来".to_string(),
             "每一条失败的原话都在上面，也会一起打进诊断包。".to_string(),

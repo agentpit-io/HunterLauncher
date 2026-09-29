@@ -644,28 +644,139 @@ pub fn install_guide() -> InstallGuide {
     }
 }
 
-/// 尝试把 daemon 拉起来。**只在 Linux 上做**（systemd），而且失败不算错 ——
-/// mac / Windows 上启动 Docker Desktop 要用户自己点，启动器替他点不了。
-pub fn try_start_daemon() -> AppResult<String> {
-    if cfg!(target_os = "linux") {
-        // systemctl 在 /usr/bin，各发行版的 GUI 会话里都在默认 PATH 上；
-        // 仍然走一遍定位器，口径统一（找不到就退回裸名字，行为和以前一样）
-        let sc = which::resolve("systemctl")
-            .resolved
-            .unwrap_or_else(|| "systemctl".to_string());
-        let r = proc::run_timeout(&sc, &["start", "docker"], Duration::from_secs(60))?;
-        if r.ok() {
-            return Ok("已请求 systemd 启动 docker 服务。".to_string());
+/// 拉起运行时那条命令最多跑多久。`open -a` 与启动 `Docker Desktop.exe` 都是立刻返回的，
+/// `systemctl start` 要几秒 —— 30 秒足够，超了就是真出问题了。
+const START_CMD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 拉起之后最多等多久就绪。
+///
+/// Windows 上冷启动 Docker Desktop 实测要 30–60 秒（它自己还要把 WSL2 那台小虚拟机
+/// 拉起来），留一分钟。等不到就**如实说等超时**并给「重试」，不静默卡住。
+const START_WAIT: Duration = Duration::from_secs(60);
+
+/// 这台机器上「装着、但没在跑」的那个运行时 —— 该被拉起来的那个。**纯函数**。
+///
+/// | 平台 | 答案 | 为什么 |
+/// |---|---|---|
+/// | Linux | `systemd` | Docker 在这边是系统服务，没有「桌面程序」那种东西 |
+/// | Windows | `docker-desktop` | 只有它这一个可能；装没装由调用方用 [`detect`] 先问过（见 [`start_app`]） |
+/// | macOS | `apps` 里第一个「装=true、跑=false」的 | 与 `builtin::decide()` 的 `StartExisting` 同一条口径 |
+///
+/// `apps` 就是 `probe::runtime_apps()` 那一份。做成参数是为了能把另外两条分支
+/// 也在 Linux 上单测到（理由见 [`crate::runtime::Os`]）。
+fn start_app_on(
+    os: crate::runtime::Os,
+    apps: &[crate::assist::probe::AppPresence],
+) -> AppResult<String> {
+    match os {
+        crate::runtime::Os::Linux => Ok("systemd".to_string()),
+        crate::runtime::Os::Windows => Ok("docker-desktop".to_string()),
+        crate::runtime::Os::Mac => apps
+            .iter()
+            // `builtin` 不是「用户装的」，它有自己的主线（`start_builtin_runtime`）
+            .filter(|a| a.id != "builtin")
+            .find(|a| a.installed == Some(true) && a.running == Some(false))
+            .map(|a| a.id.clone())
+            .ok_or_else(|| {
+                AppError::new(
+                    Code::DockerMissing,
+                    "这台电脑上没有找到「装了、但没在跑」的运行时。".to_string(),
+                )
+            }),
+    }
+}
+
+/// 现在该被拉起来的运行时是谁。先按平台把「装没装」问准，再交给 [`start_app_on`]。
+fn start_app() -> AppResult<String> {
+    let os = crate::runtime::OS;
+    if os == crate::runtime::Os::Windows {
+        // Windows 上「装没装、跑没跑」由 `docker version` 那条路回答 ——
+        // `probe::runtime_apps()` 那边读不了 Windows 的进程（它靠 pgrep），
+        // 装了也只会回「读不到」，而这一格恰恰不能是「读不到」。
+        let d = detect();
+        if !d.installed {
+            return Err(AppError::new(
+                Code::DockerMissing,
+                "这台电脑上没有装 Docker Desktop —— 装它要管理员权限、要重启，是另一条路；\
+                 这里只负责把**已经装好的**拉起来。"
+                    .to_string(),
+            ));
         }
+        if d.wsl == Some(false) {
+            // **别把「WSL 缺」讲成「Docker 缺」**：这两种情况给用户的下一步完全不同
+            return Err(AppError::new(
+                Code::WslMissing,
+                "Docker Desktop 装着，但它要的 WSL2 不在这台电脑上 —— \
+                 先把 WSL2 装好，Docker Desktop 才起得来。"
+                    .to_string(),
+            ));
+        }
+        return start_app_on(os, &[]);
+    }
+    if os == crate::runtime::Os::Linux {
+        return start_app_on(os, &[]);
+    }
+    start_app_on(os, &crate::assist::probe::runtime_apps())
+}
+
+/// 尝试把 daemon 拉起来 —— **三平台都做**（I18 · P0-1，用户 2026-09-29 深夜拍板的口径 A）。
+///
+/// 只在「运行时**已经装了**、只是没在跑」时替用户拉起来；「装没装」仍然不插手
+/// （那要管理员、要重启，是另一个量级的工程）。这个函数自己写的理由换过一次：
+///
+/// > ~~mac / Windows 上启动 Docker Desktop 要用户自己点，启动器替他点不了。~~
+///
+/// 那个前提在 macOS 上早就被同仓库的实现推翻了（`open -a` 不需要管理员，
+/// `assist::actions` 里还带着单测），在 Windows 上从来没有被验证过 ——
+/// 而 `Docker Desktop.exe` 同样是用户态程序。客户 2026-09-29 现场就是卡在这里：
+/// 面板上那个「启动运行时」按钮在 Windows 上什么也做不了。
+///
+/// 三件事按顺序做，**一步都不能省**：
+///
+/// 1. **拉起**（命令走 [`crate::assist::actions::start_runtime_argv`]，不在这个文件里
+///    再抄一份 argv 构造）；
+/// 2. **等它就绪**（复用 [`crate::runtime::chain::wait_daemon`] —— 它是既有设计里
+///    「每条路线唯一的成功判据」，不再自己写一套轮询）；
+/// 3. **如实回报**：起来了就说起来了，超时就说超时并给下一步。
+///
+/// **失败不算错**（沿用原设计）：拉不起来就如实说拉不起来，
+/// **不把「请手动启动」当唯一答案**（P0-2 全仓自查的那一条）。
+pub fn try_start_daemon(say: &mut dyn FnMut(&str)) -> AppResult<String> {
+    let app = start_app()?;
+    let label = crate::assist::actions::runtime_label(&app);
+    let argv = crate::assist::actions::start_runtime_argv(&app)?;
+    let Some((prog, rest)) = argv.split_first() else {
         return Err(AppError::new(
             Code::DaemonDown,
-            format!("启动 docker 服务失败（可能需要 sudo）：{}", r.err_line()),
+            format!("拉起 {label} 的命令是空的，没法执行。"),
+        ));
+    };
+    let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+    let r = proc::run_timeout(prog, &rest, START_CMD_TIMEOUT)?;
+    if !r.ok() {
+        return Err(AppError::new(
+            Code::DaemonDown,
+            format!(
+                "没能把 {label} 拉起来（退出码 {:?}）：{}",
+                r.status,
+                r.err_line()
+            ),
         ));
     }
-    Err(AppError::new(
-        Code::DaemonDown,
-        "请手动启动 Docker Desktop / OrbStack，启动完点「重新检测」。".to_string(),
-    ))
+    say(&format!(
+        "已经发出启动请求（{label}），正在等它就绪 —— 冷启动可能要 30 到 60 秒"
+    ));
+    if !crate::runtime::chain::wait_daemon(START_WAIT, say) {
+        return Err(AppError::new(
+            Code::DaemonDown,
+            format!(
+                "{label}：已经拉起来了，但等了 {} 秒后台服务还没就绪。可以再点一次「启动运行时」重试；\
+                 要是它一直起不来，把诊断包发给开发者是最快的一条路。",
+                START_WAIT.as_secs()
+            ),
+        ));
+    }
+    Ok(format!("{label}：已经就绪，docker 可以用了。"))
 }
 
 #[cfg(test)]
@@ -888,5 +999,67 @@ mod tests {
 
     fn blank() -> DockerInfo {
         DockerInfo::empty()
+    }
+
+    // ── I18 · P0-1：该拉起谁（三平台的分支选择）──────────────────────────
+
+    /// 造一条 `probe::runtime_apps()` 那样的记录。
+    fn app(
+        id: &str,
+        installed: Option<bool>,
+        running: Option<bool>,
+    ) -> crate::assist::probe::AppPresence {
+        crate::assist::probe::AppPresence {
+            id: id.into(),
+            label: id.into(),
+            installed,
+            running,
+            evidence: String::new(),
+        }
+    }
+
+    /// **A1-5 的另一半**：三平台各自该拉起来的是谁。
+    ///
+    /// 客户 2026-09-29 那台 Windows 上，这一步原来是「直接返回，什么都不做」
+    /// （`try_start_daemon` 只在 Linux 上做）—— 面板那个按钮因此是死的。
+    #[test]
+    fn 该拉起哪个运行时按平台定() {
+        use crate::runtime::Os;
+
+        // Linux：Docker 是系统服务，永远走 systemd；那张 app 表在这边不参与
+        assert_eq!(start_app_on(Os::Linux, &[]).unwrap(), "systemd");
+        assert_eq!(
+            start_app_on(Os::Linux, &[app("orbstack", Some(true), Some(false))]).unwrap(),
+            "systemd",
+            "Linux 上没有 OrbStack / Docker Desktop 那种桌面程序"
+        );
+
+        // Windows：只有 Docker Desktop 一个可能（装没装由 `start_app` 先用 detect 问过）
+        assert_eq!(start_app_on(Os::Windows, &[]).unwrap(), "docker-desktop");
+
+        // macOS：装=true、跑=false 的第一个
+        let apps = [
+            app("orbstack", Some(true), Some(false)),
+            app("docker-desktop", Some(true), Some(false)),
+        ];
+        assert_eq!(start_app_on(Os::Mac, &apps).unwrap(), "orbstack");
+        // 只装了 Docker Desktop 的机器挑它
+        let apps = [
+            app("orbstack", None, None),
+            app("docker-desktop", Some(true), Some(false)),
+        ];
+        assert_eq!(start_app_on(Os::Mac, &apps).unwrap(), "docker-desktop");
+        // **内置运行时不在这一档里挑** —— 它不是「用户装的」，有自己的主线
+        let apps = [
+            app("builtin", Some(true), Some(false)),
+            app("docker-desktop", Some(true), Some(false)),
+        ];
+        assert_eq!(start_app_on(Os::Mac, &apps).unwrap(), "docker-desktop");
+        // 都跑着 / 一个都没装 / 读不到：没有可拉起的就**如实拒绝**，不硬凑
+        assert!(start_app_on(Os::Mac, &[app("orbstack", Some(true), Some(true))]).is_err());
+        assert!(start_app_on(Os::Mac, &[]).is_err());
+        // 读不到（`None`）不算「装了没在跑」—— 不拿「读不到」当「没在跑」去动手
+        assert!(start_app_on(Os::Mac, &[app("orbstack", None, None)]).is_err());
+        assert!(start_app_on(Os::Mac, &[app("orbstack", Some(true), None)]).is_err());
     }
 }
