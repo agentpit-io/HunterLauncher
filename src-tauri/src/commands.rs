@@ -1080,6 +1080,12 @@ pub struct LauncherSettings {
     /// 用户是哪一刻做的授权（上海时间）。空 = 还没授权过
     #[serde(default)]
     pub assist_consented_at: String,
+    /// F-02 三级授权：现在授权到哪几档（`["l1","l2"]`）。
+    ///
+    /// **`None` = 这次不改它**（旧版界面不带这个字段，仍然照传 ——
+    /// 拿一个空表当「一档都不授权」的话，老界面一点保存就把安装能力关了）。
+    #[serde(default)]
+    pub assist_grants: Option<Vec<String>>,
     /// 现在实际用的 docker 可执行文件路径。只读，给界面显示用
     /// （红线 1：读不到就是 `None`，界面显示「—」）
     #[serde(default)]
@@ -1211,6 +1217,31 @@ pub async fn write_settings(
             );
         }
         c.support.auto_on_error = settings.auto_upload_logs;
+        // F-02 三级授权：设置页可以随时把某一档关掉（或打开）。
+        // **`None` 不动它** —— 旧界面不带这个字段，不能因为少传一项就把安装能力关掉。
+        // 改授权和改档位一样算一次新的授权：盖时间戳、写日志、写审计。
+        if let Some(list) = &settings.assist_grants {
+            let want = crate::assist::guard::GrantSet::parse(list);
+            if want != c.assist.grant_set() {
+                crate::linfo!(
+                    "设置页改了授权档位：{} → {}",
+                    c.assist.grant_set().cn_list(),
+                    want.cn_list()
+                );
+                crate::assist::guard::audit(
+                    "consent",
+                    &std::collections::BTreeMap::from([(
+                        "grants".to_string(),
+                        want.to_config().join(","),
+                    )]),
+                    crate::assist::guard::Proposer::User,
+                    None,
+                    &format!("设置页把授权改成：{}", want.cn_list()),
+                );
+                c.assist.consented_at = crate::timefmt::now_shanghai();
+            }
+            c.assist.set_grant(want);
+        }
         c.assist.allow_install_runtime = settings.allow_install_runtime;
         // 认不得的值落到默认（`builtin`），不是照抄进去
         c.runtime.install_route = crate::config::InstallRoute::parse(&settings.install_route)
@@ -1243,6 +1274,8 @@ fn to_settings(c: &LauncherConfig) -> LauncherSettings {
         assist: c.assist.enabled,
         assist_mode: c.assist.mode().as_str().to_string(),
         assist_consented_at: c.assist.consented_at.clone(),
+        // F-02：现在授权到哪几档（只读给界面显示用）
+        assist_grants: Some(c.assist.grants.clone()),
         // 用**当前真实的定位结果**，不是配置里记的那一行（红线 1）
         docker_path: crate::runtime::which::docker_probe().resolved,
         allow_install_runtime: c.assist.allow_install_runtime,
@@ -2589,37 +2622,49 @@ pub async fn assist_consent(
     app: tauri::AppHandle,
     mode: String,
     allow_install_runtime: Option<bool>,
+    grants: Option<Vec<String>>,
 ) -> Result<LauncherSettings> {
     blocking(move || {
         let m = crate::assist::guard::Mode::parse(&mode);
         let allow = allow_install_runtime.unwrap_or(true);
+        // F-02：授权页的勾。**没传就是出厂那一档（一级 + 二级，不含三级）** ——
+        // 三级要用户亲手勾，界面漏传不该等于替他勾上。
+        let want = grants
+            .as_deref()
+            .map(crate::assist::guard::GrantSet::parse)
+            .unwrap_or_else(|| {
+                crate::assist::guard::GrantSet::up_to(crate::assist::guard::Grant::Local)
+            });
         let st = state(&app);
         let mut cfg = st.config();
         cfg.assist.mode = m.as_str().to_string();
         cfg.assist.enabled = m != crate::assist::guard::Mode::Off;
         cfg.assist.consented_at = crate::timefmt::now_shanghai();
         cfg.assist.allow_install_runtime = allow;
+        cfg.assist.set_grant(want);
         cfg.save()?;
         st.set_config(cfg.clone());
         crate::linfo!(
-            "用户授权：档位 {}（{}），没有 Docker 时允许自动安装={}，时间 {}",
+            "用户授权：档位 {}（{}），授权到 {}，没有 Docker 时允许自动安装={}，时间 {}",
             m.as_str(),
             m.cn(),
+            want.cn_list(),
             allow,
             cfg.assist.consented_at
         );
         crate::assist::guard::audit(
             "consent",
-            &std::collections::BTreeMap::from([(
-                "allow_install_runtime".to_string(),
-                allow.to_string(),
-            )]),
+            &std::collections::BTreeMap::from([
+                ("allow_install_runtime".to_string(), allow.to_string()),
+                ("grants".to_string(), want.to_config().join(",")),
+            ]),
             crate::assist::guard::Proposer::User,
             None,
             &format!(
-                "授权档位 {}（{}）；没有 Docker 时{}自动安装运行时",
+                "授权档位 {}（{}）；授权到 {}；没有 Docker 时{}自动安装运行时",
                 m.as_str(),
                 m.cn(),
+                want.cn_list(),
                 if allow { "允许" } else { "不允许" }
             ),
         );
@@ -2638,9 +2683,10 @@ pub async fn builtin_runtime_status() -> Result<crate::runtime::builtin::Status>
 
 /// 卸载内置运行时（设置页的「卸载内置运行时」）。
 ///
-/// 走的是动作表那条路：`uninstall_builtin_runtime` 是 `Safe` 级
-/// （只动 `~/.hunter/runtime`，那棵树完全是启动器自己生成的），
-/// 但**界面上仍然会先弹一次确认** —— 删虚拟机磁盘这种事值得多问一句。
+/// 走的是动作表那条路：`uninstall_builtin_runtime` 是 `Sensitive` 级
+/// （S-03 从 `Safe` 升上来的：它会删掉启动器自己那棵运行时目录，而那个目录
+/// 可以被 `[runtime] data_dir` 指到别的盘上去），界面上**会先弹一次确认** ——
+/// 删虚拟机磁盘这种事值得多问一句，卡片上还会写明删的是哪个路径。
 #[tauri::command]
 pub async fn builtin_runtime_uninstall(app: tauri::AppHandle) -> Result<String> {
     blocking(move || {

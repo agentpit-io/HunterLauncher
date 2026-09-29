@@ -1755,9 +1755,20 @@ impl Orchestrator {
             let title = actions::plan(&call)
                 .map(|p| p.title)
                 .unwrap_or_else(|_| spec.title.to_string());
-            let aev = self
-                .bus
-                .emit(EventDraft::new(Kind::Action, format!("正在处理：{title}")).under(issue));
+            // F-02：二级 / 三级的动作在过程流里**实时说一句人话** ——
+            // 它现在要动什么、要的是哪一档授权。只读的那些不报（那是噪音）。
+            //
+            // 同一句话放两个地方，是有意的：
+            // * `detail` —— **当场看得见**（跑完之后这一格会被结果那一行取代，
+            //   那是应该的：干完了当然显示干成了什么）；
+            // * `tech` —— 折在「技术细节」里留一份，跑完也还在，
+            //   事后复盘「这一步当时是按哪一档授权做的」查得到。
+            let mut adraft =
+                EventDraft::new(Kind::Action, format!("正在处理：{title}")).under(issue);
+            if let Some(line) = actions::grant_line(&call) {
+                adraft = adraft.detail(line.clone()).tech(line);
+            }
+            let aev = self.bus.emit(adraft);
             // `install_runtime` 要下将近 100 MB 再起一台虚拟机，几分钟里界面上
             // 只有一行「正在处理」是不行的 —— 换成带真实字节数的那一版。
             // **三道门一道没少**：这之前刚过了 plan（动作表 + 守卫）与档位判定
@@ -2564,6 +2575,18 @@ impl Orchestrator {
                 return Err(e);
             }
         };
+        // 授权级别闸（F-02）：**这里也是执行入口**，`execute_as` 里那一套
+        // 得在这一条自己身上补齐 —— 换一个入口就绕过去的话，那道门等于没装
+        if let Err(e) = actions::ensure_granted(&call) {
+            guard::audit(
+                &call.id,
+                &call.args,
+                Proposer::Orchestrator,
+                Some(plan.level),
+                &format!("拒绝：{}", e.msg),
+            );
+            return Err(e);
+        }
         guard::audit(
             &call.id,
             &call.args,
@@ -2693,6 +2716,17 @@ impl Orchestrator {
                 return Err(e);
             }
         };
+        // 授权级别闸（F-02）—— 和 [`Self::run_install_runtime`] 同一条理由
+        if let Err(e) = actions::ensure_granted(call) {
+            guard::audit(
+                &call.id,
+                &call.args,
+                Proposer::Orchestrator,
+                Some(plan.level),
+                &format!("拒绝：{}", e.msg),
+            );
+            return Err(e);
+        }
         guard::audit(
             &call.id,
             &call.args,
@@ -3505,6 +3539,11 @@ mod tests {
     }
 
     /// 动作表里 I7 新增的那几条都在，级别也对。
+    ///
+    /// `uninstall_builtin_runtime` **S-03 起从 `Safe` 升到了 `Sensitive`**：
+    /// 它会删掉启动器自己那棵运行时目录，而那个目录可以被
+    /// `[runtime] data_dir` 指到 `~/.hunter` 外面去（见 `runtime::disk` 与
+    /// `paths::runtime_dir`）。级别升上去之后，复核员与用户的确认都会重新看它一眼。
     #[test]
     fn i7_的动作在表里且级别正确() {
         use super::super::guard::Level;
@@ -3512,7 +3551,7 @@ mod tests {
             ("install_runtime", Level::Sensitive),
             ("reuse_existing_hunter", Level::Sensitive),
             ("start_builtin_runtime", Level::Safe),
-            ("uninstall_builtin_runtime", Level::Safe),
+            ("uninstall_builtin_runtime", Level::Sensitive),
         ] {
             let sp = actions::spec(id).unwrap_or_else(|| panic!("{id} 不在动作表里"));
             assert_eq!(sp.level, lv, "{id} 的级别不对");

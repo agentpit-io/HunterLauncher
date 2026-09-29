@@ -9,7 +9,7 @@
 //! | 不删你的任何文件 | [`writable_path`]：`canonicalize` 之后必须落在 `~/.hunter/` 内；[`deletable_path`] 再限定到「启动器自己生成的那几个文件」的白名单 |
 //! | 不删不停你别的容器 | [`own_container`]：执行前查 `com.docker.compose.project` 标签，不是 `hunter` 一律拒绝；[`argv`] 强制 docker 操作带 `--project-name hunter` |
 //! | 不改你的网络设置 | [`argv`]：`networksetup` / `scutil` / `pfctl` / `iptables` / `/etc/hosts` 等一律拒绝 |
-//! | 不用管理员密码 | [`argv`]：`sudo` / `pkexec` / `runas` / `osascript … administrator privileges` 一律拒绝 |
+//! | 不经 AI 的手提权 | [`argv`]：`sudo` / `pkexec` / `runas` / `osascript … administrator privileges` 一律拒绝。要提权的动作走专门那条通道（[`argv_privileged`] + [`crate::runtime::elevate`]，参数形状由代码构造），而且要用户授权到[三级](Grant) |
 //! | 不执行它自己编的命令 | 动作表机制（[`super::actions`]）+ [`argv`] 里的 `sh -c` 类拦截 |
 //!
 //! ## 为什么路径要 `canonicalize`
@@ -50,6 +50,161 @@ impl Level {
             Level::Safe => "安全（只动 Hunter 自己的东西）",
             Level::Sensitive => "需要你同意",
         }
+    }
+}
+
+/// 用户授权的三级（F-02 · 技术方案 §4.3）。
+///
+/// ## 它和 [`Level`] 是**两条轴**，别混
+///
+/// | | 说的是什么 | 谁在管 |
+/// |---|---|---|
+/// | [`Level`] | 这个动作**影响面**多大（只看不改 / 只动自己 / 会影响别的东西） | 复核员与用户的确认 |
+/// | `Grant` | 做这件事**要用户授权到哪一档** | 执行路径上的硬校验（[`crate::assist::actions::ensure_granted`]） |
+///
+/// 一条动作可以影响面很大（`Sensitive`）却只要二级授权 —— 例如
+/// `reuse_existing_hunter`（只改设置，弹不出任何系统授权框）。反过来，
+/// 一条动作也可能影响面很小却要三级 —— 只要它得靠系统提权才做得了。
+/// 把两件事塞进同一个枚举，迟早会为了「影响面」放松「授权」，或者反过来。
+///
+/// ## 为什么要有这一层
+///
+/// I15 的现场是一句话：**能力有，判官不放行** —— 三条装 Docker 的路被砍掉两条，
+/// 因为复核员那条提示词把「用管理员权限」写成了绝对禁令。Windows 上装容器运行时
+/// 绕不开提权，于是「提权」这件事必须有一个**可以说清楚的边界**：
+/// 不是「凡是提权都不行」，而是「**超出用户已授权的那一档才不行**」。
+/// 这个枚举就是那个边界。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Grant {
+    /// 一级 · 只读观察。看，不动。
+    Observe,
+    /// 二级 · 本机安全操作 —— 装 / 起自己那套运行时、改自己的配置。
+    Local,
+    /// 三级 · 需要系统提权的操作 —— 会弹系统自己的授权框（UAC / 系统授权框）。
+    Elevated,
+}
+
+impl Grant {
+    /// 从低到高，**全表**（界面按它列三行）。
+    pub const ALL: [Grant; 3] = [Grant::Observe, Grant::Local, Grant::Elevated];
+
+    /// 写进 `launcher.toml` 的那个值。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Grant::Observe => "l1",
+            Grant::Local => "l2",
+            Grant::Elevated => "l3",
+        }
+    }
+
+    /// 认不得的值返回 `None` —— 调用方**宁可少授权**，不要猜。
+    pub fn parse(s: &str) -> Option<Grant> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "l1" | "1" => Some(Grant::Observe),
+            "l2" | "2" => Some(Grant::Local),
+            "l3" | "3" => Some(Grant::Elevated),
+            _ => None,
+        }
+    }
+
+    /// 给用户看的名字。**不带英文** —— 用户可见的文案不许中英混杂。
+    pub fn cn(self) -> &'static str {
+        match self {
+            Grant::Observe => "只读观察",
+            Grant::Local => "本机安全操作",
+            Grant::Elevated => "需要系统提权",
+        }
+    }
+
+    /// 序数 + 名字。卡片与拒绝理由里要说清「缺的是**哪一档**」时用它。
+    pub fn cn_full(self) -> &'static str {
+        match self {
+            Grant::Observe => "一级 · 只读观察",
+            Grant::Local => "二级 · 本机安全操作",
+            Grant::Elevated => "三级 · 需要系统提权",
+        }
+    }
+}
+
+/// 用户当前**授权到哪一档**。
+///
+/// 存的是上限而不是三个独立开关：三级授权天然是「低档是高档的前提」——
+/// 授权到三级，一二级当然也在内。配置文件里写的是清单
+/// （`grants = ["l1", "l2"]`，见 [`crate::config::AssistSection`]），
+/// 解析时取其中最高的那一档，写回去时把含在内的低档一并列全，
+/// 这样配置文件里那行字**自己就能读懂**，不用去查代码。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantSet {
+    up_to: Option<Grant>,
+}
+
+impl GrantSet {
+    /// 一档都没授权。**不是出厂默认值** —— 默认是「一级 + 二级」，
+    /// 见 [`crate::config::AssistSection`]。
+    pub const NONE: GrantSet = GrantSet { up_to: None };
+
+    /// 授权到这一档（含更低的那几档）。
+    pub fn up_to(g: Grant) -> Self {
+        Self { up_to: Some(g) }
+    }
+
+    /// 从配置文件里那张清单解析。认不得的值丢掉；全是认不得的 = 一档都没授权。
+    pub fn parse(list: &[String]) -> Self {
+        let mut m: Option<Grant> = None;
+        for s in list {
+            if let Some(g) = Grant::parse(s) {
+                m = Some(m.map_or(g, |x| x.max(g)));
+            }
+        }
+        Self { up_to: m }
+    }
+
+    pub fn max(self) -> Option<Grant> {
+        self.up_to
+    }
+
+    /// 到这一档了吗。**要的那一档必须不高于已授权的上限。**
+    pub fn at_least(self, need: Grant) -> bool {
+        self.up_to.map(|g| g >= need).unwrap_or(false)
+    }
+
+    /// 含在内的那几档（低到高）。界面列勾、写回配置都用它。
+    pub fn levels(self) -> Vec<Grant> {
+        Grant::ALL
+            .iter()
+            .copied()
+            .filter(|g| self.at_least(*g))
+            .collect()
+    }
+
+    /// 写进 `launcher.toml` 的那张清单。
+    pub fn to_config(self) -> Vec<String> {
+        self.levels()
+            .into_iter()
+            .map(|g| g.as_str().to_string())
+            .collect()
+    }
+
+    /// 给用户看的一句话，接在「而现在…」后面能读通。
+    pub fn cn_state(self) -> String {
+        match self.max() {
+            None => "一档都还没授权".to_string(),
+            Some(g) => format!("只授权到「{}」", g.cn_full()),
+        }
+    }
+
+    /// 含在内的那几档的**全名**，顿号分开（日志与审计用）。
+    pub fn cn_list(self) -> String {
+        let ls = self.levels();
+        if ls.is_empty() {
+            return "一档都没授权".to_string();
+        }
+        ls.iter()
+            .map(|g| g.cn_full())
+            .collect::<Vec<_>>()
+            .join("、")
     }
 }
 
@@ -124,16 +279,69 @@ impl Mode {
 ///
 /// 返回解析后的绝对路径。**只有它能进后续的写/删**（不要再用调用方给的原串）。
 pub fn writable_path(p: &Path) -> AppResult<PathBuf> {
-    let root = canon_root()?;
+    let roots = own_roots()?;
     let real = canon_for_write(p)?;
-    if !real.starts_with(&root) {
+    if !roots.iter().any(|r| real.starts_with(r)) {
         return Err(reject(format!(
             "路径 {} 解析之后落在 {} 外面，拒绝（AI 只能在 Hunter 自己的文件夹里动东西）。",
             crate::redact::mask_home(&real.to_string_lossy()),
-            crate::redact::mask_home(&root.to_string_lossy())
+            roots
+                .iter()
+                .map(|r| crate::redact::mask_home(&r.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join(" 与 ")
         )));
     }
     Ok(real)
+}
+
+/// 守卫认的「自家地盘」：`~/.hunter`，加上**内置运行时实际落地的那棵树**。
+///
+/// ## 为什么是两个根（S-03 · 技术方案 §4.2.3）
+///
+/// `[runtime] data_dir` 可以把运行时搬到别的盘。搬走之后它**就不再**在
+/// `~/.hunter` 里了，而下面这两件事原来都默认「运行时就该在 `~/.hunter` 里」：
+///
+/// * `repair_builtin_runtime` / `uninstall_builtin_runtime` 要删那棵树的深处
+///   （colima 的 profile、lima 的实例目录）—— 只认 `~/.hunter` 的话它们会被**误拒**；
+/// * 更糟的是反过来的那一面：「写东西必须先落在自家地盘里」这条约束会**整个失守** ——
+///   运行时目录成了「谁都写得进去」的地方。
+///
+/// 所以这里**当场读** [`crate::paths::runtime_dir`]：它搬去哪，守卫就认到哪。
+/// 这不是给 AI 多开一扇门 —— 那个目录里的每一个字节都是启动器自己下载、
+/// 自己解压、自己创建的（用户从不往那儿放东西，界面上也从不引导他放），
+/// 和 `~/.hunter` 是同一类东西，只是换了块盘。
+///
+/// ## 一个**绝不能**破的不变式
+///
+/// 白名单里**不许出现一个比 `~/.hunter` 更宽的目录**。加一个根是为了「守得住」，
+/// 不是「放得开」：如果 `data_dir` 指到了 `~/.hunter` 的上一层，
+/// 加进去等于把 `writable_path` 那道门整个拆掉。
+/// [`crate::paths::runtime_dir`] 那边已经把这种值挡回去了，
+/// 而这里[`may_add_root`]再挡一道 —— 「守得住」不该建立在别的模块没被改坏上。
+fn own_roots() -> AppResult<Vec<PathBuf>> {
+    let mut v = vec![canon_root()?];
+    if let Ok(rt) = canon_for_write(&crate::paths::runtime_dir()) {
+        if may_add_root(&v, &rt) {
+            v.push(rt);
+        }
+    }
+    Ok(v)
+}
+
+/// 这个候选根能不能加进「自家地盘」。
+///
+/// 两种情形都不加，**方向都是收紧的那一侧**：
+///
+/// * 已经有了一个盖住它的根（默认就是这种：`~/.hunter` 盖住了 `~/.hunter/runtime`）
+///   —— 加了也是白加；
+/// * 它是现有某个根的**祖先** —— 加了就是把白名单放宽，宁可不加：
+///   那种情况下运行时目录里的东西会被拒，是**可修的错误**；
+///   反过来放行一片用户自己的目录，是不可修的。
+fn may_add_root(existing: &[PathBuf], candidate: &Path) -> bool {
+    !existing
+        .iter()
+        .any(|r| candidate.starts_with(r) || r.starts_with(candidate))
 }
 
 /// 启动器**自己生成**的文件。只有这张表里的才允许删。
@@ -1948,6 +2156,151 @@ mod tests {
         );
     }
 
+    // ── S-03：运行时搬到别的盘之后，守卫认不认新目录 ──────────────────
+
+    /// 在临时目录里造一块「别的盘」，把那块盘上的一个子目录当作
+    /// `[runtime] data_dir`。返回（测试用的家，那块盘的根，运行时真正落地的那棵树）。
+    ///
+    /// 为什么要分「盘的根」和「运行时那棵树」两层：真实场景就是
+    /// `D:\` 是一块盘、`D:\Hunter` 才是运行时。**同一块盘上别的东西不是我们的** ——
+    /// 这一条正是「自家地盘」这个白名单要拿捏的分寸。
+    fn 换一块盘(tag: &str) -> (crate::paths::TestHome, PathBuf, PathBuf) {
+        let h = crate::paths::test_home(tag);
+        let disk =
+            std::env::temp_dir().join(format!("hunter-otherdisk-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&disk);
+        let rt = disk.join("Hunter");
+        std::fs::create_dir_all(&rt).expect("造一块盘");
+        let mut c = crate::config::LauncherConfig::load();
+        c.runtime.data_dir = rt.to_string_lossy().into_owned();
+        c.save().expect("写配置");
+        (h, disk, rt)
+    }
+
+    /// **S-03 的正题**：`data_dir` 指到别处之后
+    ///
+    /// 1. 新的那棵树**仍然算自家地盘**（否则 repair / uninstall 会被误拒）；
+    /// 2. 同一块盘上**别的地方照样拒**（否则守卫等于开了个口子）；
+    /// 3. 老的那个 `~/.hunter/runtime` **不再**被当成自家地盘 ——
+    ///    运行时已经搬走了，那儿的东西不该再受这份「自己生成」的信任。
+    #[test]
+    fn 运行时搬到别的盘之后守卫认新目录() {
+        let (_h, disk, rt) = 换一块盘("guard-datadir");
+        let old_rt = crate::paths::root().join("runtime");
+        assert_eq!(
+            crate::paths::runtime_dir(),
+            rt,
+            "runtime_dir 该跟着 data_dir 走"
+        );
+
+        // ① 新地盘里深处的东西：能写（repair 要删的正是这些）
+        let deep = rt.join("colima").join("_lima").join("hunter");
+        std::fs::create_dir_all(&deep).expect("建目录");
+        assert!(
+            writable_path(&deep).is_ok(),
+            "{} 应当在自家地盘里",
+            deep.display()
+        );
+        // ② 整棵删的那张表也跟着走（`uninstall_builtin_runtime` 删的是这棵树的根；
+        //    `repair_builtin_runtime` 删的是它深处的几个子目录，走的是上面那条）
+        assert!(
+            deletable_tree(&crate::paths::runtime_dir()).is_ok(),
+            "卸载内置运行时删的就是这棵树"
+        );
+        // ③ 同一块盘上别的地方**不是**我们的 —— 别拿「这块盘归 Hunter 用」当理由
+        let theirs = disk.join("他自己放的东西");
+        assert!(
+            writable_path(&theirs).is_err(),
+            "{} 不是 Hunter 生成的，必须拒绝",
+            theirs.display()
+        );
+        // ④ 老地方已经不再是自家地盘
+        std::fs::create_dir_all(&old_rt).ok();
+        assert!(
+            writable_path(&old_rt.join("bin").join("docker")).is_err(),
+            "运行时搬走之后，老的 ~/.hunter/runtime 不该还算自家地盘"
+        );
+    }
+
+    /// **白名单只许收紧，不许放宽。**
+    ///
+    /// 「把运行时目录加进自家地盘」这件事有一个绝不能破的不变式：
+    /// 加进去的那个根**不能是现有根的祖先**。否则 `writable_path` 那道门
+    /// 会因为一行配置而整个失守（`data_dir = ~` 就是这种写法）。
+    /// `paths::runtime_dir` 已经把这种值挡回去了，这里是第二道。
+    #[test]
+    fn 自家地盘的第二个根不许比第一个更宽() {
+        let root = PathBuf::from("/home/u/.hunter");
+        let existing = vec![root.clone()];
+        // 更深的 —— 加（默认之外的盘就是这种）
+        assert!(may_add_root(&existing, Path::new("/mnt/别的盘/Hunter")));
+        // 里面套着的 —— 不加（默认就是这种，加了白加）
+        assert!(!may_add_root(&existing, &root.join("runtime")));
+        // 更宽的 —— **绝不加**
+        assert!(!may_add_root(&existing, Path::new("/home/u")));
+        assert!(!may_add_root(&existing, Path::new("/")));
+        // 一样宽的 —— 不加（重复项）
+        assert!(!may_add_root(&existing, &root));
+    }
+
+    /// 就算真有谁把 `data_dir` 写成了 `~`，守卫也不放宽 ——
+    /// 运行时那棵树会被拒（可修的错误），而不是把整个家目录放行（不可修）。
+    #[test]
+    fn data_dir_写成上一层时守卫不放宽() {
+        let _h = crate::paths::test_home("guard-datadir-too-wide");
+        // 先确认「正常写一个别的盘」是加得进去的（否则下面的断言等于没测）
+        assert!(may_add_root(
+            &[crate::paths::root()],
+            &PathBuf::from("/mnt/别的盘/Hunter")
+        ));
+        // 再确认「写成 ~」这条路在 paths 那一层就被挡回去了
+        let mut c = crate::config::LauncherConfig::load();
+        c.runtime.data_dir = "~".to_string();
+        c.save().expect("写配置");
+        assert_eq!(
+            crate::paths::runtime_dir(),
+            crate::paths::root().join("runtime"),
+            "写成上一层要落回默认，不能真的用它"
+        );
+        // 落回默认之后，家目录里别的地方照样写不进去
+        let theirs = crate::paths::home().join("Documents").join("他的东西.txt");
+        assert!(
+            writable_path(&theirs).is_err(),
+            "{} 不该因为一行配置就能写",
+            theirs.display()
+        );
+    }
+
+    /// colima 那道隔离守卫也要认新目录（S-03 点名的那一条）。
+    ///
+    /// `under_runtime` 是**当场读** [`crate::paths::runtime_dir`] 的，
+    /// 所以它跟着走；这里把「跟着走了」这件事钉住，免得以后有人改成常量。
+    #[test]
+    fn colima_守卫也认搬走之后的目录() {
+        let (_h, _disk, rt) = 换一块盘("guard-colima-datadir");
+
+        // 用我们自己那份 colima、COLIMA_HOME 指向搬过去之后的那个家 → 放行
+        let bin = rt.join("bin").join("colima").to_string_lossy().into_owned();
+        let home = crate::paths::colima_home().to_string_lossy().into_owned();
+        colima_call(&bin, &["list"], &[("COLIMA_HOME", home.as_str())])
+            .expect("搬走之后这里仍然是我们自己那一套");
+
+        // 指回**老**的 ~/.hunter/runtime/colima → 拒（那是搬走之前的家）
+        let stale = crate::paths::root()
+            .join("runtime")
+            .join("colima")
+            .to_string_lossy()
+            .into_owned();
+        let e = colima_call(&bin, &["list"], &[("COLIMA_HOME", stale.as_str())])
+            .expect_err("运行时已经不在这儿了，不该再认它");
+        assert!(!e.msg.is_empty());
+
+        // limactl 那条路（靠 LIMA_HOME 隔离）同样跟着走
+        let lima = crate::paths::lima_home().to_string_lossy().into_owned();
+        colima_call("/x/limactl", &["list"], &[("LIMA_HOME", lima.as_str())])
+            .expect("LIMA_HOME 落在新目录里就该放行");
+    }
+
     /// I6：凭据助手找不到时，**不许**去改用户的 `~/.docker/config.json`。
     /// 这一条不是靠「代码里我们没写那一行」保证的，是守卫真的拦得住。
     #[test]
@@ -2654,5 +3007,173 @@ mod tests {
         ]))
         .expect_err("通用门不许碰 LaunchAgents");
         assert!(e.msg.contains("LaunchAgents"), "{}", e.msg);
+    }
+
+    // ── F-02：三级授权 L1/L2/L3 ──────────────────────────────────────────
+
+    /// 三级授权的**顺序**：高档盖住低档。授权到三级，一二级当然也在内。
+    #[test]
+    fn 授权档位的顺序与含带关系() {
+        let none = GrantSet::NONE;
+        assert!(!none.at_least(Grant::Observe), "一档都没授权时连只读都不算");
+        assert!(none.levels().is_empty());
+
+        let l1 = GrantSet::up_to(Grant::Observe);
+        assert!(l1.at_least(Grant::Observe));
+        assert!(!l1.at_least(Grant::Local), "一级授权不该够得着二级动作");
+        assert!(!l1.at_least(Grant::Elevated));
+
+        let l2 = GrantSet::up_to(Grant::Local);
+        assert!(l2.at_least(Grant::Observe));
+        assert!(l2.at_least(Grant::Local));
+        assert!(!l2.at_least(Grant::Elevated), "二级授权不该够得着三级动作");
+
+        let l3 = GrantSet::up_to(Grant::Elevated);
+        assert!(l3.at_least(Grant::Elevated));
+        assert!(l3.at_least(Grant::Local), "授权到三级，二级当然也在内");
+        assert!(l3.at_least(Grant::Observe));
+        assert_eq!(l3.levels().len(), 3);
+    }
+
+    /// 配置里那张清单：认得的值取最高的一档，认不得的丢掉。
+    ///
+    /// **被改坏的配置应该少授权，不是多授权** —— 这条是这个函数的全部意义。
+    #[test]
+    fn 配置清单里认不得的值一律丢掉() {
+        let p = |v: &[&str]| GrantSet::parse(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(p(&["l1"]).max(), Some(Grant::Observe));
+        assert_eq!(p(&["l1", "l2"]).max(), Some(Grant::Local));
+        // 顺序反过来也一样（取的是最高的那一档，不是最后一个）
+        assert_eq!(p(&["l2", "l1"]).max(), Some(Grant::Local));
+        assert_eq!(p(&["l1", "l3"]).max(), Some(Grant::Elevated));
+        // 认不得的丢掉；一个都不认得的 = 一档都没授权
+        assert_eq!(p(&["L9", "全部", "", "yes"]).max(), None);
+        assert_eq!(p(&["l2", "L9"]).max(), Some(Grant::Local));
+        assert_eq!(p(&[]).max(), None);
+        // 写回去的清单总是把含在内的低档列全 —— 配置文件那行字自己就该读得懂
+        assert_eq!(p(&["l2"]).to_config(), vec!["l1", "l2"]);
+        assert_eq!(p(&["l3"]).to_config(), vec!["l1", "l2", "l3"]);
+        assert!(p(&["nonsense"]).to_config().is_empty());
+    }
+
+    /// 给用户看的那句话里**不许出现英文**（用户可见文案不中英混杂），
+    /// 而且要说清是**哪一档**。
+    #[test]
+    fn 授权档位的人话里没有英文() {
+        for g in Grant::ALL {
+            assert!(!g.cn().is_empty());
+            assert!(
+                g.cn_full().chars().all(|c| !c.is_ascii_alphabetic()),
+                "用户可见的名字里混进了英文：{}",
+                g.cn_full()
+            );
+            assert!(g.cn_full().contains(g.cn()), "{}", g.cn_full());
+        }
+        // 「现在授权到哪一档」也要能读通
+        assert!(GrantSet::NONE.cn_state().contains("一档"));
+        assert!(
+            GrantSet::up_to(Grant::Local)
+                .cn_state()
+                .contains(Grant::Local.cn_full()),
+            "要说清是哪一档"
+        );
+        assert!(GrantSet::up_to(Grant::Local).cn_list().contains("只读观察"));
+    }
+
+    // ── F-02 的「三条一个字不能松」─────────────────────────────────────
+    //
+    // 把「用管理员权限」从复核员的绝对禁令里拿掉之后，最该问的一句是
+    // 「那这三条会不会顺手也松了」。**不会** —— 它们根本不在提权那一条里，
+    // 各自由代码写死的硬校验拦着。下面这几条就是钉子。
+
+    /// 一：不删用户文件 / 数据卷 / 别的项目的容器。
+    /// **哪一档授权都换不来这件事。**
+    #[test]
+    fn 三级授权换不来删数据卷的权限() {
+        let _g = crate::paths::test_home("guard-nosaferules");
+        // 提权到位也不行 —— 这三条跟授权档位完全无关
+        let _ = GrantSet::up_to(Grant::Elevated);
+        // 删数据卷
+        assert!(argv(&a(&[
+            "/usr/bin/docker",
+            "volume",
+            "rm",
+            "hunter_hunter_pg_data"
+        ]))
+        .is_err());
+        assert!(argv(&a(&["/usr/bin/docker", "volume", "prune"])).is_err());
+        // 停 / 删别的项目的容器
+        let e = own_container("some-other-project-db")
+            .expect_err("不是 hunter 那个 compose 项目的容器一律不许动");
+        assert!(!e.msg.is_empty());
+        // 删用户目录里的东西
+        assert!(writable_path(Path::new("/etc/passwd")).is_err());
+    }
+
+    /// 二：不改用户的代理、DNS、hosts、防火墙。
+    /// （虚拟机**内部**的 DNS 是另一回事，走 [`argv_vm_dns`] 那道专门的窄门。）
+    #[test]
+    fn 三级授权换不来改网络设置的权限() {
+        for bad in [
+            vec![
+                "/usr/sbin/networksetup",
+                "-setwebproxy",
+                "Wi-Fi",
+                "1.2.3.4",
+                "8080",
+            ],
+            vec!["/usr/bin/defaults", "write", "/Library/Preferences/x", "y"],
+            vec!["/sbin/iptables", "-F"],
+            vec!["/usr/bin/tee", "/etc/hosts"],
+            vec!["/usr/bin/cp", "x", "/etc/resolv.conf"],
+        ] {
+            assert!(
+                argv(&a(&bad)).is_err(),
+                "改网络设置这条路必须还堵着：{bad:?}"
+            );
+        }
+        // 模型走的通用门**照样**不认识虚拟机内部 DNS 那几条命令
+        assert!(argv(&a(&[
+            "/usr/bin/sudo",
+            "cp",
+            "--remove-destination",
+            "/etc/resolv.conf",
+        ]))
+        .is_err());
+    }
+
+    /// 三：免费版只绑 `127.0.0.1`。
+    ///
+    /// 这一条跟授权档位毫无关系 —— 它压根不是「危险动作」，而是**产品规则**：
+    /// 绑定地址不接受任何参数，只有一个入口能写覆盖文件，而那个入口读的是
+    /// [`crate::config::WebBind::detect`]（磁盘现状），不是谁传进来的值。
+    /// 老机器上那份「沿用现状」是唯一会渲染成对外的情形，而它是单向的：
+    /// 收紧随时可以，放开没有入口。
+    #[test]
+    fn 三级授权换不来对外开网页端口的权限() {
+        let ports = crate::config::Ports::default();
+        let local = crate::config::render_override(
+            &ports,
+            "docker.io/library",
+            crate::config::WebBind::Local,
+        );
+        // 只看真正的配置行，注释里为了讲道理提到 `0.0.0.0` 不算数
+        let lines: Vec<&str> = local
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect();
+        let body = lines.join("\n");
+        assert!(body.contains("127.0.0.1:"), "免费版必须是本机地址：{body}");
+        assert!(
+            !body.contains("0.0.0.0") && !body.contains("\"3100:3000\""),
+            "免费版不许对局域网开口子：{body}"
+        );
+        // 被手改坏的覆盖文件一律落回「只本机」—— 收紧的方向不会错
+        assert_eq!(
+            crate::config::WebBind::from_override_text(
+                "web:\n    ports: !override [\"0.0.0.0:3101:3000\"]\n"
+            ),
+            crate::config::WebBind::Local
+        );
     }
 }

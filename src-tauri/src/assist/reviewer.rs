@@ -31,6 +31,20 @@
 //! 这一点值得写死在测试里（见本文件末尾 `复核通过不等于可以执行`）：
 //! 「多加一个模型来把关」很容易滑成「有模型把关了，那道代码就可以松一松」——
 //! 那正好是反过来的。
+//!
+//! ### F-02：把「用管理员权限」从绝对禁令里拿掉（2026-09-29）
+//!
+//! 原来那张判定尺度里写着「只要沾上……用管理员权限，一律否决」。后果是
+//! Windows 上装容器运行时的三条路被砍掉两条 —— 那边的链子绕不开提权，
+//! 于是一份**本来正当**的计划在判官这里就死了（I15 原话：「能力有，判官不放行」）。
+//!
+//! 现在这一条改成了「**超出用户已授权的那一档才否决**」：
+//! 提示词里拿到用户的授权档位（[`grant_brief`]），每一步也带上自己需要的档位
+//! （[`describe`]），复核员要做的是**对一下这两者**，越界才否决，
+//! 而且否决时要写清缺的是哪一档。
+//!
+//! **另外三条一个字没松**：删用户的文件 / 数据卷 / 别的项目的容器、改用户的
+//! 代理·DNS·hosts·防火墙 —— 这几条跟授权到哪一档毫无关系，哪一档都换不来。
 
 use std::time::{Duration, Instant};
 
@@ -104,7 +118,8 @@ pub const SYSTEM_PROMPT: &str = "\
 2. 它给出的理由，**对不对得上下面证据里的原话**？证据里没写的事实，计划里出现了就是编的。
 
 判定尺度：
-- 只要沾上「删用户的文件 / 删数据卷 / 停或删别的项目的容器 / 改代理、DNS、hosts、防火墙 / 用管理员权限」，一律否决。
+- 只要沾上「删用户的文件 / 删数据卷 / 停或删别的项目的容器 / 改代理、DNS、hosts、防火墙」，一律否决。这几条**一个字都不能松**，跟用户授权到了哪一档没有关系 —— 没有哪一档授权能换来「可以删你的数据卷」。
+- 需要管理员权限的动作：**看它有没有超出用户已经授权到的那一档**。下面写着用户授权到了哪一档，计划里每一步也写着它要哪一档。授权范围内的提权（例如装容器运行时本身要用到的那几步）**不是**否决理由，但要在理由里点明「这一步会弹系统授权框」；超出授权范围的一律否决，并说清缺的是哪一档授权。
 - 计划说的原因在证据里找不到依据 —— 否决。
 - 只动 Hunter 自己那一套（compose 项目 hunter）、或只动 ~/.hunter 目录里的东西 —— 这些本身不是否决理由。
 - 拿不准的时候**否决**。放行一个坏计划的代价，比多问用户一次大得多。
@@ -123,13 +138,8 @@ reasons 用中文，每条一句话，至少一条。approve 为 false 时要写
 /// * `evidence` —— 侦察员采的证据（**原样**给复核员，它要拿来对原话）
 pub fn review(calls: &[Call], why: &str, evidence: &str, key: &str) -> Verdict {
     let t = Instant::now();
-    let plan_text = describe(calls);
-    let user = format!(
-        "## 待复核的计划\n{plan_text}\n\n## 诊断员给的理由\n{}\n\n## 现场证据（唯一可信的事实来源）\n{}\n\n\
-         请按你的职责判断：放行还是否决。",
-        crate::redact::redact(why),
-        evidence
-    );
+    let granted = crate::config::LauncherConfig::load().assist.grant_set();
+    let user = user_message(calls, why, evidence, granted);
     let messages = vec![
         serde_json::json!({"role": "system", "content": SYSTEM_PROMPT}),
         serde_json::json!({"role": "user", "content": user}),
@@ -238,16 +248,23 @@ pub fn parse(text: &str) -> Verdict {
 
 /// 把计划渲染成复核员看得懂的一段文字。**用的是 [`actions::plan`] 的结果**，
 /// 也就是真要执行的那个命令 —— 展示一套、执行另一套是最糟的骗法。
+///
+/// 每一步都写上它**要哪一档授权**（F-02）：复核员要拿它和「用户授权到哪一档」
+/// 对一下，才知道这一步的提权算不算越界。不写的话，它只能靠猜 —— 而
+/// I15 那一版提示词的解法正是「看到管理员权限就否决」，两条装 Docker 的路
+/// 就是这么被砍掉的。
 pub fn describe(calls: &[Call]) -> String {
     let mut s = String::new();
     for (i, c) in calls.iter().enumerate() {
+        let need = actions::required_grant(&c.id, &c.args);
         match actions::plan(c) {
             Ok(p) => {
                 s.push_str(&format!(
-                    "{}. {}（风险级别：{}）\n   要做什么：{}\n",
+                    "{}. {}（风险级别：{}；需要的授权：{}）\n   要做什么：{}\n",
                     i + 1,
                     p.title,
                     p.level.cn(),
+                    need.cn_full(),
                     if p.argv.is_empty() {
                         p.summary.clone().unwrap_or_default()
                     } else {
@@ -257,16 +274,62 @@ pub fn describe(calls: &[Call]) -> String {
                 s.push_str(&format!("   为什么：{}\n", p.why));
             }
             Err(e) => {
+                // 表外的动作也要报出它「本该要哪一档」—— `required_grant` 对
+                // 认不得的 id 给的是最高的那一档，跟这里的「已经被拒了」是一致的
                 s.push_str(&format!(
-                    "{}. {}（这一条已经被守卫拒了：{}）\n",
+                    "{}. {}（需要的授权：{}；这一条已经被守卫拒了：{}）\n",
                     i + 1,
                     c.id,
+                    need.cn_full(),
                     e.msg
                 ));
             }
         }
     }
     s
+}
+
+/// 「用户授权到哪一档」那一段，写给复核员看。
+///
+/// **纯函数**：单测要能直接断言「只授权到二级时，这一段里写着三级没授权」，
+/// 而不是去跑一次模型调用。
+pub fn grant_brief(granted: crate::assist::guard::GrantSet) -> String {
+    let mut s = String::from("## 用户授权到哪一档\n");
+    for g in crate::assist::guard::Grant::ALL {
+        s.push_str(&format!(
+            "- {}：{}\n",
+            g.cn_full(),
+            if granted.at_least(g) {
+                "已授权"
+            } else {
+                "**没有授权**"
+            }
+        ));
+    }
+    s.push_str(
+        "\n这一档之上的动作，做之前必须让用户先授权；没授权就做 = 越界。\
+         这一档之内的提权不算越界，但要在理由里点明会弹系统授权框。\n",
+    );
+    s
+}
+
+/// 拼给复核员的那段用户消息（提示词 + 计划 + 理由 + 证据 + 授权档位）。
+///
+/// 抽出来是为了**能被单测钉住**：`review()` 只负责发请求与解析回到这里的结果。
+pub fn user_message(
+    calls: &[Call],
+    why: &str,
+    evidence: &str,
+    granted: crate::assist::guard::GrantSet,
+) -> String {
+    format!(
+        "## 待复核的计划\n{}\n{}\n## 诊断员给的理由\n{}\n\n## 现场证据（唯一可信的事实来源）\n{}\n\n\
+         请按你的职责判断：放行还是否决。",
+        describe(calls),
+        grant_brief(granted),
+        crate::redact::redact(why),
+        evidence
+    )
 }
 
 /// 把复核结果发成事件流里那张**单独的「复核」卡片**。
@@ -425,5 +488,75 @@ mod tests {
         assert!(s.contains("compose"), "{s}");
         assert!(s.contains("风险级别"), "{s}");
         assert!(s.contains("为什么"), "{s}");
+        // F-02：每一步都要报出它**要哪一档授权**，复核员才拿它去和授权对
+        assert!(s.contains("需要的授权"), "{s}");
+    }
+
+    // ── F-02：复核员的判据改法 ────────────────────────────────────────
+
+    /// 提示词里**不再**把「用管理员权限」写成绝对禁令，改成了「超出已授权才否决」。
+    ///
+    /// 这一条是 I15 的正题：Windows 上装容器运行时绕不开提权，旧措辞让
+    /// 「三条装 Docker 的路砍掉两条，能力有、判官不放行」。
+    #[test]
+    fn 提示词按授权档位判提权而不是一律否决() {
+        // 旧措辞**必须已经不在了**
+        assert!(
+            !SYSTEM_PROMPT.contains("防火墙 / 用管理员权限"),
+            "「用管理员权限」还在绝对禁令那一串里：{SYSTEM_PROMPT}"
+        );
+        // 新判据的两半都在
+        assert!(SYSTEM_PROMPT.contains("超出用户已经授权到的那一档"));
+        assert!(SYSTEM_PROMPT.contains("说清缺的是哪一档"));
+        assert!(
+            SYSTEM_PROMPT.contains("弹系统授权框"),
+            "授权范围内的提权不是否决理由，但要点明会弹框"
+        );
+        // 三条一个字没松的那几条**仍然在**，而且是「跟授权到哪一档没关系」
+        assert!(SYSTEM_PROMPT.contains("删数据卷"));
+        assert!(SYSTEM_PROMPT.contains("一个字都不能松"));
+    }
+
+    /// 「用户授权到哪一档」那一段：哪一档有、哪一档没有，一眼看得出来。
+    #[test]
+    fn 授权档位那一段把没授权的写清楚() {
+        use crate::assist::guard::{Grant, GrantSet};
+        let only_l2 = grant_brief(GrantSet::up_to(Grant::Local));
+        assert!(only_l2.contains("二级 · 本机安全操作"));
+        assert!(only_l2.contains("已授权"));
+        assert!(
+            only_l2.contains("三级 · 需要系统提权") && only_l2.contains("**没有授权**"),
+            "二级授权下，三级必须明写着没授权：{only_l2}"
+        );
+        // 三级也授权了的时候，那三个字就不该再出现
+        let all = grant_brief(GrantSet::up_to(Grant::Elevated));
+        assert!(!all.contains("没有授权"), "{all}");
+    }
+
+    /// 给模型看的完整消息里：计划、档位、理由、证据**四段都在**。
+    #[test]
+    fn 复核消息里四段都在() {
+        use crate::assist::guard::{Grant, GrantSet};
+        let msg = user_message(
+            &[Call::with("start_runtime", "app", "systemd")],
+            "运行时的服务没起来",
+            "colima 报 not running",
+            GrantSet::up_to(Grant::Local),
+        );
+        assert!(msg.contains("待复核的计划"), "{msg}");
+        assert!(msg.contains("用户授权到哪一档"), "{msg}");
+        assert!(msg.contains("诊断员给的理由"), "{msg}");
+        assert!(msg.contains("现场证据"), "{msg}");
+        // 这一步是三级，而用户只授权到二级 —— 两个数字都要它自己看得见
+        assert!(msg.contains("三级 · 需要系统提权"), "{msg}");
+        assert!(msg.contains("二级 · 本机安全操作"), "{msg}");
+    }
+
+    /// 提示词是**常量**，授权档位只出现在每次调用的那一段里 ——
+    /// 免得把「用户这一次授权到哪」烤进提示词、下一次调用忘了解析。
+    #[test]
+    fn 授权档位不烤进提示词常量里() {
+        assert!(!SYSTEM_PROMPT.contains("已授权"));
+        assert!(!SYSTEM_PROMPT.contains("三级"));
     }
 }
