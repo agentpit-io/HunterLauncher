@@ -35,6 +35,7 @@ import type {
   CleanupDone,
   CleanupPlan,
   DiagSection,
+  DiskPlan,
   MonitorAlerts,
   RestorePreflight,
   RestoreReport,
@@ -794,9 +795,21 @@ export const EV_ASSIST_RESUME = 'assist://resume'
 export async function assistConsent(
   mode: AssistMode,
   allowInstallRuntime = true,
+  /**
+   * F-02 三级授权：授权页上勾了哪几档（`["l1","l2"]`）。
+   *
+   * **不传 = 后端按出厂那一档算**（一级 + 二级，不含三级）——
+   * 三级要用户亲手勾，界面漏传不该等于替他勾上。所以这里**不写默认值**，
+   * 传 `undefined` 让 Rust 那边决定。
+   */
+  grants?: string[],
 ): Promise<LauncherSettings> {
   if (DEMO) return demo.demoSettings
-  return call<LauncherSettings>('assist_consent', { mode, allowInstallRuntime })
+  // 不传时**整个键都不出现**（而不是 `grants: undefined`）——
+  // 免得序列化那一层把它变成一个真值送过去，把「按出厂档算」变成「一档都不授权」
+  return grants
+    ? call<LauncherSettings>('assist_consent', { mode, allowInstallRuntime, grants })
+    : call<LauncherSettings>('assist_consent', { mode, allowInstallRuntime })
 }
 
 /** 开始一次全自动安装。立刻返回，过程走 `assist://event`。 */
@@ -862,6 +875,29 @@ export function onAssistDone(cb: (o: AssistOutcome) => void): Promise<UnlistenFn
  */
 export function onAssistResume(cb: () => void): Promise<UnlistenFn> {
   return on<unknown>(EV_ASSIST_RESUME, () => cb())
+}
+
+// ── U-03 · 选盘 ─────────────────────────────────────────────────────────
+
+/**
+ * 选盘卡片要的那一份事实（只读）。数字全部来自 Rust 的真实探测或代码常量。
+ *
+ * 演示模式下 `HUNTER_DEMO_PAGE=disk-none` 给的是**一块合格盘都没有**那一屏。
+ */
+export async function runtimeDiskPlan(): Promise<DiskPlan> {
+  if (DEMO) return demoPage() === 'disk-none' ? demo.demoDiskPlanNone : demo.demoDiskPlan
+  return call<DiskPlan>('runtime_disk_plan')
+}
+
+/**
+ * 把运行时装到哪块盘 —— 真的写进 `[runtime] data_dir`。
+ *
+ * `mount` 是**挂载点**（例如 `D:\`），不是路径：落地目录由 Rust 拼成
+ * `<挂载点>/Hunter`，界面递不进来一个任意路径。传空串 = 改回默认位置。
+ */
+export async function runtimeDiskSet(mount: string): Promise<DiskPlan> {
+  if (DEMO) return mount === '' ? demo.demoDiskPlan : { ...demo.demoDiskPlan, dataDir: `${mount}Hunter` }
+  return call<DiskPlan>('runtime_disk_set', { mount })
 }
 
 // ── I7 · 内置运行时 / 接管 / 一键反馈 ────────────────────────────────────

@@ -39,6 +39,15 @@ export type StateName =
   | 'DataFound'
   | 'CheckDocker'
   | 'InstallDockerGuide'
+  /**
+   * **装到哪块盘**（R5 · U-03）。
+   *
+   * 从 `InstallDockerGuide` 点「帮我装好 Docker」进来，选完盘直接进
+   * `AutoInstalling`。这一页存在的理由只有一个：运行时会往盘上写十几 GB，
+   * 而「装到 C 盘」这件事必须在**开始下载之前**就问清楚 ——
+   * 装到一半才发现盘满了，用户已经等了十几分钟。
+   */
+  | 'ChooseRuntimeDisk'
   | 'CheckDaemon'
   | 'StartDaemon'
   | 'NeedKey'
@@ -103,6 +112,13 @@ export type ErrorCode =
   // 而它们可能是四个不同的进程。这一条是「不排队、不重试」的结果，
   // **不是失败** —— 归进 E_UNKNOWN 会把它说成「出了点意外」
   | 'E_BACKUP_BUSY'
+  // R5 · U-03：选中的那块盘不能用 —— 盘拔了、被别的程序占满、或者权限没了。
+  // 和 E_CONFIG_WRITE（写配置失败）分开：那一个是「配置写不进去」，
+  // 这一个的解法是**换一块盘**，所以 RETRY_TARGET 指向选盘那一页而不是自动安装。
+  //
+  // 这个码**由界面自己发**（`runtime_disk_set` 失败时），Rust 侧没有对应常量 ——
+  // 命令返回的是 `E_NOT_IMPLEMENTED`，界面把真实原因放进 detail 里一起显示。
+  | 'E_DISK_NOT_USABLE'
   | 'E_NOT_IMPLEMENTED'
   | 'E_UNKNOWN'
 
@@ -129,6 +145,7 @@ export const ERROR_CODES: ErrorCode[] = [
   'E_RATE_LIMITED',
   'E_DATA_DOWNGRADE',
   'E_BACKUP_BUSY',
+  'E_DISK_NOT_USABLE',
   'E_NOT_IMPLEMENTED',
   'E_UNKNOWN',
 ]
@@ -151,6 +168,21 @@ export type Event =
   | { type: 'DOCKER_MISSING' }
   | { type: 'DOCKER_FOUND' }
   | { type: 'RECHECK_DOCKER' }
+  /**
+   * **「帮我装好 Docker（不用你动手）」**（R5 · U-02）。
+   *
+   * 与 `RECHECK_DOCKER` 的区别：那一个是「我再看看装没装」，这一个
+   * 是**用户说了让启动器自己来**。所以它不重复检测，直接进选盘 ——
+   * 再检测一次只会把用户弹回同一页（这一页本来就是「没装」才渲染的）。
+   */
+  | { type: 'INSTALL_DOCKER' }
+  /**
+   * 选盘卡片上按了「就装这块盘」（R5 · U-03）。
+   *
+   * 到这一步 `[runtime] data_dir` 已经真的写好了（走的是 R4 那条配置路径），
+   * 所以接下来直接进自动安装，中间不再有断点。
+   */
+  | { type: 'RUNTIME_DISK_CHOSEN' }
   | { type: 'DAEMON_DOWN' }
   | { type: 'DAEMON_UP' }
   | { type: 'TRY_START_DAEMON' }
@@ -214,6 +246,8 @@ const BACK_TARGET: Partial<Record<StateName, Exclude<StateName, 'Error'>>> = {
   ChooseModel: 'Consent',
   CheckDocker: 'Consent',
   InstallDockerGuide: 'Consent',
+  // R5：选盘的上一步是那张安装引导卡 —— 用户可能看完手动步骤想反悔
+  ChooseRuntimeDisk: 'InstallDockerGuide',
   CheckDaemon: 'Consent',
   StartDaemon: 'CheckDaemon',
   // 自动安装一旦开跑就没有「上一步」——想停下来只能点「停止」（它会走到错误页或运行面板）
@@ -224,6 +258,9 @@ const RETRY_TARGET: Partial<Record<ErrorCode, Exclude<StateName, 'Error'>>> = {
   E_DOCKER_MISSING: 'CheckDocker',
   E_DAEMON_DOWN: 'CheckDaemon',
   E_WSL_MISSING: 'CheckDocker',
+  // R5 · U-03：盘不能用 → 回到选盘那一页换一块。**不是**回自动安装 ——
+  // 那边的重试会同一块盘再来一次，然后同样地失败
+  E_DISK_NOT_USABLE: 'ChooseRuntimeDisk',
   E_KEY_INVALID: 'NeedKey',
   E_QUOTA_EXHAUSTED: 'ChooseModel',
   // 限流是等一分钟就好的事，重试当然回到填 key 那一页
@@ -324,7 +361,13 @@ export function transition(state: State, event: Event): State {
       return state
 
     case 'InstallDockerGuide':
+      // R5：用户说了让启动器自己装 → 先去选盘，再进自动安装
+      if (event.type === 'INSTALL_DOCKER') return s('ChooseRuntimeDisk')
       return event.type === 'RECHECK_DOCKER' ? s('CheckDocker') : state
+
+    // R5 · U-03：选盘。选定之后直接开装 —— 中间不再插一次「下一步」
+    case 'ChooseRuntimeDisk':
+      return event.type === 'RUNTIME_DISK_CHOSEN' ? s('AutoInstalling') : state
 
     case 'CheckDaemon':
       if (event.type === 'DAEMON_DOWN') return s('StartDaemon')
@@ -416,6 +459,8 @@ const STATE_STEP: Partial<Record<StateName, StepId>> = {
   // 只有 AI 修不了、要用户自己动手时才会真的显示出那一页
   CheckDocker: 'install',
   InstallDockerGuide: 'install',
+  // 选盘也算「自动安装」这一步：它本来就是自动安装的第一件事
+  ChooseRuntimeDisk: 'install',
   CheckDaemon: 'install',
   StartDaemon: 'install',
   AutoInstalling: 'install',
@@ -448,6 +493,7 @@ export type PageId =
   | 'data-found'
   | 'welcome'
   | 'docker'
+  | 'disk'
   | 'key'
   | 'consent'
   | 'model'
@@ -465,6 +511,7 @@ const STATE_PAGE: Record<Exclude<StateName, 'Error'>, PageId> = {
   Welcome: 'welcome',
   CheckDocker: 'docker',
   InstallDockerGuide: 'docker',
+  ChooseRuntimeDisk: 'disk',
   CheckDaemon: 'docker',
   StartDaemon: 'docker',
   NeedKey: 'key',

@@ -10,6 +10,15 @@ import { UploadLogs } from '../components/UploadLogs'
 import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
 import { useStore } from '../state/context'
+import {
+  GRANT_KEYS,
+  grantsFromConfig,
+  grantsToConfig,
+  hasGrant,
+  lastGrantChange,
+  parseAudit,
+  toggleGrant,
+} from '../lib/grants'
 import { LOCALES, type Locale } from '../i18n'
 import type { BackupSettings, LauncherSettings } from '../lib/types'
 
@@ -156,6 +165,11 @@ export function Settings() {
               )
             })}
           </div>
+          {/* R5 · F-02：三级授权。三个勾 —— 后端存的是**上限**，所以永远是一个前缀
+              （勾了三级就含一二级）。改完立刻生效：`write_settings` 当场写进
+              `[assist] grants` 并盖时间戳、写一条审计。 */}
+          <GrantsCard t={t} settings={d} onPatch={patch} />
+
           <div className="mt-[10px] text-xs leading-[1.6] text-muted">
             {d?.assistConsentedAt
               ? t.settings.assistConsentedAt(d.assistConsentedAt)
@@ -749,29 +763,71 @@ function TelemetryQueue({ onClose }: { onClose: () => void }) {
   )
 }
 
-function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+/**
+ * 三级授权那张卡（R5 · F-02）。
+ *
+ * 三档是一个**阶梯**：后端存的是「上限」，`to_config()` 只把含在内的低档列全，
+ * 所以界面上的勾永远是一个前缀（勾了三级 → 一、二、三级都在）。
+ * 规范化那一步在 `lib/grants.ts` 的 `toggleGrant` 里，有单测钉着。
+ *
+ * **默认值来自后端**（`settings.assistGrants`）—— 这里不写第二份默认值。
+ * 没读到设置时整块禁用：给一个看起来勾着、其实不知道的界面，比空着更坏。
+ */
+function GrantsCard({
+  t,
+  settings,
+  onPatch,
+}: {
+  t: ReturnType<typeof useStore>['t']
+  settings: LauncherSettings | null
+  onPatch: (p: Partial<LauncherSettings>) => void
+}) {
+  const ready = settings !== null
+  const current = grantsFromConfig(settings?.assistGrants)
   return (
-    <div className="flex items-start justify-between gap-6 py-[7px]">
-      <div className="min-w-0">
-        <div className="text-md text-ink-2">{label}</div>
-        {hint && <div className="mt-[5px] text-xs leading-[1.5] text-muted">{hint}</div>}
+    <div className="mt-[14px] border-t border-line pt-[14px]">
+      <div className="text-sm text-body">{t.grants.title}</div>
+      <div className="mt-[3px] text-xs leading-[1.55] text-muted">{t.grants.hint}</div>
+      <div className="mt-[10px] flex flex-col gap-[8px]" data-testid="settings-grants">
+        {GRANT_KEYS.map((k) => (
+          <div key={k} className="flex items-start gap-3">
+            <Checkbox
+              on={hasGrant(current, k)}
+              disabled={!ready}
+              onChange={(on) => onPatch({ assistGrants: grantsToConfig(toggleGrant(current, k, on)) })}
+            >
+              <span className="min-w-0">
+                <span className="block text-sm leading-tight text-ink">{t.grants[k].title}</span>
+                <span className="mt-[5px] block text-xs leading-[1.5] text-muted">
+                  {t.grants[k].body}
+                </span>
+              </span>
+            </Checkbox>
+          </div>
+        ))}
       </div>
-      <div className="shrink-0 pt-[2px]">{children}</div>
+      {ready && current.length === 0 && (
+        <div className="mt-[8px] text-xs leading-[1.5] text-amber-text">{t.grants.offNote}</div>
+      )}
     </div>
   )
 }
 
-
 /**
- * 「AI 都做过什么」（I5 §3.3）。
+ * 「授权变更记录」（R5）。
  *
- * 承诺「绝不会做 X」只有在用户**查得到它到底做了什么**的时候才站得住，
- * 所以审计日志要能在界面上直接看到，而不是只躺在一个要自己 cat 的文件里。
- * 内容由 Rust 侧写入时就脱敏过（key 不会出现在里面）。
+ * 0.1.17 这里是一个 `<pre>`，把 `assist-audit-tail` 的原始 JSON 一行行倒出来。
+ * 现在**先解成人话**：什么时候、谁做的、改成了什么。解不开的行仍然原样显示 ——
+ * 审计日志少写一行、或者哪天格式变了，都不该让整块面板空掉。
+ *
+ * 「什么时候改成过什么」这句话的**内容**是 Rust 写 `audit()` 时留下的 `result`
+ * （那是它当时真实做的事），界面只负责把它摆出来，不再自己拼一遍。
  */
 function AuditLog({ t }: { t: ReturnType<typeof useStore>['t'] }) {
   const [lines, setLines] = useState<string[] | null>(null)
   const [busy, setBusy] = useState(false)
+  const parsed = lines ? parseAudit(lines) : null
+  const lastChange = parsed ? lastGrantChange(parsed.entries) : null
   return (
     <div className="mt-[14px] border-t border-line pt-[14px]">
       <div className="flex items-center justify-between">
@@ -800,17 +856,71 @@ function AuditLog({ t }: { t: ReturnType<typeof useStore>['t'] }) {
           {lines ? t.settings.auditHide : t.settings.auditShow}
         </Button>
       </div>
-      {lines && (
-        <pre
-          data-testid="settings-audit"
-          className="mt-[10px] max-h-[220px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-log px-[12px] py-[9px] font-mono text-xs leading-[1.55] text-dim"
-        >
-          {lines.length > 0 ? lines.join('\n') : t.settings.auditEmpty}
-        </pre>
+      {parsed && (
+        <div className="mt-[10px]" data-testid="settings-audit">
+          {parsed.entries.length === 0 && parsed.raw.length === 0 ? (
+            <div className="text-xs leading-[1.5] text-muted">{t.settings.auditEmpty}</div>
+          ) : (
+            <>
+              <div className="text-xs leading-[1.5] text-muted">
+                {lastChange ? t.grants.decidedAt(lastChange.at) : t.grants.decidedFresh}
+              </div>
+              <ul className="mt-[8px] flex max-h-[220px] flex-col gap-[6px] overflow-auto">
+                {parsed.entries.map((e, i) => (
+                  <li
+                    key={`${e.at}-${i}`}
+                    className="flex gap-3 rounded-md bg-log px-[12px] py-[8px] text-xs leading-[1.5]"
+                  >
+                    <span className="tnum shrink-0 text-dim">{e.at}</span>
+                    <span className="min-w-0 text-body">
+                      {e.isGrantChange && (
+                        <span className="mr-1.5 text-amber-text">[{t.grants.auditTitle}]</span>
+                      )}
+                      {e.result !== '' ? e.result : t.grants.resultEmpty}
+                      {e.by !== '' && (
+                        <span className="ml-1.5 text-muted">
+                          · {t.grants.by[e.by as keyof typeof t.grants.by] ?? e.by}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {parsed.raw.length > 0 && (
+                <pre className="mt-[8px] max-h-[120px] overflow-auto whitespace-pre-wrap break-all rounded-md bg-log px-[12px] py-[9px] font-mono text-xs leading-[1.55] text-dim">
+                  {t.settings.auditRaw}
+                  {'\n'}
+                  {parsed.raw.join('\n')}
+                </pre>
+              )}
+            </>
+          )}
+        </div>
       )}
     </div>
   )
 }
+
+function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-6 py-[7px]">
+      <div className="min-w-0">
+        <div className="text-md text-ink-2">{label}</div>
+        {hint && <div className="mt-[5px] text-xs leading-[1.5] text-muted">{hint}</div>}
+      </div>
+      <div className="shrink-0 pt-[2px]">{children}</div>
+    </div>
+  )
+}
+
+
+/**
+ * 「AI 都做过什么」（I5 §3.3）。
+ *
+ * 承诺「绝不会做 X」只有在用户**查得到它到底做了什么**的时候才站得住，
+ * 所以审计日志要能在界面上直接看到，而不是只躺在一个要自己 cat 的文件里。
+ * 内容由 Rust 侧写入时就脱敏过（key 不会出现在里面）。
+ */
 
 /**
  * 「数据备份」分区（I13 · R6 6.1）。

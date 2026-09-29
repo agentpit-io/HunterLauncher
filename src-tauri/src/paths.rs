@@ -131,7 +131,7 @@ pub fn runtime_dir() -> PathBuf {
 /// 4. **工作目录的祖先** —— 这一条最要命：
 ///    [`crate::assist::guard::writable_path`] 把运行时那棵树也算进「自家地盘」，
 ///    指到 `~/.hunter` 的上一层就等于把那个白名单放宽到整片目录。
-fn data_dir_usable(p: &std::path::Path) -> bool {
+pub(crate) fn data_dir_usable(p: &std::path::Path) -> bool {
     use std::path::Component;
     // 先按字面消掉 `.` 与 `..` —— 不这么做的话 `~/..` 这种写法能绕过下面每一条比对
     // （`components()` 里那个 `..` 谁都不等于，前缀比对必然落空）

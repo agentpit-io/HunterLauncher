@@ -23,6 +23,7 @@ import type {
   BuiltinRuntimeStatus,
   DataCheck,
   DiagSection,
+  DiskPlan,
   HostMetrics,
   AssistState,
   DockerInfo,
@@ -387,6 +388,9 @@ export const demoSettings: LauncherSettings = {
   // I5：授权档位。演示里显示「已授权自动驾驶」的样子
   assistMode: 'auto',
   assistConsentedAt: '2026-09-21 10:30:00',
+  // R5：三级授权。演示里显示**出厂默认**那一档（一级 + 二级，不含三级）——
+  // 与 Rust 的 `default_grants` 一致，别在这里编一个「三级也开了」的样子
+  assistGrants: ['l1', 'l2'],
   dockerPath: '/usr/bin/docker',
   // I7：授权页上那一项勾，默认勾着
   allowInstallRuntime: true,
@@ -1315,7 +1319,41 @@ export const demoAudit: string[] = [
   '{"at":"2026-09-21 10:30:00","action":"consent","args":{},"by":"user","level":null,"result":"授权档位 auto（自动驾驶）"}',
   '{"at":"2026-09-21 10:30:01","action":"autopilot_start","args":{},"by":"user","level":null,"result":"授权档位 auto"}',
   '{"at":"2026-09-21 10:30:07","action":"remap_ports","args":{},"by":"rule","level":"Safe","result":"成功：web：3100 → 3101"}',
+  // U-03 起授权变更也走这一份审计：界面上要能读出「什么时候改成过什么」。
+  // 这一条的 args 里带 `grants` —— 正是设置页改授权那条路径写出来的格式
+  '{"at":"2026-09-21 11:02:44","action":"consent","args":{"grants":"l1,l2,l3","allow_install_runtime":"true"},"by":"user","level":null,"result":"设置页把授权改成：三级（含系统级操作）"}',
 ]
+
+/** U-03：选盘卡片在**有得选**时候的样子（截图脚本 HUNTER_DEMO_PAGE=disk）。 */
+export const demoDiskPlan: DiskPlan = {
+  volumes: [
+    { mount: 'C:\\', totalBytes: 512 * 1024 ** 3, freeBytes: 18 * 1024 ** 3, isSystem: true, hasHunter: false },
+    { mount: 'D:\\', totalBytes: 1024 * 1024 ** 3, freeBytes: 212 * 1024 ** 3, isSystem: false, hasHunter: false },
+  ],
+  chosen: 'D:\\',
+  firstInstallGb: 6,
+  parts: [
+    { key: 'download', bytes: 420 * 1024 * 1024 },
+    { key: 'images', bytes: 3_900 * 1024 * 1024 },
+    { key: 'vmBase', bytes: 1_700 * 1024 * 1024 },
+  ],
+  needGb: 15,
+  minTotalGb: 40,
+  // 上限有值、实占量不到（运行时还没装起来）—— 这两种状态在界面上是两句不同的话
+  capGb: 60,
+  usedGb: null,
+  dataDir: '',
+  runtimeDir: 'C:\\Users\\me\\.hunter\\runtime',
+}
+
+/** U-03：**一块合格的盘都没有**时候的样子（截图脚本 HUNTER_DEMO_PAGE=disk-none）。 */
+export const demoDiskPlanNone: DiskPlan = {
+  ...demoDiskPlan,
+  chosen: null,
+  volumes: [
+    { mount: 'C:\\', totalBytes: 512 * 1024 ** 3, freeBytes: 8 * 1024 ** 3, isSystem: true, hasHunter: false },
+  ],
+}
 
 
 /** 「需要你」那张卡片长什么样（三种必问情况之一）。给截图脚本用。 */

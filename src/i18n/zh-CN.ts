@@ -300,18 +300,118 @@ const zhCN = {
     okTitle: 'Docker 就绪',
     okHint: '版本满足要求，可以继续。',
     missingTitle: '没有找到 Docker',
-    missingHint: '启动器不替代 Docker，需要你先装好它。下面按你的系统给出安装方式，装完点「重新检测」。',
+    // R5 · U-04：原来写的是「需要你先装好它……装完点『重新检测』」——
+    // 与这一轮「不用你动手」的定位正面冲突，而且「需要你先…装」正是
+    // check-wording 第 4 条要拦的句式。现在主按钮在上、手动步骤在下。
+    missingHint: '这台电脑上没有装 Docker，而 Hunter 要靠它跑起来。下面的主按钮会让启动器自己装一套，不用你动手；想自己装的人，再往下的步骤也留着。',
     daemonDownTitle: 'Docker 已安装，但守护进程没在跑',
     daemonDownHint: '请启动 Docker Desktop / OrbStack，或在 Linux 上执行 sudo systemctl start docker，然后点「重新检测」。',
     installLinux: 'Linux：curl -fsSL https://get.docker.com | sh，装完把自己加进 docker 组并重新登录',
     installMac: 'macOS：推荐 OrbStack（更轻、对 Apple Silicon 友好），其次 Docker Desktop',
-    installWindows: 'Windows：需要 WSL2，先 wsl --install（要重启），再装 Docker Desktop',
+    // R5 · U-04：原来这条里带着 `wsl --install` 这条命令 —— **命令不该出现在界面文案里**
+    // （红线：用户可见文案里不许出现终端命令）。现在说的是「会发生什么」，不是「你敲什么」
+    installWindows: 'Windows：需要 WSL2。主按钮那条路会替你把它装好，中途会弹一次系统授权框，装完重启一次电脑接着往下走',
     licenseNote:
       'Docker Desktop 对 250 人以上或年收入超过 1000 万美元的企业是收费的。替代品：OrbStack（mac）、Docker Engine（Linux）、Podman（实验支持）。',
     openDownload: '打开下载页',
     openLink: '打开',
     tryStart: '尝试启动 Docker',
+    // R5 · U-02：主按钮。**文案是结论不是问句** —— 不许写成「要不要我帮你装 Docker？」
+    installBtn: '帮我装好 Docker（不用你动手）',
+    installNote: '启动器会挑一条最不打扰你的路：先装它自己那份（不改系统、不要密码），不行再走官方安装包，需要系统权限时会弹系统自带的授权框。',
   },
+  // ── R5 · 装到哪块盘（U-03）─────────────────────────────────────────────
+  //
+  // 数字**一个都不在这里**：容量、剩余、要占多少、上限、实占全部来自
+  // Rust 的 `runtime::disk::plan()`（真实探测或代码常量）。这一节只有句子。
+  disk: {
+    title: '装到哪块盘',
+    intro: 'Hunter 的运行时会在盘上占十几 GB，所以先定下来装哪儿。启动器已经替你挑好一块，也可以换。',
+    whereLabel: '默认位置',
+    whyLabel: '为什么是它',
+    sizeLabel: '会占多少',
+    freeLabel: '现在还剩多少',
+    freeValue: (gb: number) => `还剩 ${gb} GB`,
+    freeUnknown: '量不到',
+    firstInstall: (gb: number) => `第一次装大约 ${gb} GB`,
+    partsNote: '（',
+    partsJoin: ' + ',
+    partsEnd: '）',
+    part: {
+      download: '下载运行时组件',
+      images: '六个服务的镜像',
+      vmBase: '运行时磁盘底',
+    },
+    partLine: (name: string, gb: string) => `${name} ${gb} GB`,
+    // **上限与实占必须是两行**：I14·F2 曾把稀疏文件报成「86.1 GB」而实际 5.8 GB（15 倍）
+    capTitle: '运行时磁盘上限',
+    capValue: (gb: number) => `设成 ${gb} GB`,
+    capUnknown: '量不到（运行时还没装起来）',
+    usedTitle: '实际已占',
+    usedValue: (gb: number) => `${gb} GB`,
+    usedNone: '还没有装，所以是 0',
+    usedUnknown: '量不到（要等运行时起来才能问它）',
+    capVsUsed: '上限是「按需增长」的天花板，不是一上来就占满 —— 实际占多少，看「实际已占」那一行。',
+    why: {
+      system: (mount: string, gb: number) => `${mount} 是系统盘（还剩 ${gb} GB），不往它上面装；`,
+      largest: (mount: string, gb: number) => `${mount} 是剩下几块里空间最多的，还剩 ${gb} GB。`,
+      keeps: (mount: string) => `${mount} 上已经有 Hunter 的数据，沿用它省一次搬家。`,
+    },
+    noneTitle: '现在没有合适的盘',
+    noneNoDisk: (minGb: number) =>
+      `这台电脑上没有第二块能用的盘 —— 别的盘要么太小（不到 ${minGb} GB）、要么不可写。系统盘不放这些数据，所以需要一块够大的空盘。`,
+    noneShort: (mount: string, freeGb: number, shortGb: number) =>
+      `${mount} 只剩 ${freeGb} GB，离装得下还差 ${shortGb} GB。腾出这些空间，或者接一块空盘。`,
+    change: '换一块盘',
+    changeHint: '选中的盘会真的被用来放 Hunter 的运行时数据，写在配置文件的 [runtime] data_dir 里，改完立刻生效。',
+    currentLabel: '现在装在这',
+    useThis: '就装这块盘',
+    useDefault: '改回默认位置',
+    chosenTag: '已选',
+    systemTag: '系统盘',
+    hunterTag: '已有 Hunter',
+    sizeOf: (mount: string, freeGb: number, totalGb: number) =>
+      `${mount}：共 ${totalGb} GB，还剩 ${freeGb} GB`,
+    // L2 / L3 动作在执行前的「说人话」。要求是实时说清楚会发生什么，
+    // 而不是只留一行英文日志
+    nextTitle: '接下来启动器会做的事',
+    nextL2: '替你装运行时（二级授权）：只往 Hunter 自己的目录里写，不改系统、不要密码',
+    nextL3: '如果必须往系统目录里写（三级授权），会弹系统自带的授权框 —— 密码交给系统，启动器看不到',
+  },
+
+  // ── R5 · 三级授权（F-02 的界面那一半）──────────────────────────────────
+  //
+  // 默认值不在这里：出厂档位由 Rust 的 `default_grants` 决定（一级 + 二级），
+  // 界面照读 `settings.assistGrants`。两处默认值迟早会分家
+  grants: {
+    title: '授权到哪一档',
+    hint: '默认给到二级。三级要你自己勾 —— 勾了三级，一二三级自然都在内。改完立刻生效。',
+    l1: {
+      short: '一级 · 只看不动',
+      title: '一级：只看不动',
+      body: '只读这台电脑上的信息 —— Docker 装没装、端口占没占、磁盘剩多少、网络通不通。一个字节都不写。',
+    },
+    l2: {
+      short: '二级 · 本机安全操作',
+      title: '二级：本机安全操作',
+      body: '可以在 Hunter 自己的目录里动手，也能启动已经装好的 Docker、换更快的下载源、重试失败的下载。不碰系统目录，不要密码。',
+    },
+    l3: {
+      short: '三级 · 系统级操作',
+      title: '三级：系统级操作',
+      body: '可以往系统目录里写文件、装系统级组件（比如 Windows 上的 WSL2）。每一步都会弹系统自带的授权框，密码交给系统，启动器看不到也不会保存。',
+    },
+    offNote: '一档都不勾：启动器只会看、不会动手，装不了的时候它会如实说卡在哪。',
+    auditTitle: '授权变更记录',
+    auditHint: '什么时候把授权改成过什么，都记在这里，改不了也删不掉。',
+    auditEmpty: '还没有改过授权 —— 现在这一份就是第一次授权时定下的。',
+    decidedAt: (at: string) => `当前授权是 ${at} 改的。`,
+    decidedFresh: '当前授权是第一次授权时定下的。',
+    by: { user: '你', rule: '固定规则', model: 'AI', orchestrator: '总指挥' },
+    resultEmpty: '（这一条没有留下说明）',
+    rawTitle: '认不出来的记录（原样显示）',
+  },
+
   key: {
     title: '输入你的 hunter key',
     intro:
@@ -660,6 +760,10 @@ const zhCN = {
     auditEmpty: '还没有记录。',
     auditShow: '看最近 20 条',
     auditHide: '收起',
+    // R5 · U-03：授权那一张卡
+    sectionGrants: '授权',
+    grantsHint: '改完立刻生效。每一档允许启动器做什么，都写在下面。',
+    auditRaw: '认不出来的记录（原样显示）',
     assist: 'AI 诊断助手',
     assistHint: '装不上的时候，把脱敏后的现场送去 Hunter 网关问一下。默认开。',
     assistNote:
@@ -1061,7 +1165,19 @@ const zhCN = {
       // （mac 上 open -a、Linux 上先直接试、不行走系统授权框），做不到才落到这一页，
       // 所以这里说的是「启动器试过了、没成」，不是支使用户去敲命令。
       E_DAEMON_DOWN: { title: 'Docker 守护进程没在跑', hint: '启动器已经试过替你把它启动起来，没有成功。下面写了它试了什么、卡在哪一步。' },
-      E_WSL_MISSING: { title: 'Windows 缺少 WSL2', hint: '这台 Windows 上没有 WSL2，而装它需要管理员权限并重启电脑 —— 这一步启动器替不了你。' },
+      // R5 · U-04：原来写的是「装它需要管理员权限并重启电脑 —— 这一步启动器替不了你」。
+      // Windows 上那条路已经打通了：启动器自己会去装（走系统自带的授权框），
+      // 所以不该再这么说。这里说的是「它会怎么做、接下来会发生什么」。
+      E_WSL_MISSING: {
+        title: 'Windows 缺少 WSL2',
+        hint: '这台 Windows 上没有 WSL2，Docker 要靠它跑。启动器会替你把它装上 —— 中途会弹一次系统自带的授权框，密码交给系统；装完需要重启一次电脑，重启之后重新打开启动器就接着往下走。',
+      },
+      // R5 · U-03：选中的那块盘不能用了（盘拔了、被占满了、权限没了）。
+      // 与「写配置失败」分开：那一个重试还是同一处，这一个要换一块盘
+      E_DISK_NOT_USABLE: {
+        title: '选中的那块盘不能用了',
+        hint: '装运行时的位置现在写不进去 —— 盘可能被拔掉了、被别的程序占满了，或者权限变了。回到选盘那一页换一块，剩下的启动器接着做。',
+      },
       E_BUILTIN_DOWN: {
         title: 'Hunter 自己那台虚拟机没起来',
         hint: '这不是你电脑上的 Docker：上一次安装在 ~/.hunter/runtime 里装了一套只服务 Hunter 的运行时，它的虚拟机现在没在跑。启动器会自己把它起起来，起不来就清掉残骸重建一次 —— 整个过程只动 ~/.hunter/runtime，你的 ~/.colima、别的容器和数据卷一个字节都不会碰。',

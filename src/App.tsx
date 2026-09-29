@@ -6,6 +6,7 @@ import { Booting } from './pages/Booting'
 import { DataFound } from './pages/DataFound'
 import { Welcome } from './pages/Welcome'
 import { Docker } from './pages/Docker'
+import { RuntimeDisk } from './pages/RuntimeDisk'
 import { Key } from './pages/Key'
 import { Model } from './pages/Model'
 import { Consent } from './pages/Consent'
@@ -189,6 +190,9 @@ function Page() {
       return <Welcome />
     case 'docker':
       return <Docker />
+    // R5 · U-03：装到哪块盘。INSTALL_DOCKER 之后、自动安装之前的那一站
+    case 'disk':
+      return <RuntimeDisk />
     case 'key':
       return <Key />
     case 'model':

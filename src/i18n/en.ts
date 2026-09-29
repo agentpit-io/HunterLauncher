@@ -288,20 +288,125 @@ const en: Dict = {
     okTitle: 'Docker is ready',
     okHint: 'Versions meet the requirement, you can continue.',
     missingTitle: 'Docker not found',
+    // R5 · U-04: was "install it first … click Check again", which contradicted
+    // this round's "you don't have to lift a finger" positioning.
     missingHint:
-      'The launcher does not replace Docker — install it first. Instructions for your platform are below; click "Check again" when done.',
+      'Docker is not installed on this machine, and Hunter needs it. The button below lets the launcher install one for you — no work on your side. The manual steps further down are still there for anyone who prefers them.',
     daemonDownTitle: 'Docker is installed but the daemon is not running',
     daemonDownHint:
       'Start Docker Desktop / OrbStack, or run sudo systemctl start docker on Linux, then click "Check again".',
     installLinux: 'Linux: curl -fsSL https://get.docker.com | sh, then add yourself to the docker group and log back in',
     installMac: 'macOS: OrbStack recommended (lighter, Apple-Silicon friendly), Docker Desktop otherwise',
-    installWindows: 'Windows: WSL2 required — run wsl --install (reboot needed), then install Docker Desktop',
+    // R5 · U-04: used to spell out the `wsl --install` command — terminal commands
+    // do not belong in user-facing copy. Says what will happen, not what to type.
+    installWindows:
+      'Windows: WSL2 is required. The button above installs it for you, with one system permission prompt, and you continue after a reboot',
     licenseNote:
       'Docker Desktop is a paid product for companies with 250+ employees or over $10M annual revenue. Alternatives: OrbStack (mac), Docker Engine (Linux), Podman (experimental).',
     openDownload: 'Open download page',
     openLink: 'Open',
     tryStart: 'Try starting Docker',
+    // R5 · U-02: a statement, not a question ("shall I install Docker for you?" is wrong)
+    installBtn: 'Install Docker for me (no work on your side)',
+    installNote:
+      'The launcher picks the least intrusive path: its own copy first (no system changes, no password), then the official installer, using the system prompt when it needs privilege.',
   },
+  // ── R5 · which disk to install on (U-03) ─────────────────────────────
+  // Not a single number lives here: capacity, free space, footprint, cap and
+  // actual usage all come from Rust's `runtime::disk::plan()`. Sentences only.
+  disk: {
+    title: 'Which disk to install on',
+    intro:
+      "Hunter's runtime takes a dozen or so GB, so let's settle where it goes. The launcher already picked one for you; you can change it.",
+    whereLabel: 'Default location',
+    whyLabel: 'Why this one',
+    sizeLabel: 'How much it takes',
+    freeLabel: 'Free right now',
+    freeValue: (gb: number) => `${gb} GB free`,
+    freeUnknown: 'not measurable',
+    firstInstall: (gb: number) => `about ${gb} GB for the first install`,
+    partsNote: ' (',
+    partsJoin: ' + ',
+    partsEnd: ')',
+    part: {
+      download: 'runtime components download',
+      images: 'images for the six services',
+      vmBase: 'runtime disk baseline',
+    },
+    partLine: (name: string, gb: string) => `${name} ${gb} GB`,
+    capTitle: 'Runtime disk cap',
+    capValue: (gb: number) => `set to ${gb} GB`,
+    capUnknown: 'not measurable (the runtime is not up yet)',
+    usedTitle: 'Actually used',
+    usedValue: (gb: number) => `${gb} GB`,
+    usedNone: 'nothing yet — it is 0',
+    usedUnknown: 'not measurable (only the runtime itself can report this)',
+    capVsUsed:
+      'The cap is a grow-on-demand ceiling, not something claimed up front — read the "Actually used" line for what is really on disk.',
+    why: {
+      system: (mount: string, gb: number) =>
+        `${mount} is the system disk (${gb} GB left), so nothing goes there; `,
+      largest: (mount: string, gb: number) =>
+        `${mount} has the most free space of the rest, with ${gb} GB left.`,
+      keeps: (mount: string) => `${mount} already holds Hunter data, so reusing it saves a move.`,
+    },
+    noneTitle: 'No suitable disk right now',
+    noneNoDisk: (minGb: number) =>
+      `There is no second usable disk on this machine — the others are either too small (under ${minGb} GB) or not writable. The system disk is off limits for this data, so it needs a large enough empty disk.`,
+    noneShort: (mount: string, freeGb: number, shortGb: number) =>
+      `${mount} has only ${freeGb} GB left, ${shortGb} GB short of enough. Free that much up, or attach an empty disk.`,
+    change: 'Use another disk',
+    changeHint:
+      "The chosen disk really is where Hunter's runtime data goes — written to [runtime] data_dir in the config file, effective immediately.",
+    currentLabel: 'Installed at',
+    useThis: 'Install on this disk',
+    useDefault: 'Back to the default location',
+    chosenTag: 'chosen',
+    systemTag: 'system',
+    hunterTag: 'has Hunter',
+    sizeOf: (mount: string, freeGb: number, totalGb: number) =>
+      `${mount}: ${totalGb} GB total, ${freeGb} GB free`,
+    nextTitle: 'What the launcher does next',
+    nextL2:
+      "Installs the runtime for you (level 2): writes only inside Hunter's own folder, no system changes, no password",
+    nextL3:
+      'If it must write into system folders (level 3), the system permission prompt appears — the password goes to the OS, never to the launcher',
+  },
+
+  // ── R5 · three levels of authorization (the UI half of F-02) ──────────
+  // The default is not here either: Rust's `default_grants` decides it
+  // (levels 1 + 2), and the UI reads `settings.assistGrants`.
+  grants: {
+    title: 'How far the launcher is authorized',
+    hint: 'Level 2 by default. Level 3 is yours to tick — ticking it includes levels 1 and 2. Effective immediately.',
+    l1: {
+      short: 'Level 1 · look only',
+      title: 'Level 1: look, do not touch',
+      body: 'Reads information on this machine only — whether Docker is present, whether ports are taken, how much disk is free, whether the network works. It writes nothing.',
+    },
+    l2: {
+      short: 'Level 2 · safe local actions',
+      title: 'Level 2: safe local actions',
+      body: "May act inside Hunter's own folder, start an already-installed Docker, switch to a faster download source, retry a failed download. No system folders, no password.",
+    },
+    l3: {
+      short: 'Level 3 · system-level actions',
+      title: 'Level 3: system-level actions',
+      body: 'May write into system folders and install system-level components (WSL2 on Windows, for example). Every such step raises the system permission prompt; the password goes to the OS, never to the launcher.',
+    },
+    offNote:
+      'With nothing ticked the launcher only looks and never acts — when it cannot install something it says exactly where it stopped.',
+    auditTitle: 'Authorization changes',
+    auditHint:
+      'When the authorization was changed and to what is recorded here — it cannot be edited or removed.',
+    auditEmpty: 'Never changed — the current setting dates from the first authorization.',
+    decidedAt: (at: string) => `Current authorization was set at ${at}.`,
+    decidedFresh: 'Current authorization dates from the first authorization.',
+    by: { user: 'you', rule: 'rules', model: 'AI', orchestrator: 'orchestrator' },
+    resultEmpty: '(no note was recorded for this entry)',
+    rawTitle: 'Unrecognized entries (shown verbatim)',
+  },
+
   key: {
     title: 'Enter your hunter key',
     intro:
@@ -620,6 +725,10 @@ const en: Dict = {
     auditEmpty: 'Nothing recorded yet.',
     auditShow: 'Show last 20',
     auditHide: 'Hide',
+    // R5 · U-03: the authorization card
+    sectionGrants: 'Authorization',
+    grantsHint: 'Effective immediately. What each level lets the launcher do is written below.',
+    auditRaw: 'Unrecognized entries (shown verbatim)',
     assist: 'AI diagnosis assistant',
     assistHint: 'When setup fails, send the redacted diagnostics to the Hunter gateway. On by default.',
     assistNote:
@@ -996,7 +1105,15 @@ const en: Dict = {
         title: "Hunter's own VM is not running",
         hint: 'This is not the Docker on your machine: a previous install placed a Hunter-only runtime under ~/.hunter/runtime, and its VM is currently down. The launcher will start it, and rebuild it if that fails — touching nothing outside ~/.hunter/runtime.',
       },
-      E_WSL_MISSING: { title: 'WSL2 is missing', hint: 'Run wsl --install, reboot, then come back.' },
+      // R5 · U-04: same fix as the Chinese side — the launcher installs WSL2 itself now
+      E_WSL_MISSING: {
+        title: 'WSL2 is missing',
+        hint: 'This Windows machine has no WSL2, and Docker needs it. The launcher installs it for you — one system permission prompt, the password goes to Windows, never to the launcher. It needs a reboot afterwards; open the launcher again and it carries on.',
+      },
+      E_DISK_NOT_USABLE: {
+        title: 'The chosen disk is no longer usable',
+        hint: 'The runtime location cannot be written to right now — the disk may have been unplugged, filled up, or lost its permissions. Go back to the disk page and pick another one; the launcher continues from there.',
+      },
       E_KEY_INVALID: { title: 'Invalid key', hint: 'The gateway rejected this key (wrong key, or it has been revoked).' },
       E_QUOTA_EXHAUSTED: { title: "Today's quota is used up", hint: 'It resets at 00:00 Asia/Shanghai, or switch to your own model key now.' },
       E_PULL_FAILED: { title: 'Image pull failed', hint: 'Retried 3 times without success. Switch registry, or import an offline bundle.' },

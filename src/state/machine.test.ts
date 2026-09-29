@@ -54,6 +54,7 @@ const ALL_STATES: State[] = [
   { name: 'Welcome' },
   { name: 'CheckDocker' },
   { name: 'InstallDockerGuide' },
+  { name: 'ChooseRuntimeDisk' },
   { name: 'CheckDaemon' },
   { name: 'StartDaemon' },
   { name: 'NeedKey' },
@@ -79,6 +80,8 @@ const ALL_EVENTS: Event[] = [
   { type: 'DOCKER_MISSING' },
   { type: 'DOCKER_FOUND' },
   { type: 'RECHECK_DOCKER' },
+  { type: 'INSTALL_DOCKER' },
+  { type: 'RUNTIME_DISK_CHOSEN' },
   { type: 'DAEMON_DOWN' },
   { type: 'DAEMON_UP' },
   { type: 'TRY_START_DAEMON' },
@@ -142,6 +145,80 @@ describe('Docker 分支', () => {
     const daemon = run(INITIAL_STATE, [...TO_DOCKER, { type: 'DOCKER_FOUND' }])
     expect(daemon.name).toBe('CheckDaemon')
     expect(transition(daemon, { type: 'DAEMON_UP' }).name).toBe('AutoInstalling')
+  })
+})
+
+/**
+ * R5 · U-01 / U-03：**装到哪块盘**这条路径。
+ *
+ * 0.1.17 及以前，`InstallDockerGuide` 只有一个事件 `RECHECK_DOCKER` ——
+ * 用户停在这一页除了「重新检测」什么也做不了：检测结果当然还是「没装」，
+ * 于是那一页就是他这次安装的终点。
+ *
+ * 这里把新路径的**每一个转移**都钉死，包括从选盘回退、以及盘不能用之后
+ * 「重试」跳到哪。
+ */
+describe('R5 · 装到哪块盘（U-01 / U-03）', () => {
+  const guide = run(INITIAL_STATE, [...TO_DOCKER, { type: 'DOCKER_MISSING' }])
+
+  it('引导页上点「帮我装好 Docker」→ 进选盘，而不是再检测一次', () => {
+    expect(guide.name).toBe('InstallDockerGuide')
+    expect(transition(guide, { type: 'INSTALL_DOCKER' }).name).toBe('ChooseRuntimeDisk')
+    // 反面对照：老的「重新检测」还是回检测页（那条路一个字都没改）
+    expect(transition(guide, { type: 'RECHECK_DOCKER' }).name).toBe('CheckDocker')
+  })
+
+  it('选完盘直接进自动安装 —— 中间不再插一次「下一步」', () => {
+    const disk = transition(guide, { type: 'INSTALL_DOCKER' })
+    expect(transition(disk, { type: 'RUNTIME_DISK_CHOSEN' }).name).toBe('AutoInstalling')
+  })
+
+  it('选盘页的「上一步」退回安装引导卡（用户可能看完手动步骤想反悔）', () => {
+    expect(transition({ name: 'ChooseRuntimeDisk' }, { type: 'BACK' }).name).toBe('InstallDockerGuide')
+  })
+
+  it('选盘那一步在步骤条上归「自动安装」', () => {
+    expect(stepOf({ name: 'ChooseRuntimeDisk' })).toBe('install')
+  })
+
+  it('选盘与 Docker 检测**不是同一页**（否则用户会以为按钮没反应）', () => {
+    expect(pageOf({ name: 'ChooseRuntimeDisk' })).toBe('disk')
+    expect(pageOf({ name: 'InstallDockerGuide' })).toBe('docker')
+  })
+
+  it('选盘页停在自动安装之前，所以「自动安装」那一步还是 current', () => {
+    expect(stepperOf({ name: 'ChooseRuntimeDisk' }).map((x) => `${x.id}:${x.status}`)).toEqual([
+      'welcome:done',
+      'key:done',
+      'consent:done',
+      'model:done',
+      'install:current',
+    ])
+  })
+
+  it('E_DISK_NOT_USABLE 是独立错误码，重试回**选盘**而不是自动安装', () => {
+    expect(ERROR_CODES).toContain('E_DISK_NOT_USABLE')
+    const err: State = { name: 'Error', code: 'E_DISK_NOT_USABLE', from: 'ChooseRuntimeDisk' }
+    expect(transition(err, { type: 'RETRY' }).name).toBe('ChooseRuntimeDisk')
+    // 回自动安装是错的：那边的重试会拿同一块盘再来一次，然后同样地失败
+    expect(transition(err, { type: 'RETRY' }).name).not.toBe('AutoInstalling')
+  })
+
+  it('从选盘页出错时，「上一步」退到错误发生前那一页', () => {
+    const err: State = { name: 'Error', code: 'E_DISK_NOT_USABLE', from: 'ChooseRuntimeDisk' }
+    expect(transition(err, { type: 'BACK' }).name).toBe('ChooseRuntimeDisk')
+  })
+
+  it('选盘页收到不相关的事件就原地不动（慢回来的异步结果不把人拽走）', () => {
+    const disk: State = { name: 'ChooseRuntimeDisk' }
+    expect(transition(disk, { type: 'DAEMON_UP' })).toBe(disk)
+    expect(transition(disk, { type: 'AUTO_DONE' })).toBe(disk)
+  })
+
+  it('选盘页仍然能被后端的 RESUME_INSTALL 接手（复用 I9 那条路）', () => {
+    expect(transition({ name: 'ChooseRuntimeDisk' }, { type: 'RESUME_INSTALL' }).name).toBe(
+      'AutoInstalling',
+    )
   })
 })
 
@@ -311,6 +388,7 @@ describe('上一步（I5 调整顺序之后）', () => {
       'Consent',
       'CheckDocker',
       'InstallDockerGuide',
+      'ChooseRuntimeDisk',
       'CheckDaemon',
       'StartDaemon',
       'ChooseModel',
@@ -377,7 +455,13 @@ describe('步骤条', () => {
   })
 
   it('Docker 的几个状态都归在「自动安装」这一步', () => {
-    for (const name of ['CheckDocker', 'InstallDockerGuide', 'CheckDaemon', 'StartDaemon'] as const) {
+    for (const name of [
+      'CheckDocker',
+      'InstallDockerGuide',
+      'ChooseRuntimeDisk',
+      'CheckDaemon',
+      'StartDaemon',
+    ] as const) {
       expect(stepOf({ name })).toBe('install')
     }
   })
@@ -403,6 +487,7 @@ describe('步骤条', () => {
       'Welcome',
       'CheckDocker',
       'InstallDockerGuide',
+      'ChooseRuntimeDisk',
       'CheckDaemon',
       'StartDaemon',
       'NeedKey',
