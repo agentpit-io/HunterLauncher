@@ -134,6 +134,31 @@ export function Docker() {
           规则层零 token，认不出来才会给出「让 AI 帮我看看」。 */}
       {!ok && !docker.loading && <AssistPanel className="mt-gap" errorCode={code ?? undefined} errorMessage={d?.problem ?? undefined} stage="docker" />}
 
+      {/* R5 · U-02：**「帮我装」的主按钮**，在静态引导卡**上面**。
+          文案是结论不是问句。手动引导（下面那张卡）保留 —— 它是给「我偏要自己装」的人看的。
+          daemonDown 时那一套一个字都没改：装了没起是「启动」，不是「安装」。 */}
+      {missing && !docker.loading && (
+        <Card className="mt-gap">
+          <div className="flex items-start justify-between gap-6">
+            <div className="min-w-0 max-w-[620px] text-sm leading-[1.55] text-body">
+              {t.docker.installNote}
+            </div>
+            <Button
+              variant="primary"
+              trailing={<ChevronRight />}
+              data-testid="docker-install-for-me"
+              onClick={() => {
+                // 先去选盘（R5 · U-01），再进自动安装。这一页不重复检测 ——
+                // 它本来就是「没装」才渲染的，再检测一次只会原地转一圈
+                send({ type: 'INSTALL_DOCKER' })
+              }}
+            >
+              {t.docker.installBtn}
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* 安装引导：内容来自 Rust 的 install_guide（按平台生成），不是前端写死的 */}
       {!ok && !docker.loading && d?.installGuide && (
         <Card className="mt-gap max-h-[224px] overflow-y-auto">

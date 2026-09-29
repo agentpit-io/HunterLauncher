@@ -444,6 +444,16 @@ export interface LauncherSettings {
   assistMode: AssistMode
   /** 用户是哪一刻做的授权（上海时间）。空 = 还没授权过 */
   assistConsentedAt: string
+  /**
+   * F-02 三级授权：现在授权到哪几档（`["l1","l2"]`）。
+   *
+   * **默认值由 Rust 决定**（`config.rs` 的 `default_grants`：一级 + 二级，
+   * 不含三级），界面照读，**不许在这里另写一份默认** —— 两份默认值迟早会分家。
+   *
+   * `null` = 这次不改它（`write_settings` 的语义：旧版界面不带这个字段，
+   * 拿空表当「一档都不授权」会把安装能力关掉）。
+   */
+  assistGrants: string[] | null
   /** 现在实际用的 docker 路径。只读，拿不到就是 null（界面显示「—」） */
   dockerPath: string | null
   /** I7：授权页上那一项勾 —— 没有 Docker 时允许 AI 自动装一套 */
@@ -462,6 +472,61 @@ export interface LauncherSettings {
   lastTraceCode: string
   /** I16：最近一次上传的时间，上海时间（只读） */
   lastUploadAt: string
+}
+
+// ── U-03 · 选盘 ─────────────────────────────────────────────────────────
+
+/**
+ * 一块盘。**含系统盘** —— 界面要能说清「为什么不是 C 盘」，就得先看到 C 盘。
+ * 字段与 Rust 的 `runtime::disk::Volume` 逐字对应。
+ */
+export interface DiskVolume {
+  /** 挂载点。Windows 上是 `D:\`，macOS / Linux 上是路径 */
+  mount: string
+  totalBytes: number
+  freeBytes: number
+  /** 系统卷。**永远不会被选为默认位置**（Rust 侧 `eligible` 里那一条） */
+  isSystem: boolean
+  /** 这块盘上已经有 Hunter 的内置运行时（沿用它，省一次搬家） */
+  hasHunter: boolean
+}
+
+/** 「第一次装大约要占多少」里的一笔（键名对应 i18n 的 `disk.part.*`） */
+export interface DiskPart {
+  key: 'download' | 'images' | 'vmBase'
+  bytes: number
+}
+
+/**
+ * 选盘卡片要的全部**事实**（U-03）。数字全部来自 Rust 的真实探测或代码常量 ——
+ * 界面只负责把这些数翻译成人话，一个数都不许自己写。
+ */
+export interface DiskPlan {
+  volumes: DiskVolume[]
+  /**
+   * 打分第一名（挂载点）。`null` = **一块合格的都没有** ——
+   * 这时界面必须有话可说，不许静默失败、更不许瞎选一块。
+   */
+  chosen: string | null
+  /** 第一次装大约要占多少（GB，向上取整） */
+  firstInstallGb: number
+  parts: DiskPart[]
+  /** 建议至少留多少（GB）：比「第一次装」多出一份备份与余量 */
+  needGb: number
+  /** 候选门槛：总容量小于这个数的一律不看（GB） */
+  minTotalGb: number
+  /**
+   * 运行时磁盘**上限**（GB）。**与「实际已占」是两件事，不许混成一句** ——
+   * I14·F2 曾把稀疏文件报成「86.1 GB」而实际只有 5.8 GB（差 15 倍）。
+   * 量不到就是 `null`：界面如实说量不到，不编一个数。
+   */
+  capGb: number | null
+  /** **实际已占**（GB）。量不到就是 `null` */
+  usedGb: number | null
+  /** 配置里现在写的 `[runtime] data_dir`（空 = 还没选过，用默认位置） */
+  dataDir: string
+  /** 现在**实际**落在哪 */
+  runtimeDir: string
 }
 
 // ── I7 · 内置运行时 ──────────────────────────────────────────────────────

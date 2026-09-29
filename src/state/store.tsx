@@ -14,6 +14,10 @@ const DEMO_STATES: Record<string, State> = {
   'data-found': { name: 'DataFound' },
   docker: { name: 'CheckDaemon' },
   'docker-missing': { name: 'InstallDockerGuide' },
+  // R5 · U-03：装到哪块盘。disk = 有得选；disk-none = 一块合格的盘都没有
+  // （S-01 返回 None 那一格，看的是界面**有没有话说**）
+  disk: { name: 'ChooseRuntimeDisk' },
+  'disk-none': { name: 'ChooseRuntimeDisk' },
   key: { name: 'NeedKey' },
   // I14 · F3：「只删除应用，保留数据」之后重装时的 key 页 ——
   // 上面是「沿用上次保留的 key」那张卡片，输入框收起来

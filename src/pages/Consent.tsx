@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { Button, ChevronRight } from '../components/Button'
+import { Checkbox } from '../components/Field'
 import { WizardLayout } from '../components/WizardLayout'
 import { useStore } from '../state/context'
+import { useAsync } from '../lib/useAsync'
 import * as ipc from '../lib/ipc'
+import { GRANT_KEYS, grantsFromConfig, hasGrant, toggleGrant, type GrantKey } from '../lib/grants'
 import type { AssistMode } from '../lib/types'
 
 /**
@@ -28,6 +31,20 @@ export function Consent() {
   // I7：默认勾着。I8 起它覆盖整条兜底链（内置运行时 / OrbStack / Homebrew）。
   const [allowInstall, setAllowInstall] = useState(true)
 
+  /**
+   * R5 · F-02：授权到哪一档（三个勾）。
+   *
+   * **默认值不在这里** —— 它从后端读（`read_settings` 的 `assistGrants`，
+   * Rust 侧 `default_grants` 定的是「一级 + 二级，不含三级」）。
+   * 界面里另写一份默认值的话，两份迟早会分家。
+   *
+   * `null` = 用户还没动过，那就照后端当前的值显示。
+   */
+  const settings = useAsync(() => ipc.readSettings(), [])
+  const [picked, setPicked] = useState<GrantKey[] | null>(null)
+  const loaded = settings.data !== null
+  const current: GrantKey[] = picked ?? (settings.data ? grantsFromConfig(settings.data.assistGrants) : [])
+
   // 档位写死成 `auto`：这一页不再让用户选档（要改去设置页）
   const MODE: AssistMode = 'auto'
 
@@ -35,7 +52,9 @@ export function Consent() {
     setBusy(true)
     setError(null)
     try {
-      await ipc.assistConsent(MODE, allowInstall)
+      // 读到了就**显式**把勾的结果送过去；还没读到就整个不传，
+      // 由后端按出厂那一档算（见 ipc.assistConsent 的说明）
+      await ipc.assistConsent(MODE, allowInstall, loaded ? current : undefined)
       send({ type: 'CONSENT_GIVEN' })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -92,6 +111,36 @@ export function Consent() {
             </li>
           ))}
         </ul>
+      </div>
+
+      {/* R5 · F-02：三级授权。三档是一个**阶梯** —— 勾了三级就含一二级，
+          所以后端存的是「上限」，这里显示的也永远是一个前缀（见 lib/grants.ts）。
+          默认值来自后端，不是这里写死的。 */}
+      <div
+        data-testid="consent-grants"
+        className="mt-[16px] flex max-w-[860px] flex-col gap-[10px] rounded-lg border border-line bg-card px-5 py-4"
+      >
+        <div className="text-md font-medium leading-tight text-ink">{t.grants.title}</div>
+        <div className="text-xs leading-[1.55] text-muted">{t.grants.hint}</div>
+        {GRANT_KEYS.map((k) => (
+          <div key={k} className="mt-[2px] flex items-start gap-3">
+            <Checkbox
+              on={hasGrant(current, k)}
+              disabled={busy}
+              onChange={(on) => setPicked(toggleGrant(current, k, on))}
+            >
+              <span className="min-w-0">
+                <span className="block text-sm leading-tight text-ink">{t.grants[k].title}</span>
+                <span className="mt-[5px] block text-xs leading-[1.5] text-body">
+                  {t.grants[k].body}
+                </span>
+              </span>
+            </Checkbox>
+          </div>
+        ))}
+        {current.length === 0 && (
+          <div className="text-xs leading-[1.5] text-amber-text">{t.grants.offNote}</div>
+        )}
       </div>
 
       {/* I7 · 那一项默认勾选的勾。勾着 = 「电脑上没有 Docker 时允许 AI 装一套」。

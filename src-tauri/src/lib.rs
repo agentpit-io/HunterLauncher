@@ -244,6 +244,9 @@ pub fn run() {
             commands::data_check_deep,
             commands::stack_plan,
             commands::stack_op,
+            // U-03：选盘 —— 查一次（只读）与真的写进 [runtime] data_dir
+            commands::runtime_disk_plan,
+            commands::runtime_disk_set,
             // I7 · 内置运行时 / 接管 / 一键反馈
             commands::builtin_runtime_status,
             commands::builtin_runtime_uninstall,

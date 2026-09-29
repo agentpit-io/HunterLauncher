@@ -39,6 +39,35 @@ use std::path::Path;
 /// ```
 pub const NEED_BYTES: u64 = 15 * 1024 * 1024 * 1024;
 
+// ── 「第一次装大约要占多少」那三块（U-03）────────────────────────────────
+//
+// 上面那段注释里的前四项，这里**拆成常量**，好让界面上的「会占多少」
+// 一行一行都能对回代码，而不是界面自己写一串数字。
+//
+// 口径统一成 MiB（1 MiB = 1024² B）—— 与 [`score`] 里算 GiB 是同一套进位，
+// 免得界面上「0.4 GB」和「420 MB」两处对不上。
+/// 内置运行时那几个二进制包（下载）
+pub const DOWNLOAD_BYTES: u64 = 420 * 1024 * 1024;
+/// 六个服务的镜像，拉下来解压之后
+pub const IMAGES_BYTES: u64 = 3_900 * 1024 * 1024;
+/// lima / colima 那台虚拟机的磁盘底
+pub const VM_BASE_BYTES: u64 = 1_700 * 1024 * 1024;
+
+/// **第一次装**实际要落盘的那几块（下载 + 镜像 + 虚拟机磁盘底）。
+///
+/// 不含「一份备份」（那是装完之后的事）也不含余量（那是 [`NEED_BYTES`]
+/// 比它多出来的部分）。界面上的「第一次装大约 X GB」用的就是这个数，
+/// 而「建议至少留 Y GB」用的是 [`NEED_BYTES`] —— 两个数**不能混成一句**。
+pub const FIRST_INSTALL_BYTES: u64 = DOWNLOAD_BYTES + IMAGES_BYTES + VM_BASE_BYTES;
+
+// 编译期就拦住「第一次装就要的字节数已经顶到建议阈值」—— 这正是
+// 「有人把上面某一块调大了却忘了看 [`NEED_BYTES`]」会犯的错。
+// 写成常量断言而不是单测，是因为它在**编译**时就该红，不用等跑测试。
+const _: () = assert!(
+    FIRST_INSTALL_BYTES < NEED_BYTES,
+    "第一次装要的字节数已经顶到建议阈值了：改小那三块，或者重新核 NEED_BYTES"
+);
+
 /// 够不够得着当候选：总容量小于这个数的一律不看（U 盘里的分区、只读系统分区）。
 pub const MIN_TOTAL_BYTES: u64 = 40 * 1024 * 1024 * 1024;
 
@@ -51,7 +80,11 @@ pub const MIN_TOTAL_BYTES: u64 = 40 * 1024 * 1024 * 1024;
 pub const TIGHT_BYTES: u64 = NEED_BYTES * 3;
 
 /// 一块盘（一个挂载点 / 一个盘符）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` 是 U-03 加的：选盘卡片要把它**整块**（含系统盘）拿到界面上，
+/// 才能说清「为什么不是 C 盘」。字段名走 camelCase，和界面其余部分一致。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Volume {
     /// 挂载点。Windows 上是盘符（`D:\`），macOS / Linux 上是路径
     pub mount: String,
@@ -201,6 +234,134 @@ pub fn path_is_ok(path: &Path) -> bool {
         }
         None => false,
     }
+}
+
+// ── U-03：选盘卡片要的那一份数据 ─────────────────────────────────────────
+
+/// 「第一次装大约要占多少」的三块，给界面逐条列出来。
+///
+/// 每一条都是上面那几个常量，一个数都不在界面上现写。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartBytes {
+    /// `download` / `images` / `vmBase` —— 界面按它取文案
+    pub key: String,
+    pub bytes: u64,
+}
+
+fn parts() -> Vec<PartBytes> {
+    [
+        ("download", DOWNLOAD_BYTES),
+        ("images", IMAGES_BYTES),
+        ("vmBase", VM_BASE_BYTES),
+    ]
+    .into_iter()
+    .map(|(key, bytes)| PartBytes {
+        key: key.to_string(),
+        bytes,
+    })
+    .collect()
+}
+
+/// 选盘卡片（U-03）要的全部事实。
+///
+/// 这里**只给事实**：「为什么是它」那句话由界面拼 —— 界面才有 i18n，
+/// 而 Rust 这一侧不该再长出一套只有中文的句子。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskPlan {
+    /// 库里所有够格的卷，**含系统卷**（标了 `isSystem`）——
+    /// 不把系统盘一起给出来的话，界面就说不清「为什么不是 C 盘」。
+    pub volumes: Vec<Volume>,
+    /// [`pick`] 的第一名（挂载点）。`None` = **一块合格的都没有**，
+    /// 界面这时候必须有话可说，不许静默失败、更不许瞎选一块。
+    pub chosen: Option<String>,
+    /// 第一次装大约要占多少（GB，向上取整）
+    pub first_install_gb: u64,
+    /// 上面那个数的三块明细
+    pub parts: Vec<PartBytes>,
+    /// 建议至少留多少（GB）—— [`NEED_BYTES`]，比「第一次装」多出备份与余量
+    pub need_gb: u64,
+    /// 候选门槛：总容量小于这个数的一律不看（GB）
+    pub min_total_gb: u64,
+    /// 运行时磁盘**上限**（GB）。量不到就是 `None` —— 见 [`cap_gb`]
+    pub cap_gb: Option<u64>,
+    /// **实际已占**（GB）。量不到就是 `None` —— 见 [`used_gb`]
+    pub used_gb: Option<u64>,
+    /// 配置里现在写的 `[runtime] data_dir`（空 = 还没选过，用默认位置）
+    pub data_dir: String,
+    /// 现在**实际**落在哪（空 `data_dir` 时是默认位置）
+    pub runtime_dir: String,
+}
+
+/// 运行时磁盘**上限**（GB）。
+///
+/// 优先用**虚拟机自己 `df` 报的总量** —— 那是它真的拿到的；量不到再退回
+/// [`crate::runtime::builtin::vm_params`] 那个常量（真正会传给虚拟机的
+/// `--disk` 值），而且**只在 macOS 上退**（那里才是 colima 那条路）。
+/// 其余平台量不到就老实返回 `None`，界面写「量不到」，不编一个数。
+pub fn cap_gb() -> Option<u64> {
+    match vm_disk_gb() {
+        // 量到了就是它 —— 那是虚拟机实际拿到的上限
+        Some((_, total)) => Some(total),
+        // 量不到：macOS 上退回那个真正会传给虚拟机的 `--disk` 常量
+        None if cfg!(target_os = "macos") => {
+            Some(u64::from(crate::runtime::builtin::vm_params().2))
+        }
+        // 其余平台没有这个常量可言 —— 老实说「量不到」，不编一个数
+        None => None,
+    }
+}
+
+/// **实际已占**（GB）。
+///
+/// 只认虚拟机里 `df` 的块级占用。**绝不拿宿主上那个磁盘文件的大小顶替** ——
+/// colima / lima 与 WSL2 的虚拟磁盘都是**稀疏文件**，`metadata().len()`
+/// 报的是「上限」而不是「用掉的」。I14·F2 就是这么把 5.8 GB 报成 86.1 GB 的
+/// （差 15 倍），这张卡片上绝不能再犯一次。
+pub fn used_gb() -> Option<u64> {
+    vm_disk_gb().map(|(used, _)| used)
+}
+
+/// 虚拟机那块盘 `(已占 GB, 总量 GB)`；没装 / 没起 / 问不出来都是 `None`。
+fn vm_disk_gb() -> Option<(u64, u64)> {
+    let m = crate::monitor::runtime();
+    match (m.disk_used_bytes, m.disk_total_bytes) {
+        (Some(u), Some(t)) => Some((
+            u.div_ceil(1024 * 1024 * 1024),
+            t.div_ceil(1024 * 1024 * 1024),
+        )),
+        _ => None,
+    }
+}
+
+/// 组装选盘卡片要的那一份数据。**只读。**
+pub fn plan() -> DiskPlan {
+    let volumes = volumes();
+    let data_dir = crate::config::LauncherConfig::load()
+        .runtime
+        .data_dir
+        .clone();
+    DiskPlan {
+        chosen: pick(&volumes).map(|v| v.mount.clone()),
+        volumes,
+        first_install_gb: FIRST_INSTALL_BYTES.div_ceil(1024 * 1024 * 1024),
+        parts: parts(),
+        need_gb: need_gb(),
+        min_total_gb: MIN_TOTAL_BYTES / (1024 * 1024 * 1024),
+        cap_gb: cap_gb(),
+        used_gb: used_gb(),
+        data_dir,
+        runtime_dir: crate::paths::runtime_dir().to_string_lossy().into_owned(),
+    }
+}
+
+/// 选中的那块盘要写进 `[runtime] data_dir` 的路径（`<挂载点>/Hunter`）。
+///
+/// 盘符与挂载点的拼接交给 [`Path::join`]，不自己拼字符串 ——
+/// Windows 的反斜杠、macOS 的首斜杠都由它处理。
+pub fn target_dir(mount: &str) -> std::path::PathBuf {
+    std::path::Path::new(mount).join("Hunter")
 }
 
 #[cfg(test)]
@@ -387,5 +548,72 @@ mod tests {
                 "家目录所在的盘（{home_mount}）被推荐了"
             );
         }
+    }
+
+    // ── U-03：选盘卡片那几个数 ────────────────────────────────────────────
+
+    /// 「第一次装」那三块加起来必须**小于**建议阈值。
+    ///
+    /// 「小于阈值」那一条是**编译期**的常量断言（见 [`FIRST_INSTALL_BYTES`]
+    /// 上面那一段），这里只钉界面用到的两个具体数字。
+    #[test]
+    fn 第一次装的量落在建议阈值之内() {
+        assert_eq!(
+            FIRST_INSTALL_BYTES,
+            DOWNLOAD_BYTES + IMAGES_BYTES + VM_BASE_BYTES
+        );
+        // 界面上那行「第一次装大约 X GB」的字面来源
+        assert_eq!(FIRST_INSTALL_BYTES.div_ceil(1024 * 1024 * 1024), 6);
+        assert_eq!(need_gb(), 15);
+    }
+
+    /// 明细那三块：键名是界面取文案用的，改了界面就取不到了。
+    #[test]
+    fn 明细三块的键名与总量对得上() {
+        let p = parts();
+        let keys: Vec<&str> = p.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["download", "images", "vmBase"]);
+        assert_eq!(p.iter().map(|x| x.bytes).sum::<u64>(), FIRST_INSTALL_BYTES);
+        assert!(p.iter().all(|x| x.bytes > 0));
+    }
+
+    /// 选中盘的落地路径：拼在挂载点下面一个叫 `Hunter` 的目录。
+    /// **盘符与挂载点的拼法交给 `Path::join`** —— 这里只盯住那个目录名。
+    #[test]
+    fn 选中盘的落地目录叫_hunter() {
+        for mount in ["/mnt/data", "/mnt/data/", "D:\\", "C:\\"] {
+            let p = target_dir(mount);
+            assert_eq!(
+                p.file_name().and_then(|s| s.to_str()),
+                Some("Hunter"),
+                "{mount} 拼出来的是 {p:?}"
+            );
+        }
+    }
+
+    /// `plan()` 的三条自洽性（**不依赖这台机器长什么样**）：
+    ///
+    /// 1. 选中盘要么没有，要么真的是枚举结果里的一块、而且**不是系统卷**；
+    /// 2. 「第一次装」不会比「建议阈值」还大；
+    /// 3. **实占量得到时上限也一定量得到** —— 两个数来自同一次探测，
+    ///    不许出现「有实占、没上限」这种半截状态（那会让界面上那两行对不上）。
+    #[test]
+    fn 选盘计划的三个数自洽() {
+        let p = plan();
+        if let Some(m) = &p.chosen {
+            let v = p
+                .volumes
+                .iter()
+                .find(|v| &v.mount == m)
+                .unwrap_or_else(|| panic!("选中的 {m} 不在枚举结果里"));
+            assert!(!v.is_system, "选中的 {m} 是系统卷");
+            assert!(eligible(v), "选中的 {m} 并不过 eligible 那三条");
+        }
+        assert!(p.first_install_gb <= p.need_gb);
+        assert!(p.min_total_gb >= p.need_gb, "候选门槛比需求下限还低");
+        if p.used_gb.is_some() {
+            assert!(p.cap_gb.is_some(), "量到了实占却量不到上限");
+        }
+        assert!(!p.runtime_dir.is_empty());
     }
 }

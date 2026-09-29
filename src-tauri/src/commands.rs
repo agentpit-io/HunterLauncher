@@ -2771,6 +2771,84 @@ pub async fn assist_consent(
     .await
 }
 
+// ── U-03 · 选盘（装到哪块盘）────────────────────────────────────────────
+
+/// 选盘卡片要的那一份数据（U-03 / S-01 的消费点）。**只读。**
+///
+/// 返回的是**事实**（每块盘的容量与剩余、打分第一名、要占多少、上限与实占），
+/// 「为什么是它」那句话由界面拼 —— 界面才有 i18n。
+#[tauri::command]
+pub async fn runtime_disk_plan() -> Result<crate::runtime::disk::DiskPlan> {
+    blocking(move || Ok(crate::runtime::disk::plan())).await
+}
+
+/// 把运行时装到哪块盘，真的写进 `[runtime] data_dir`（U-03 / P1-49）。
+///
+/// ## 走的是哪条路
+///
+/// 就是 S-02 那条：改配置 → `LauncherConfig::save()` → `set_config()`。
+/// **没有第二条写入路径** —— `paths::runtime_dir()` 是唯一的读点，
+/// 守卫的自家地盘（S-03）与 colima 的隔离守卫都是当场读它，所以搬完之后
+/// 那两处自动跟着走。
+///
+/// ## 为什么收的是「挂载点」而不是「路径」
+///
+/// 真正落地的目录由 [`crate::runtime::disk::target_dir`] 拼成
+/// `<挂载点>/Hunter`。这样界面**递不进来一个任意路径** ——
+/// 这一层唯一的输入是一块**当场枚举出来的盘**，而且要过 `eligible` 那三条
+/// 与 `paths::data_dir_usable` 那道闸。传空串 = 改回默认位置。
+#[tauri::command]
+pub async fn runtime_disk_set(
+    app: tauri::AppHandle,
+    mount: String,
+) -> Result<crate::runtime::disk::DiskPlan> {
+    blocking(move || {
+        let st = state(&app);
+        let mut c = st.config();
+        let want = mount.trim();
+        if want.is_empty() {
+            crate::linfo!("选盘：改回默认位置（清空 [runtime] data_dir）");
+            c.runtime.data_dir = String::new();
+        } else {
+            // 当场重新枚举一次，不信任界面递上来的那个字符串
+            let vols = crate::runtime::disk::volumes();
+            let v = vols.iter().find(|v| v.mount == want).ok_or_else(|| {
+                AppError::new(
+                    Code::NotImplemented,
+                    format!("这台机器上没有挂载点是「{want}」的盘，不能装到那里。"),
+                )
+            })?;
+            if !crate::runtime::disk::eligible(v) {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    format!(
+                        "「{}」这块盘不够装：要么是系统盘，要么总容量或剩余空间不够。",
+                        v.mount
+                    ),
+                ));
+            }
+            let dir = crate::runtime::disk::target_dir(&v.mount);
+            // 和 `paths::runtime_dir()` 同一道闸 —— 认不得的值它也会落回默认，
+            // 但那样用户会以为装到 D 盘了、其实还在家目录，所以要当场拒绝
+            if !crate::paths::data_dir_usable(&dir) {
+                return Err(AppError::new(
+                    Code::NotImplemented,
+                    format!("「{}」不能用来放运行时，换一块盘。", dir.display()),
+                ));
+            }
+            crate::linfo!(
+                "选盘：运行时改到 {}（[runtime] data_dir）",
+                crate::redact::mask_home(&dir.to_string_lossy())
+            );
+            c.runtime.data_dir = dir.to_string_lossy().into_owned();
+        }
+        c.save()?;
+        st.set_config(c.clone());
+        Ok(crate::runtime::disk::plan())
+    })
+    .await
+}
+
 // ── I7 · 内置运行时 ───────────────────────────────────────────────────────
 
 /// 内置运行时现在什么情况（设置页用）。**只读**。

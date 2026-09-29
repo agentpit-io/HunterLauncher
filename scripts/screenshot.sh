@@ -69,7 +69,13 @@ PAINT="${PAINT:-20}"
 #     见 I17 报告 8.3。页面本身还在（`HUNTER_DEMO_PAGE=update-no-tag` 能进），只是不进这一套图）
 #   quit-guard —— 升级进行中点退出被拦下的那一句（P0-4）。U2 之后这是唯一会弹的提示
 #   （dashboard 那一页这一轮也变了：起停/重启/检查更新/退出启动器 全在首屏一级按钮区）
-PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
+# R5 新增两页（都是 U-03 选盘卡片）：
+#   disk —— 有得选的样子：默认位置 / 为什么是它 / 要占多少 / 还剩多少 / 上限 vs 实占
+#   disk-none —— **一块合格的盘都没有**（S-01 返回 None）。看的是界面有没有话说，
+#     而不是静默失败或者瞎选一块
+# 这一轮还改了三页既有页面：docker-missing（主按钮）、consent（三个勾）、
+# settings（授权卡 + 人话审计），它们本来就在这套图里，跟着一起重截
+PAGES=(booting data-found welcome key key-kept key-shape consent model auto auto-need-user auto-review auto-takeover-offer docker docker-missing disk disk-none start done dashboard dashboard-alert dashboard-quota-exhausted dashboard-lan dashboard-stopped dashboard-runtime-down dashboard-schedule-broken dashboard-interrupted dashboard-interrupted-stopped quit-guard upload-preview upload-done backup backup-restore uninstall uninstall-all takeover settings settings-lan logs feedback update error error-stalled error-builtin error-recovered)
 
 # 只截指定的几页（改了一两页时不用把四十几页重跑一遍）：
 #   ONLY="dashboard update" bash scripts/screenshot.sh docs/screenshots/I17
