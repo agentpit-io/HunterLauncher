@@ -1811,7 +1811,11 @@ fn cmd_revert_to_running(st: &AppState, args: &Args) -> AppResult<()> {
     let it = crate::upgrade::interrupted(&cfg);
     let tag = match (args.tag.clone(), &it) {
         (Some(t), _) => t,
-        (None, Some(i)) => i.running_tag.clone(),
+        // 全停的中间态没有「正在跑的那一版」，默认回退到上一次成功的那一版
+        (None, Some(i)) => i
+            .running_tag
+            .clone()
+            .unwrap_or_else(|| i.last_good_tag.clone()),
         (None, None) => {
             println!("  配置与正在跑的容器对得上，没有要回退的东西。");
             return Ok(());
@@ -1990,15 +1994,16 @@ fn cmd_boot_state() -> AppResult<()> {
             for l in &it.lines {
                 println!("    · {l}");
             }
+            let back = it
+                .running_tag
+                .clone()
+                .unwrap_or_else(|| it.last_good_tag.clone());
             println!(
-                "    两条出路：继续升到 v{}，或者回退到正在跑的 v{}",
-                it.config_tag, it.running_tag
+                "    两条出路：继续升到 v{}，或者回退到 v{}",
+                it.config_tag, back
             );
             println!("      继续：hunter-launcher --upgrade {}", it.config_tag);
-            println!(
-                "      回退：界面上点「回退到正在跑的 v{}」（只改配置，不动容器）",
-                it.running_tag
-            );
+            println!("      回退：界面上点「回退到 v{back}」（只改配置，不动容器）");
         }
         None => println!("\n  升级状态 没有没做完的升级（配置与正在跑的容器对得上）"),
     }

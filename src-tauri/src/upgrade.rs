@@ -606,8 +606,12 @@ fn rollback(
 pub struct Interrupted {
     /// 配置（`.env` / compose）说的版本
     pub config_tag: String,
-    /// 正在跑的容器实际用的版本
-    pub running_tag: String,
+    /// **上一次成功的版本**（`launcher.toml` 的 `hunter.tag`）。
+    ///
+    /// 一个容器都没在跑的时候，回退目标就是它 —— 配置本来就该是这一版（I17 · P0-3）。
+    pub last_good_tag: String,
+    /// 正在跑的容器实际用的版本；**一个都没跑时为 `None`**（I17 · P0-3）
+    pub running_tag: Option<String>,
     /// 本机还缺的那几个服务的镜像
     pub missing_images: Vec<String>,
     /// 摆给用户看的一句话
@@ -619,57 +623,119 @@ pub struct Interrupted {
 /// 纯判据。**机器状态由调用方喂进来**，这样它考得了 ——
 /// I7 那条「把机器状态当成测试前提」的教训在这里同样成立。
 ///
+/// ## 判据为什么换成了这一对（I17 · P0-3）
+///
+/// 0.1.17 及以前要求「**必须有容器在跑**」才判（`running_tags` 非空），
+/// 于是客户 2026-09-29 那台 Windows（HL-GFV764：配置 1.2.3、镜像不齐、
+/// 六个容器**全停**）恰好落在它看不见的那一格里：卡片不出现，
+/// 面板反而说「点『启动』就能用」，而点下去正是再卡一次。
+///
+/// 现在只认一对**与容器无关**的事实：
+///
+/// | 事实 | 什么时候写的 |
+/// |---|---|
+/// | `config_tag`（`.env` 的 `HUNTER_VERSION`） | 升级第 ③ 步就写，**在拉取之前** |
+/// | `last_good_tag`（`launcher.toml` 的 `hunter.tag`） | 只有整轮升级成功之后才写 |
+///
+/// 两者不一致 + 配置那一版的镜像本机不齐 ⇒ 上一次升级没做完。
+/// 进程被杀、断电、开机自启都成立，**有没有容器在跑都一样**。
+///
 /// 三个条件缺一不可：
-/// 1. 配置说的版本与正在跑的版本不一样；
-/// 2. 真的有容器在跑（一个都没有 = 那是「还没装」或「停着」，不是「升级没做完」）；
-/// 3. 配置那一版的镜像**本机不齐** —— 齐了的话直接 `up -d` 就完事，
-///    那不是一个需要打断用户的现场。
+/// 1. 配置说的版本与**上一次成功的版本**不一样；
+/// 2. 配置那一版的镜像**本机不齐** —— 齐了的话直接 `up -d` 就完事，
+///    那不是一个需要打断用户的现场；
+/// 3. `config_tag` 非空。
+///
+/// `running_tags` 只影响文案与出路：有容器在跑就按跑着的那一版回退，
+/// 一个都没跑就回退到 `last_good_tag`。
 pub fn judge_interrupted(
     config_tag: &str,
+    last_good_tag: &str,
     running_tags: &[(String, String)],
     missing_images: &[String],
 ) -> Option<Interrupted> {
     let config_tag = config_tag.trim();
-    if config_tag.is_empty() || running_tags.is_empty() || missing_images.is_empty() {
+    let last_good_tag = last_good_tag.trim();
+    if config_tag.is_empty() || missing_images.is_empty() {
+        return None;
+    }
+    // 配置与「上一次成功的版本」一致 → 没有中间态。**这条是防误报的主防线**：
+    // 每一台正常机器每次开机都会走到这里，误报会天天弹一个吓人的问句。
+    if !last_good_tag.is_empty() && last_good_tag == config_tag {
         return None;
     }
     // 跑着的版本：取出现次数最多的那一个（升级到一半时可能几个新几个旧）
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for (_, t) in running_tags {
-        *counts.entry(t.as_str()).or_default() += 1;
-    }
-    let running_tag = counts
-        .iter()
-        .max_by_key(|(_, n)| **n)
-        .map(|(t, _)| (*t).to_string())?;
-    if running_tag.is_empty() || running_tag == config_tag {
+    let running_tag = {
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for (_, t) in running_tags {
+            if !t.is_empty() {
+                *counts.entry(t.as_str()).or_default() += 1;
+            }
+        }
+        counts
+            .iter()
+            .max_by_key(|(_, n)| **n)
+            .map(|(t, _)| (*t).to_string())
+    };
+    // 正在跑的就是配置要的那一版 → 不是中间态（可能是有人手工换了配置，或者
+    // 在启动器之外把它起来了）。这种「launcher.toml 落后」的事不在这张卡片的活里。
+    if running_tag.as_deref() == Some(config_tag) {
         return None;
     }
-    let mut lines = vec![
-        format!("配置（.env 与 compose）写的是 v{config_tag}"),
-        format!(
-            "正在跑的 {} 个容器用的是 v{running_tag}",
+
+    let mut lines = vec![format!("配置（.env 与 compose）写的是 v{config_tag}")];
+    match &running_tag {
+        Some(rt) => lines.push(format!(
+            "正在跑的 {} 个容器用的是 v{rt}",
             running_tags.len()
-        ),
-        format!(
-            "v{config_tag} 的镜像本机还缺 {} 个：{}",
-            missing_images.len(),
-            missing_images.join("、")
-        ),
-    ];
+        )),
+        None => lines.push(format!(
+            "**{} 个容器现在都停着**（一个在跑的都没有，所以没有「正在用的版本」可比）",
+            crate::selfcheck::EXPECTED.len()
+        )),
+    }
+    if !last_good_tag.is_empty() {
+        lines.push(format!("启动器上一次成功跑起来的是 v{last_good_tag}"));
+    }
+    lines.push(format!(
+        "v{config_tag} 的镜像本机还缺 {} 个：{}",
+        missing_images.len(),
+        missing_images.join("、")
+    ));
     lines.push(
         "所以上一次升级多半是拉镜像时被打断的（强退 / 断电 / 关机）。\
          在你选之前，启动器不会按新配置去起容器 —— 那只会再卡一次。"
             .to_string(),
     );
-    Some(Interrupted {
-        headline: format!(
-            "上一次升级没做完：配置已经是 v{config_tag}，跑着的还是 v{running_tag}，而 v{config_tag} 的镜像本机不齐"
+
+    // 「回退会回到哪一版」：有正在跑的就回它那一版，全停时回上一次成功的那一版。
+    // 取成 owned 再往下用 —— 下面 `running_tag` 要整个移进结构体里。
+    let back: String = running_tag
+        .clone()
+        .unwrap_or_else(|| last_good_tag.to_string());
+    let headline = match &running_tag {
+        Some(rt) => format!(
+            "上一次升级没做完：配置已经是 v{config_tag}，跑着的还是 v{rt}，而 v{config_tag} 的镜像本机不齐"
         ),
+        None => format!(
+            "上一次升级没做完：配置已经是 v{config_tag}，本机还缺 {} 个镜像，而容器都停着",
+            missing_images.len()
+        ),
+    };
+    Some(Interrupted {
+        headline,
         config_tag: config_tag.to_string(),
+        last_good_tag: last_good_tag.to_string(),
         running_tag,
         missing_images: missing_images.to_vec(),
-        lines,
+        lines: {
+            // 出路里说清「回退会回到哪一版」——全停时它不是「正在跑的」那一版
+            let mut l = lines;
+            if !back.is_empty() {
+                l.push(format!("回退会先把配置写回 v{back}，容器一个都不动。"));
+            }
+            l
+        },
     })
 }
 
@@ -698,7 +764,9 @@ pub fn interrupted(cfg: &config::LauncherConfig) -> Option<Interrupted> {
         &config_tag,
     );
     let (_ok, missing) = crate::offline::all_present(&specs);
-    judge_interrupted(&config_tag, &running, &missing)
+    // `cfg.hunter.tag` 是**上一次成功的版本**（升级只在成功后才改它，见本文件
+    // 成功分支里那句 `cfg.hunter.tag = target`）—— 全停时的回退目标就是它。
+    judge_interrupted(&config_tag, &cfg.hunter.tag, &running, &missing)
 }
 
 /// 从一个完整镜像引用里取 tag：`ghcr.io/agentpit-io/hunter-community-web:1.2.0` → `1.2.0`。
@@ -814,12 +882,13 @@ mod tests {
     fn 配置_1_2_2_容器_1_2_0_镜像不全判定为升级未完成() {
         let r = judge_interrupted(
             "1.2.2",
+            "1.2.0",
             &running("1.2.0"),
             &["web".into(), "api".into(), "opencode".into()],
         )
         .expect("这就是「上一次升级没做完」");
         assert_eq!(r.config_tag, "1.2.2");
-        assert_eq!(r.running_tag, "1.2.0");
+        assert_eq!(r.running_tag.as_deref(), Some("1.2.0"));
         assert_eq!(r.missing_images.len(), 3);
         // 两个按钮都给得出来：继续升到 config_tag、回退到 running_tag
         assert!(r.headline.contains("1.2.2") && r.headline.contains("1.2.0"));
@@ -829,23 +898,52 @@ mod tests {
     /// **配置与容器一致时不许误报。** 这是最要紧的一条 ——
     /// 误报会在每一台正常机器的开机第一屏上弹一个吓人的问句。
     #[test]
-    fn 配置与容器一致时不误报() {
-        assert!(judge_interrupted("1.2.0", &running("1.2.0"), &[]).is_none());
+    fn 配置与上一次成功的版本一致时不误报() {
+        assert!(judge_interrupted("1.2.0", "1.2.0", &running("1.2.0"), &[]).is_none());
         // 就算镜像不齐（有人手工 `docker rmi` 过），只要版本对得上就不是这个现场
-        assert!(judge_interrupted("1.2.0", &running("1.2.0"), &["web".into()]).is_none());
+        assert!(judge_interrupted("1.2.0", "1.2.0", &running("1.2.0"), &["web".into()]).is_none());
+        // 全停也一样不误报 —— **这条正是防误报的主防线**（每台正常机器开机都会走到）
+        assert!(judge_interrupted("1.2.0", "1.2.0", &[], &["web".into()]).is_none());
     }
 
     #[test]
     fn 镜像齐了就不是这个现场() {
         // 配置 1.2.2、容器 1.2.0，但 1.2.2 的镜像都在本机 ——
         // 那只是「拉完了还没 up」，直接起就行，不用打断用户
-        assert!(judge_interrupted("1.2.2", &running("1.2.0"), &[]).is_none());
+        assert!(judge_interrupted("1.2.2", "1.2.0", &running("1.2.0"), &[]).is_none());
+        // 全停 + 配置超前 + 镜像齐 —— 也是「点启动就行」，不该打断（A3-4）
+        assert!(judge_interrupted("1.2.2", "1.2.0", &[], &[]).is_none());
     }
 
+    /// **客户 2026-09-29 那台机器的现场**（HL-GFV764）。
+    ///
+    /// 配置 1.2.3 / launcher.toml 还停在 1.2.2 / 1.2.3 的镜像不齐 /
+    /// **六个容器全停**。0.1.17 在这里返回 `None`（卡片不出现），
+    /// 面板反而说「点『启动』就能用」。现在必须出卡片。
     #[test]
-    fn 一个容器都没跑的时候不是这个现场() {
-        // 「还没装」与「全停着」都会走到这里，它们都不是「升级没做完」
-        assert!(judge_interrupted("1.2.2", &[], &["web".into()]).is_none());
+    fn 全停着的中间态也要判出来() {
+        let r = judge_interrupted(
+            "1.2.3",
+            "1.2.2",
+            &[],
+            &[
+                "web".into(),
+                "api".into(),
+                "opencode".into(),
+                "llm-shim".into(),
+            ],
+        )
+        .expect("全停也是「上一次升级没做完」");
+        assert_eq!(r.config_tag, "1.2.3");
+        assert_eq!(r.last_good_tag, "1.2.2");
+        assert!(r.running_tag.is_none(), "一个都没跑，没有「正在用的版本」");
+        assert!(r.headline.contains("1.2.3"), "{}", r.headline);
+        assert!(r.headline.contains("都停着"), "{}", r.headline);
+        // 全停时回退目标是「上一次成功的那一版」
+        assert!(r
+            .lines
+            .iter()
+            .any(|l| l.contains("回退会先把配置写回 v1.2.2")));
     }
 
     #[test]
@@ -856,8 +954,16 @@ mod tests {
             ("opencode".to_string(), "1.2.0".to_string()),
             ("llm-shim".to_string(), "1.2.0".to_string()),
         ];
-        let r = judge_interrupted("1.2.2", &mixed, &["opencode".into()]).expect("算这个现场");
-        assert_eq!(r.running_tag, "1.2.0", "多数派是旧版");
+        let r =
+            judge_interrupted("1.2.2", "1.2.0", &mixed, &["opencode".into()]).expect("算这个现场");
+        assert_eq!(r.running_tag.as_deref(), Some("1.2.0"), "多数派是旧版");
+    }
+
+    #[test]
+    fn 配置那一版已经在跑就不算中间态() {
+        // 有人在启动器之外把它起来了（或手工改了 launcher.toml 之外的配置）：
+        // 配置与正在跑的一致，那就不是「升级没做完」
+        assert!(judge_interrupted("1.2.2", "1.2.0", &running("1.2.2"), &["web".into()]).is_none());
     }
 
     #[test]

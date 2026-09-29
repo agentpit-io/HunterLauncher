@@ -505,8 +505,12 @@ pub fn create(kind: Kind, tag: &str, mut note: impl FnMut(&str)) -> AppResult<Ba
     note(&format!("已备份配置：{}", meta.files.join("、")));
 
     // ② 数据库。**这一步失败就是整次失败**
+    //
+    // 先拿一张「用完要还」的凭据：postgres 本来没在跑的话，这次是我们拉的，
+    // 整次备份收尾（正常结束或中途 return）都要把它停回去（I17 · P0-2）。
+    let lease = PostgresLease::acquire(&mut note)?;
     let dump = dir.join(DUMP_NAME);
-    match dump_db(&dump, &mut note) {
+    match dump_db(&dump, &mut note, &lease) {
         Ok(n) => meta.dump_bytes = Some(n),
         Err(e) => {
             meta.dump_error = Some(e.msg.clone());
@@ -773,8 +777,11 @@ fn db_user_and_name() -> (String, String) {
 }
 
 /// `docker compose exec -T postgres pg_dump -Fc …` → 直接写进 `out`。返回字节数。
-fn dump_db(out: &Path, note: &mut impl FnMut(&str)) -> AppResult<u64> {
-    ensure_postgres_up(note)?;
+///
+/// 第三个参数不是为了用它，而是为了**让人调不出没有凭据的那一种调用**：
+/// postgres 得先起来（由 [`PostgresLease::acquire`] 负责），
+/// 而「起来之后要停回去」也挂在同一张凭据上。
+fn dump_db(out: &Path, note: &mut impl FnMut(&str), _lease: &PostgresLease) -> AppResult<u64> {
     let (user, db) = db_user_and_name();
     // `-Fc`：自定义格式，自带压缩，`pg_restore --list` 能读出目录（校验靠它）。
     // `--no-owner`：容器里的属主名不一定和恢复目标一致，带上会平白报一堆 role 不存在。
@@ -966,6 +973,75 @@ pub fn ensure_postgres_up(note: &mut impl FnMut(&str)) -> AppResult<bool> {
             ));
         }
         std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// 「谁起的谁收拾」—— 备份期间临时拉起来的 postgres，用完必须停回去。
+///
+/// ## 为什么要有这个结构
+///
+/// [`ensure_postgres_up`] 返回的 `bool` 就是为这件事准备的，
+/// 但 0.1.17 及以前两个调用方都把它**丢掉了**：
+///
+/// ```text
+/// backup.rs:777   ensure_postgres_up(note)?;    // dump_db
+/// backup.rs:1639  ensure_postgres_up(&mut nb)?; // restore
+/// ```
+///
+/// 于是「在 Hunter 停止状态下备份」会留下一个孤零零的 postgres。
+/// 2026-09-29 客户那台 Windows 上，这个孤儿直接让运行面板说出了
+/// 「Hunter 运行中 · 已运行 1 小时 3 分」，而 web 早就退出了（HL-GFV764）。
+///
+/// **做成一拿就走的结构，而不是靠人记得接返回值**：
+/// `acquire` 拿到，出了作用域 `Drop` 自动收拾 —— 备份里那条
+/// 「数据库转储失败就 return」的路径也一样收得干净。
+///
+/// 需要 postgres 留下来继续干活（恢复流程最后要 `compose::up()`）
+/// 的地方用 [`PostgresLease::disarm`] 明确说一声。
+pub struct PostgresLease {
+    /// 这一次是不是我们拉起来的
+    we_started: bool,
+    /// 还生效吗
+    armed: bool,
+}
+
+impl PostgresLease {
+    /// 确保 postgres 在跑（要拉就拉），并拿到这张「用完要还」的凭据。
+    pub fn acquire(note: &mut impl FnMut(&str)) -> AppResult<Self> {
+        let we_started = ensure_postgres_up(note)?;
+        Ok(Self {
+            we_started,
+            armed: true,
+        })
+    }
+
+    /// 明确「别停回去」：接下来的流程还要用它。
+    pub fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PostgresLease {
+    fn drop(&mut self) {
+        if !self.armed || !self.we_started {
+            return;
+        }
+        // 停之前再确认一次项目名是我们的 —— 和 `up -d` 那一步同一个理由
+        // （待办池 P0-5）：不能把别人的 postgres 停掉。
+        if let Err(e) = compose::guard_project_owner() {
+            crate::lwarn!(
+                "本来要停掉临时起的 postgres，但项目名归属检查没过：{}",
+                e.msg
+            );
+            return;
+        }
+        match compose::run(&["stop", "postgres"], Duration::from_secs(180)) {
+            Ok(r) if r.ok() => {
+                crate::linfo!("备份时临时起的 postgres 已停回去（Hunter 本来就没在跑）");
+            }
+            Ok(r) => crate::lwarn!("停回临时起的 postgres 没成：{}", r.err_line()),
+            Err(e) => crate::lwarn!("停回临时起的 postgres 没成：{}", e.msg),
+        }
     }
 }
 
@@ -1636,7 +1712,10 @@ pub fn restore(id_or_path: &str, mut note: impl FnMut(&str)) -> AppResult<Restor
 
     // ③ 灌回数据库
     let mut nb = |_: &str| {};
-    ensure_postgres_up(&mut nb)?;
+    // 这里**不**用 `let _ =`（那会立刻析构）：凭据要活到灌库结束。
+    // 但也**不能让它活到函数末尾** —— 第 ⑥ 步 `compose::up()` 会把整套起回来，
+    // 到时候停掉 postgres 等于刚起就拆台。所以在起回来之前明确解除。
+    let lease = PostgresLease::acquire(&mut nb)?;
     let n = if pre.legacy_sql {
         restore_sql(&dir.join(LEGACY_SQL_NAME))?
     } else {
@@ -1680,6 +1759,7 @@ pub fn restore(id_or_path: &str, mut note: impl FnMut(&str)) -> AppResult<Restor
     }
 
     // ⑥ 起回来 + 等健康
+    lease.disarm(); // 从这里往下，postgres 是这一套正常服务的一部分，不能停
     compose::up()?;
     step(&mut rep, "已重新启动全部服务".into());
     let st = compose::wait_healthy(compose::START_TIMEOUT, |_| {});

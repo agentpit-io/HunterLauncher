@@ -1031,7 +1031,22 @@ pub struct RuntimeStatus {
     pub hunter_tag: Option<String>,
     pub quota: Option<gateway::QuotaInfo>,
     pub latest_tag: Option<String>,
+    /// 「网页现在打得开吗」。**这是面板大标题唯一的依据**（I17 · P0-1）。
+    ///
+    /// 0.1.17 及以前这里是 `any(state == "running")` —— 只要有**任意一个**
+    /// 服务在跑就算「运行中」。2026-09-29 客户那台 Windows 上，备份流程
+    /// 留下的一个孤零零的 postgres 就把大标题点亮成「Hunter 运行中」，
+    /// 而 web 早就 exited：面板还给出一个指向死端口的「打开 Hunter」，
+    /// 用户点下去看到的就是他说的「空白页」。
     pub running: bool,
+    /// 现状复查的结论（和错误页、开机判定用的是同一个判定，I17）。
+    pub posture: crate::selfcheck::Posture,
+    /// 本机 GET `http://127.0.0.1:{web_port}/` **有没有拿到 HTTP 应答**。
+    ///
+    /// 40x / 50x 也算应答（页面本身能打开）；连接被拒、超时就是一个字节都没有，
+    /// 这时不给地址、不给按钮。`running` 由它决定，`web_url` 也由它决定。
+    pub web_ok: bool,
+    /// 只在 [`Self::web_ok`] 为真时才有值
     pub uptime_seconds: Option<u64>,
     pub web_url: Option<String>,
     /// 网页端口现在是不是**不止本机**能打开。
@@ -1081,18 +1096,14 @@ pub fn missing_endpoints() -> Vec<MissingEndpoint> {
 /// 组装运行面板要的全部数据。每一项拿不到就是 `None` + 原因，绝不填假值（红线 1）。
 pub fn runtime_status(state: &AppState) -> RuntimeStatus {
     let cfg = state.config();
-    let services = compose::ps().unwrap_or_default();
-    let running = services.iter().any(|s| s.state == "running");
-    let web_port = services
-        .iter()
-        .find(|s| s.service == "web")
-        .and_then(|s| s.port)
-        .unwrap_or(cfg.hunter.ports.web);
-    let web_url = if running {
-        Some(format!("http://localhost:{web_port}"))
-    } else {
-        None
-    };
+    // **结论只有一个来源**（I17 · P0-1）：复用「现状复查」那一套。
+    // 这里不再自己问一次 `docker compose ps` —— 同一个事实问两遍，
+    // 迟早会出现两块界面对同一台机器说法不一样（0.1.15/0.1.16 就是这样）。
+    let rv = crate::selfcheck::review(false);
+    let services = rv.services.clone();
+    let web_ok = rv.web_status.is_some();
+    let running = running_now(rv.posture, web_ok);
+    let web_url = if web_ok { rv.web_url.clone() } else { None };
     // 「现在谁能打开它」只能问 docker 或者问磁盘上那份覆盖文件，不能问 launcher.toml
     let web_lan_exposed = match services.iter().find(|s| s.service == "web") {
         Some(w) if w.bind.is_some() => w.lan_exposed(),
@@ -1106,7 +1117,17 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         .unwrap_or(cfg.hunter.ports.api);
     let up = crate::upstream::fetch(api_port, Duration::from_secs(5));
     let api_ok = up.api_key_configured;
-    let uptime = container_uptime();
+    // 时长只在 web 容器**正在跑**时才算（I17 · P0-1）。容器 exited 之后
+    // `docker inspect` 仍然返回它上一次的 `StartedAt`，拿它算时长就会出现
+    // 「已运行 1 小时 3 分」这种假数字 —— 客户截图里那一行就是这么来的。
+    let uptime = match services
+        .iter()
+        .find(|s| s.service == "web")
+        .map(|s| s.state == "running")
+    {
+        Some(true) => container_uptime(),
+        _ => None,
+    };
     let (data_source, data_source_sub) = crate::upstream::data_source_label(&up);
 
     let quota = state.hunter_key().and_then(|k| cached_quota(&k));
@@ -1197,6 +1218,8 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
         quota,
         latest_tag,
         running,
+        posture: rv.posture,
+        web_ok,
         uptime_seconds: uptime,
         web_url,
         web_lan_exposed,
@@ -1214,6 +1237,28 @@ pub fn runtime_status(state: &AppState) -> RuntimeStatus {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default(),
+    }
+}
+
+/// 面板大标题那一问：**现在到底能不能用**。
+///
+/// 拆成纯函数的理由和 `runtime::effective::decide`、`selfcheck::judge_containers`
+/// 一样：客户那台机器的现场（一个孤儿 postgres + web 已退出）很难在开发机上摆出来，
+/// 而它是真实出现过的。
+///
+/// 三档：
+/// * `Healthy` / `Partial` —— 有东西在跑，但还要**网页真的应答**才算能用
+///   （客户那台就是 Partial：postgres 在跑、web 探不通 → 必须说「已停止」）；
+/// * `Stopped` / `RuntimeDown` —— 没在跑 / 运行时都问不出来 → 「已停止」；
+/// * `Absent` / `Incomplete` —— 还没装好，界面另说。
+///
+/// 宁严不宽：探不通就当没在跑。反过来（探通了却说没在跑）用户白点一次启动，
+/// 而说「在跑」却打不开，用户拿到的是一个打不开的页面 —— 后者才是这次投诉的事。
+pub fn running_now(posture: crate::selfcheck::Posture, web_ok: bool) -> bool {
+    use crate::selfcheck::Posture::*;
+    match posture {
+        Healthy | Partial => web_ok,
+        Stopped | RuntimeDown | Absent | Incomplete => false,
     }
 }
 
@@ -1496,6 +1541,32 @@ pub fn human_bytes(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// I17 · P0-1：客户那台机器的现场。
+    ///
+    /// 2026-09-29 HL-GFV764：备份流程留下的一个 postgres 在跑，
+    /// web / api / opencode / llm-shim / redis 全 exited —— 就是 `Partial` +
+    /// 网页探不通。0.1.17 在这里说的是「Hunter 运行中 · 已运行 1 小时 3 分」。
+    #[test]
+    fn 孤儿postgres不算运行中() {
+        use crate::selfcheck::Posture;
+        assert!(!running_now(Posture::Partial, false));
+        assert!(running_now(Posture::Partial, true), "网页能开就得说在跑");
+        assert!(running_now(Posture::Healthy, true));
+        assert!(
+            !running_now(Posture::Healthy, false),
+            "说健康却探不通，也宁可说没在跑"
+        );
+        for p in [
+            Posture::Stopped,
+            Posture::RuntimeDown,
+            Posture::Absent,
+            Posture::Incomplete,
+        ] {
+            assert!(!running_now(p, true), "{p:?} 不该说在跑");
+            assert!(!running_now(p, false), "{p:?} 不该说在跑");
+        }
+    }
 
     // ── 卡住之后换不换源（I16 · P0-1） ──────────────────────────────────
 

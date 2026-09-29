@@ -287,6 +287,34 @@ pub fn installed_on_disk() -> bool {
     crate::paths::compose_file().is_file() && crate::paths::env_file().is_file()
 }
 
+/// 配置（`.env` 的 `HUNTER_VERSION`）那一版还缺哪几个镜像。
+///
+/// 返回 `Some((配置版本, 缺的服务名))`；一个不缺、或者读不到版本号时返回 `None`
+/// （读不到就什么都不说 —— 不猜）。
+///
+/// **只读**：`docker image inspect`，不碰容器、不碰卷、不拉任何东西。
+/// 这一问存在的理由（I17 · P0-3）：容器全停的时候，光看容器状态得不出
+/// 「点启动就能用」这个结论 —— 配置那一版的镜像可能压根不齐
+/// （客户 2026-09-29 就是这样，点下去又卡一次）。
+pub fn missing_config_images() -> Option<(String, Vec<String>)> {
+    let cfg = crate::config::LauncherConfig::load();
+    let tag = crate::config::parse_env_file(&crate::paths::env_file())
+        .get("HUNTER_VERSION")
+        .cloned()
+        .unwrap_or_else(|| cfg.hunter.tag.clone());
+    let tag = tag.trim().to_string();
+    if tag.is_empty() {
+        return None;
+    }
+    let specs = crate::config::images(&cfg.hunter.registry_prefix, &cfg.hunter.base_prefix, &tag);
+    let (_ok, missing) = crate::offline::all_present(&specs);
+    if missing.is_empty() {
+        None
+    } else {
+        Some((tag, missing))
+    }
+}
+
 /// 只读地复查一遍。
 ///
 /// `deep` 为真时多做一件事：起一个 `--rm` 的一次性容器问「解析得动模型网关吗」。
@@ -403,9 +431,24 @@ pub fn review(deep: bool) -> Review {
                 "{} 个容器全部已退出 —— 装是装好了，只是没在跑",
                 ours.len()
             ));
+            // **全停的时候还要再问一句「配置那一版的镜像齐不齐」**（I17 · P0-3）。
+            // 齐了才是真的「点启动就能用」；不齐就得说清 —— 客户 2026-09-29 那台
+            // 就是在这里被告知「点『启动』就能用」，而 v1.2.3 的镜像本机还不齐。
+            let gap = missing_config_images();
+            if let Some((tag, lack)) = &gap {
+                lines.push(format!(
+                    "但配置那一版 v{tag} 的镜像本机还缺 {} 个：{}",
+                    lack.len(),
+                    lack.join("、")
+                ));
+                lines.push(
+                    "所以现在点「启动」会先去拉这几个镜像 —— 上一次升级多半就是卡在这一步。"
+                        .to_string(),
+                );
+            }
             // 这一档**不去探 web**：那个端口上本来就不会有人应答，
             // 探它只是白等 6 秒，再多报一句「网页打不开」把话说重了
-            return finish_full(
+            let mut r = finish_full(
                 Posture::Stopped,
                 ours,
                 None,
@@ -417,6 +460,13 @@ pub fn review(deep: bool) -> Review {
                 unready,
                 Some(cfg_web_port()),
             );
+            if let Some((tag, lack)) = gap {
+                r.headline = format!(
+                    "Hunter 装好了，但 v{tag} 的镜像本机还缺 {} 个 —— 先补齐再启动，别急着点「启动」",
+                    lack.len()
+                );
+            }
+            return r;
         }
         ByContainers::Mixed => {
             if !verdict.down.is_empty() {
