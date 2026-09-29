@@ -302,15 +302,31 @@ fn dirty_in_line(line: &str) -> Option<&'static str> {
     for prefix in ["hunt_tools_", "sk-", "hk_"] {
         let mut from = 0;
         while let Some(pos) = line[from..].find(prefix) {
-            let start = from + pos + prefix.len();
+            let at = from + pos;
+            let start = at + prefix.len();
+            // **前缀前面紧挨着一个字母或数字时不算 key。**
+            //
+            // 2026-09-29 在 Windows CI 上撞到的：测试用的临时目录名长这样 ——
+            // `hunter-t-monitor-disk-for-2076`，其中 `di` + `sk-for-2076`
+            // 正好凑出「`sk-` 后面跟 8 个 token 字符」，于是**整包导出被自己的自查挡下**
+            // （还是随机红：临时目录后缀短一位就不触发）。
+            // 它会挡住的是真事——用户路径里出现 `...-disk-for-2026\...` 时「一键反馈」直接导出失败。
+            //
+            // 真正的 key 前面一定是分隔符（行首、`=`、空格、引号、`/`、`:` 等），
+            // 所以这一条收窄挡掉的是误报，不是漏报：`单词里的 sk-` 本来就不是 key 的形状。
+            let boundary = line[..at]
+                .chars()
+                .next_back()
+                .map(|c| !c.is_ascii_alphanumeric())
+                .unwrap_or(true);
             let n = line[start..]
                 .bytes()
                 .take_while(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
                 .count();
-            if n >= 8 {
+            if boundary && n >= 8 {
                 return Some("疑似未脱敏的 key");
             }
-            from = start.max(from + pos + 1);
+            from = start.max(at + 1);
         }
     }
     // 完整邮箱
@@ -760,6 +776,35 @@ mod tests {
         // 已经脱敏过的形状不该被误报
         assert!(assert_clean("HUNTER_API_KEY=hunt_tools_****").is_none());
         assert!(assert_clean("Authorization: Bearer ****").is_none());
+    }
+
+    /// **单词里长出来的 `sk-` 不算 key**（2026-09-29 Windows CI 上撞到的误报）。
+    ///
+    /// 测试用的临时目录名 `hunter-t-monitor-disk-for-2076` 里 `di`+`sk-for-2076`
+    /// 正好是「`sk-` 后面跟 8 个 token 字符」，于是打包前的自查认定「有没脱敏的 key」，
+    /// **把整个诊断包导出挡了下来** —— 而且后缀短一位就不触发，所以是随机红。
+    /// 用户路径里出现 `…-disk-for-2026\…` 时，他点「一键反馈」就会直接失败。
+    ///
+    /// 判据收窄成「前缀前面必须是分隔符」，真 key 一个都不许漏（下面四条钉住这一侧）。
+    #[test]
+    fn 单词里长出来的_sk_不算_key() {
+        // 误报的那一行原样重现（Windows 临时目录）
+        assert!(assert_clean(
+            r"（C:\Users\x\AppData\Local\Temp\hunter-t-monitor-disk-for-2076\app\.env 不存在或是空的）"
+        )
+        .is_none());
+        // 同源的其他形状也不该报
+        assert!(assert_clean("路径 /var/tmp/risk-factors-20260929/log").is_none());
+        assert!(assert_clean("task-monitor-disk-usage").is_none());
+
+        // **反面对照：真 key 照样一个都不放过**（前面是行首 / = / 空格 / 引号 / 斜杠）
+        assert!(assert_clean("sk-1234567890abcdef").is_some());
+        assert!(assert_clean("HUNTER_API_KEY=sk-1234567890abcdef").is_some());
+        assert!(assert_clean(r#"{"key":"sk-1234567890abcdef"}"#).is_some());
+        assert!(assert_clean("Authorization: Bearer sk-1234567890abcdef").is_some());
+        assert!(assert_clean("/v2/sk-1234567890abcdef/manifests/1.2.3").is_some());
+        assert!(assert_clean("x=hunt_tools_AbCdEfGhIjKlMnOpQrStUvWxYz").is_some());
+        assert!(assert_clean("hk_abcdefghijklmnop").is_some());
     }
 
     #[test]
