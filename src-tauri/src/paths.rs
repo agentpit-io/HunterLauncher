@@ -75,9 +75,95 @@ pub fn updates_dir() -> PathBuf {
     root().join("updates")
 }
 /// 内置容器运行时装在这里（I7）。**整棵树都是启动器自己生成的**，
-/// 所以「卸载内置运行时」允许整个删掉 —— 它在 `~/.hunter` 里，守卫放行。
+/// 所以「卸载内置运行时」允许整个删掉。
+///
+/// ## 它可以被搬到别的盘（S-02 · 技术方案 §4.2.3）
+///
+/// `launcher.toml` 的 `[runtime] data_dir` 非空时用它，空则沿用 `~/.hunter/runtime`。
+/// 「不要装到系统盘」这件事只在这一个函数上落地：`LIMA_HOME` / `COLIMA_HOME` /
+/// 下载缓存 / 解压出来的整包**全都从这里取**，改这一个值它们一起跟着走。
+///
+/// ## ⚠️ 这里会去读 `launcher.toml`，别在配置加载的路上调它
+///
+/// [`crate::config::LauncherConfig::load`] 只读 `paths::launcher_toml()`（走 [`root`]），
+/// **不碰这个函数** —— 所以眼下没有环。以后往 `load()` 里加东西时要留意这一点，
+/// 一旦那条路上掉进 `runtime_dir()` 就是无限递归。
+///
+/// ## 守卫认不认这个新目录
+///
+/// 搬走之后，运行时那棵树就落在 `~/.hunter` 外面了。守卫的「自家地盘」
+/// （[`crate::assist::guard::writable_path`]）与 colima 的隔离守卫
+/// （[`crate::assist::guard::colima_call`]）都是**当场读这个函数**的，
+/// 所以它们认的就是搬过去之后的目录 —— 两处各有单测钉着（S-03）。
+/// ## ⚠️ 认不得的值一律落回默认 —— 这不是洁癖，是安全
+///
+/// 见 [`data_dir_usable`]。一句话：`data_dir = "~"` 这种写法会让守卫把整个家目录
+/// 当成「自家地盘」，`writable_path` 那道门当场失守。
 pub fn runtime_dir() -> PathBuf {
-    root().join("runtime")
+    let custom = crate::config::LauncherConfig::load().runtime.data_dir;
+    let s = custom.trim();
+    if s.is_empty() {
+        return root().join("runtime");
+    }
+    let p = crate::config::expand_home(s);
+    if !data_dir_usable(&p) {
+        crate::lwarn!(
+            "[runtime] data_dir 写的「{}」不能用（要一个绝对路径，既不能是盘符 / 根目录，\
+             也不能是 {} 的上一层），这次仍然用 {}",
+            crate::redact::mask_home(s),
+            crate::redact::mask_home(&root().to_string_lossy()),
+            crate::redact::mask_home(&root().join("runtime").to_string_lossy()),
+        );
+        return root().join("runtime");
+    }
+    p
+}
+
+/// `[runtime] data_dir` 认不认这个值。
+///
+/// 四条否决，每条都对应一种真实的坏结果：
+///
+/// 1. **相对路径** —— 落在哪儿取决于进程当时的工作目录，等于没写；
+/// 2. **盘符 / 根目录**（`/`、`C:\`）—— 那是把整台机器交给启动器写；
+/// 3. **用户家目录本身** —— 运行时那棵树是直接往它的根上写
+///    `bin` / `colima` / `lima` / `dist` / `cache` / `installed.json` 的，
+///    写进 `~` 等于把用户的家目录摊开一地；
+/// 4. **工作目录的祖先** —— 这一条最要命：
+///    [`crate::assist::guard::writable_path`] 把运行时那棵树也算进「自家地盘」，
+///    指到 `~/.hunter` 的上一层就等于把那个白名单放宽到整片目录。
+fn data_dir_usable(p: &std::path::Path) -> bool {
+    use std::path::Component;
+    // 先按字面消掉 `.` 与 `..` —— 不这么做的话 `~/..` 这种写法能绕过下面每一条比对
+    // （`components()` 里那个 `..` 谁都不等于，前缀比对必然落空）
+    let p = normalize(p);
+    if !p.is_absolute() {
+        return false;
+    }
+    // 至少要有一个「正常」的路径段 —— `/` 与 `C:\` 都只有根、没有段
+    if !p.components().any(|c| matches!(c, Component::Normal(_))) {
+        return false;
+    }
+    if p == normalize(&home()) {
+        return false;
+    }
+    !normalize(&root()).starts_with(&p)
+}
+
+/// 按字面把 `.` 与 `..` 消掉。**不碰文件系统** —— 目标目录多半还不存在，
+/// `canonicalize` 在这种地方直接失败，而这里要的只是「比较之前先摆平写法」。
+fn normalize(p: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 /// 内置运行时的可执行文件（docker / colima）。
 pub fn runtime_bin() -> PathBuf {
@@ -308,6 +394,94 @@ mod tests {
             Some(v) => std::env::set_var("HUNTER_HOME", v),
             None => std::env::remove_var("HUNTER_HOME"),
         }
+    }
+
+    /// **S-02**：`[runtime] data_dir` 是运行时唯一可搬的那一块。
+    ///
+    /// 它跟着走的不只是 `runtime_dir()` 本身 —— `bin` / `dist` / `cache` /
+    /// `lima` / `colima` / `runtime_manifest` 全是它的子路径，
+    /// 所以这些**一个都不用单独改**。这条测试钉的就是这个「一个值管到底」。
+    #[test]
+    fn data_dir_能把运行时整棵树搬到别的盘() {
+        let _h = crate::paths::test_home("paths-data-dir");
+
+        // 默认：空 = 沿用 ~/.hunter/runtime
+        assert_eq!(runtime_dir(), root().join("runtime"));
+
+        // 指一个绝对路径。
+        //
+        // **从 `temp_dir()` 拼出来，不写死 `/tmp/...`** —— Windows 上
+        // `Path::new("/tmp/x").is_absolute()` 是 **false**（没有盘符），
+        // 于是那个值会被 [`data_dir_usable`] 当成相对路径拒掉，
+        // 这条测试在 Windows 的 CI 上当场红过一次（2026-09-29 · run 36521800174）。
+        let another = std::env::temp_dir().join("hunter-另一块盘").join("Hunter");
+        let mut c = crate::config::LauncherConfig::load();
+        c.runtime.data_dir = another.to_string_lossy().into_owned();
+        c.save().expect("写配置");
+        assert_eq!(runtime_dir(), another);
+        // 整棵树的子路径一起跟过去
+        assert_eq!(runtime_bin(), another.join("bin"));
+        assert_eq!(lima_home(), another.join("lima"));
+        assert_eq!(colima_home(), another.join("colima"));
+        assert_eq!(runtime_manifest(), another.join("installed.json"));
+
+        // 写 `~/` 开头也认（配置文件里写波浪号是很自然的事）
+        let mut c = crate::config::LauncherConfig::load();
+        c.runtime.data_dir = "~/别的一块盘".to_string();
+        c.save().expect("写配置");
+        assert_eq!(runtime_dir(), home().join("别的一块盘"));
+
+        // 改回空 = 回到默认（老配置不会因为多了一行就搬家）
+        let mut c = crate::config::LauncherConfig::load();
+        c.runtime.data_dir = "   ".to_string();
+        c.save().expect("写配置");
+        assert_eq!(runtime_dir(), root().join("runtime"));
+    }
+
+    /// **认不得的 `data_dir` 一律落回默认，而且理由不是洁癖是安全。**
+    ///
+    /// 尤其是 `~` 这一种：[`crate::assist::guard::writable_path`] 会把运行时那棵树
+    /// 也算进「自家地盘」，指到 `~/.hunter` 的上一层就等于把白名单放宽到整个家目录。
+    #[test]
+    fn data_dir_认不得的值一律落回默认() {
+        let _h = crate::paths::test_home("paths-data-dir-bad");
+        let default = root().join("runtime");
+
+        // ① 写进配置里、走完整条读取路径的几种坏值
+        for bad in [
+            "~",             // 用户家目录本身（运行时那棵树会往它的根上写东西）
+            "/",             // 文件系统根
+            "relative/别处", // 相对路径：落在哪儿取决于当时的工作目录
+            ".",             // 同上
+            "x",             // 同上
+        ] {
+            let mut c = crate::config::LauncherConfig::load();
+            c.runtime.data_dir = bad.to_string();
+            c.save().expect("写配置");
+            assert_eq!(runtime_dir(), default, "「{bad}」不该被采用");
+        }
+
+        // ② 工作目录的祖先（这一条与环境无关：拿当前工作目录的上一层来试）
+        let parent = root().parent().expect("工作目录得有上一层").to_path_buf();
+        let mut c = crate::config::LauncherConfig::load();
+        c.runtime.data_dir = parent.to_string_lossy().into_owned();
+        c.save().expect("写配置");
+        assert_eq!(runtime_dir(), default, "工作目录的上一层不该被采用");
+
+        // ③ 正常的绝对路径不许被误伤。
+        //    同样从 `temp_dir()` 拼 —— Windows 上 `/mnt/...` 不是绝对路径（见上一条测试）
+        assert!(data_dir_usable(
+            &std::env::temp_dir().join("hunter-别的盘").join("Hunter")
+        ));
+        // ④ `~` 这种写法**先按字面消掉 `..` 再比**，不能靠 components 的前缀比对糊过去
+        assert_eq!(
+            normalize(std::path::Path::new("/home/u/..")),
+            PathBuf::from("/home")
+        );
+        assert_eq!(
+            normalize(std::path::Path::new("/home/u/./x/../y")),
+            PathBuf::from("/home/u/y")
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 pub mod brew;
 pub mod builtin;
 pub mod chain;
+pub mod disk;
 pub mod docker;
 pub mod effective;
 pub mod elevate;

@@ -640,6 +640,21 @@ pub struct RuntimeSection {
     /// 认不得的值一律按 `builtin` 处理。
     #[serde(default = "default_install_route")]
     pub install_route: String,
+    /// 内置运行时落在哪块盘（S-02 · 技术方案 §4.2.3）。**空 = 沿用 `~/.hunter/runtime`。**
+    ///
+    /// 这是「不要装到系统盘」这件事唯一的落地点：`LIMA_HOME` / `COLIMA_HOME` /
+    /// 下载缓存 / 解压出来的整包全都从 [`crate::paths::runtime_dir`] 取，
+    /// 改了这一个值它们**一起**跟着走。
+    ///
+    /// **不是 `HUNTER_HOME`。** 那个变量会把整个 `~/.hunter` 一起搬走 ——
+    /// 连同 `.env`（用户的 key）、日志、备份、诊断包，粒度太粗；
+    /// 用户想搬的只是「大的那一块」。也只有这一个值会被解析成绝对路径，
+    /// 支持 `~/` 开头。
+    ///
+    /// 改这个值**不会**替用户搬已经装好的东西：已经下好的运行时还在老地方，
+    /// 换盘要走「换盘」那个高级入口（S-05），它会先把虚拟机停下来再复制。
+    #[serde(default)]
+    pub data_dir: String,
 }
 
 fn yes() -> bool {
@@ -691,6 +706,7 @@ impl Default for RuntimeSection {
             use_env_path: true,
             isolated_docker_config: false,
             install_route: default_install_route(),
+            data_dir: String::new(),
         }
     }
 }
@@ -747,10 +763,26 @@ pub struct AssistSection {
     /// 没勾 → 启动器不装任何软件，没有 Docker 就如实说装不了。
     #[serde(default = "yes")]
     pub allow_install_runtime: bool,
+    /// 三级授权（F-02）：用户勾了哪几档，写成 `["l1", "l2"]`。
+    ///
+    /// **默认只到二级。** 三级（会弹系统授权框的那些操作）出厂一律不勾 ——
+    /// 替用户把「允许提权」默认打开，等于把最有代价的那一次同意替他做了。
+    /// 要三级得用户自己在授权页或设置页亲手勾，勾了会写在这里并留一条审计。
+    ///
+    /// 认不得的值一概丢掉（`Grant::parse` 返回 `None`）：一份被谁改坏的配置
+    /// 应该**少授权**，而不是多授权。整张清单都认不得 = 一档都没授权，
+    /// 除了只读观察什么都做不了 —— 这是安全的那一侧。
+    #[serde(default = "default_grants")]
+    pub grants: Vec<String>,
 }
 
 fn default_assist_mode() -> String {
     "auto".into()
+}
+
+/// 出厂的授权：一级 + 二级。**不含三级。**
+fn default_grants() -> Vec<String> {
+    crate::assist::guard::GrantSet::up_to(crate::assist::guard::Grant::Local).to_config()
 }
 
 impl AssistSection {
@@ -765,6 +797,15 @@ impl AssistSection {
     pub fn consented(&self) -> bool {
         !self.consented_at.is_empty()
     }
+    /// 用户现在授权到哪一档（F-02）。**执行路径上读的就是这一个值。**
+    pub fn grant_set(&self) -> crate::assist::guard::GrantSet {
+        crate::assist::guard::GrantSet::parse(&self.grants)
+    }
+    /// 改授权档位 → 写回配置里那张清单（含在内的低档一并列全，见
+    /// [`crate::assist::guard::GrantSet::to_config`]）。
+    pub fn set_grant(&mut self, g: crate::assist::guard::GrantSet) {
+        self.grants = g.to_config();
+    }
 }
 
 impl Default for AssistSection {
@@ -774,6 +815,7 @@ impl Default for AssistSection {
             mode: default_assist_mode(),
             consented_at: String::new(),
             allow_install_runtime: true,
+            grants: default_grants(),
         }
     }
 }
@@ -1974,6 +2016,53 @@ mod tests {
             llm_api_key: FAKE_KEY,
             schema_sanitize: false,
         }
+    }
+
+    /// **F-02**：三级授权的出厂默认是「一级 + 二级」，**不含三级**。
+    ///
+    /// 升级路径也要盯住：老版本的 `launcher.toml` 里根本没有 `grants` 这一行，
+    /// 读回来必须是默认的那一档 —— 不能因为少一行就变成「一档都没授权」
+    /// （那会让所有改动类动作突然都做不了），更不能变成「全授权」。
+    #[test]
+    fn 三级授权默认到二级且老配置读回来一样() {
+        let _h = crate::paths::test_home("cfg-grants");
+        // 出厂默认
+        let d = LauncherConfig::default();
+        assert_eq!(d.assist.grants, vec!["l1", "l2"]);
+        use crate::assist::guard::{Grant, GrantSet};
+        assert_eq!(d.assist.grant_set().max(), Some(Grant::Local));
+        assert!(!d.assist.grant_set().at_least(Grant::Elevated));
+
+        // 老配置：整段 [assist] 里没有 grants 这一行
+        let old = "[assist]\nenabled = true\nmode = \"auto\"\nallow_install_runtime = true\n";
+        let c: LauncherConfig = toml::from_str(old).expect("老配置要能读回来");
+        assert_eq!(
+            c.assist.grants,
+            vec!["l1", "l2"],
+            "缺这一行 = 用默认，不是空"
+        );
+
+        // 被谁改坏的值 → **少授权**，不是多授权
+        let bad: LauncherConfig =
+            toml::from_str("[assist]\ngrants = [\"all\", \"everything\", \"l3\"]\n")
+                .expect("读回来");
+        assert_eq!(bad.assist.grant_set().max(), Some(Grant::Elevated));
+        let worse: LauncherConfig =
+            toml::from_str("[assist]\ngrants = [\"all\", \"everything\"]\n").expect("读回来");
+        assert_eq!(
+            worse.assist.grant_set().max(),
+            None,
+            "一个都不认得 = 一档都没授权"
+        );
+
+        // 写回去的是含在内的**整张清单**，配置文件自己就该读得懂
+        let mut c = LauncherConfig::default();
+        c.assist.set_grant(GrantSet::up_to(Grant::Local));
+        assert_eq!(c.assist.grants, vec!["l1", "l2"]);
+        c.save().expect("落盘");
+        let back = LauncherConfig::load();
+        assert_eq!(back.assist.grant_set(), GrantSet::up_to(Grant::Local));
+        assert!(back.assist.consented() == c.assist.consented());
     }
 
     #[test]

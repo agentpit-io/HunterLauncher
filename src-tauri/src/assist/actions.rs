@@ -320,19 +320,19 @@ pub const ACTIONS: &[Spec] = &[
     // ── I9 ────────────────────────────────────────────────────────────
     Spec {
         id: "repair_builtin_runtime",
-        level: Level::Safe,
+        level: Level::Sensitive,
         title: "清掉上次没装成功的残骸再重建",
         why: "内置运行时装了一半 / 虚拟机处在说不清的中间态时，起它只会一直失败",
-        desc: "删掉 colima 的 hunter profile 与它的 lima 实例目录，把内容对不上清单的文件删掉重下，               然后重新起虚拟机。**只动 ~/.hunter/runtime 里的东西**：用户的 ~/.colima、~/.lima、               别的容器与数据卷一个字节都不碰。下载回来的二进制与虚拟机镜像只有校验不过才会重下。没有参数。",
+        desc: "删掉 colima 的 hunter profile 与它的 lima 实例目录，把内容对不上清单的文件删掉重下，               然后重新起虚拟机。**只动启动器自己那棵运行时目录里的东西**（默认是 ~/.hunter/runtime，               用户可以在 [runtime] data_dir 里把它指到别的盘）：用户的 ~/.colima、~/.lima、               别的容器与数据卷一个字节都不碰。下载回来的二进制与虚拟机镜像只有校验不过才会重下。没有参数。",
         params: &[],
         user_only: false,
     },
     Spec {
         id: "uninstall_builtin_runtime",
-        level: Level::Safe,
+        level: Level::Sensitive,
         title: "卸载内置运行时",
         why: "用户不想要这套内置运行时了，或者要重装一遍",
-        desc: "删掉 colima 的 hunter profile（连同它的虚拟机磁盘）并清空 ~/.hunter/runtime。               只动 ~/.hunter 里的东西，不碰本机别的 Docker。没有参数。",
+        desc: "删掉 colima 的 hunter profile（连同它的虚拟机磁盘）并清空启动器自己那棵运行时目录。               只动那棵树里的东西，不碰本机别的 Docker。**这条会把那个目录里的东西删干净** ——               默认是 ~/.hunter/runtime，用户改过 [runtime] data_dir 的时候就是那个目录。没有参数。",
         params: &[],
         user_only: false,
     },
@@ -412,6 +412,102 @@ impl Spec {
 
 pub fn spec(id: &str) -> Option<&'static Spec> {
     ACTIONS.iter().find(|a| a.id == id)
+}
+
+/// 这个动作**至少要用户授权到哪一档**（F-02 · 技术方案 §4.3）。
+///
+/// 判据只有一条：**这件事的目的本身是不是一次系统级变更**
+/// （改系统组件、起系统服务、装系统级的软件）。
+///
+/// | 情形 | 档 |
+/// |---|---|
+/// | 表外的动作 | 三级（其实什么授权都不够 —— `plan` 那一步本来就拒，这里只是别让它显得「够」） |
+/// | 目的就是改系统 | 三级 |
+/// | 只看不改 | 一级 |
+/// | 其余的（装 / 起自己那套运行时、改自己的配置） | 二级 |
+///
+/// **`Level::Sensitive` 不等于三级。** `Sensitive` 说的是「影响面大」，
+/// 三级说的是「要提权」。`reuse_existing_hunter` 是前者不是后者 ——
+/// 它只往 `launcher.toml` 写一行字，弹不出任何系统授权框。
+pub fn required_grant(id: &str, args: &BTreeMap<String, String>) -> guard::Grant {
+    let Some(s) = spec(id) else {
+        return guard::Grant::Elevated;
+    };
+    if is_system_level_change(id, args) {
+        return guard::Grant::Elevated;
+    }
+    match s.level {
+        Level::ReadOnly => guard::Grant::Observe,
+        Level::Safe | Level::Sensitive => guard::Grant::Local,
+    }
+}
+
+/// 这件事**本身**是不是一次系统级变更。
+///
+/// 现在只有一条：Linux 上起 docker 的后台服务。它先以当前身份原样试一次，
+/// 不成就走 `pkexec` 弹系统授权框（见 [`execute_as`] 里 `start_runtime` 那一条分支）；
+/// 它要办的事**就是**「把这台机器上的 docker 服务起起来」，那是系统级的事。
+/// 同一个动作在别的 `app` 上（起 colima / 打开 OrbStack）是用户态的，仍是二级 ——
+/// 所以这里看参数，不只看 id。
+///
+/// **`install_runtime` 不算三级**，尽管它的兜底链里那几段（装 Homebrew / OrbStack）
+/// 有可能弹框。理由：它要办的这件事是「装 Hunter 自己那套运行时」，默认那条内置路线
+/// 全程用户态、不要密码；链子里真要用到管理员权限的那一步会**当场**弹系统授权框，
+/// 用户点取消那一步就不做 —— 那不是一笔可以提前一揽子授予的权限。
+/// 三级留给「这件事的目的就是改系统」的那些动作。Windows 上启用 WSL2 /
+/// 装 Docker Desktop 的那几个（W-13/14）正是这一类，它们会以**新增动作**的形式
+/// 进来并声明三级（`PRIVILEGED_OPS` 那张表也在那时扩）。
+pub fn is_system_level_change(id: &str, args: &BTreeMap<String, String>) -> bool {
+    id == "start_runtime" && args.get("app").map(|s| s.trim()) == Some("systemd")
+}
+
+/// 过程流里那一行「说人话」：这一步要哪一档授权（F-02）。
+///
+/// 只读的动作返回 `None` —— 看一眼的事不用跟用户报备，报了反而是噪音。
+/// 二级与三级的动作各出一行。
+///
+/// 这句话**只说授权这件事本身**，不去替动作概括「它动多大范围」——
+/// 那是 [`Plan::summary`] 的活，而它是**逐条动作**写出来的、比一句按档位套的
+/// 通用话准得多。在这里顺手概括一次，就会出现「二级 = 只动 Hunter 自己的目录」
+/// 这种对 `install_runtime` 并不成立的句子（它的兜底链会装 Homebrew / OrbStack）。
+pub fn grant_line(call: &Call) -> Option<String> {
+    let need = required_grant(&call.id, &call.args);
+    if need < guard::Grant::Local {
+        return None;
+    }
+    Some(format!(
+        "这一步是「{}」。{}",
+        need.cn_full(),
+        match need {
+            guard::Grant::Elevated => {
+                "它会弹系统自己的授权框，密码由系统收、启动器不看不存；\
+                 授权框上点取消，这一步就不做。"
+            }
+            _ => "你授权到了这一档，所以这一步不用再问你；做不到的它会如实说做不到。",
+        }
+    ))
+}
+
+/// 授权级别闸（F-02）。**不够就拒绝，并说清缺的是哪一档。**
+///
+/// 这是执行路径上的硬校验，不看模型说了什么、也不看界面怎么传参。
+/// 四种执行入口（[`execute_as`]、以及总指挥那两条带实时进度的执行体）
+/// 都要过它 —— 换一个入口就绕过去的话，这道门等于没装。
+pub fn ensure_granted(call: &Call) -> AppResult<guard::Grant> {
+    let need = required_grant(&call.id, &call.args);
+    let have = crate::config::LauncherConfig::load().assist.grant_set();
+    if have.at_least(need) {
+        return Ok(need);
+    }
+    Err(AppError::new(
+        Code::NotImplemented,
+        format!(
+            "「{}」这一步需要「{}」这一档授权，而现在{}，所以不执行。",
+            spec(&call.id).map(|s| s.title).unwrap_or(call.id.as_str()),
+            need.cn_full(),
+            have.cn_state()
+        ),
+    ))
 }
 
 /// 模型（或规则层）提出的一次动作调用。
@@ -687,10 +783,13 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
         }
         "repair_builtin_runtime" => {
             let broken = crate::runtime::builtin::broken_items();
+            // S-03：卡片上**必须写明这会删掉哪个路径里的东西** ——
+            // `[runtime] data_dir` 可以让它落在 `~/.hunter` 外面，
+            // 「只动 Hunter 自己的目录」这句话光靠想象是看不出来的
             let mut s = format!(
-                "删掉 colima 的 {} profile 与它的 lima 实例目录（都在 {} 里），再重新起一次虚拟机",
+                "这会删掉 {} 里的东西：colima 的 {} profile 与它的 lima 实例目录，再重新起一次虚拟机",
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy()),
                 crate::runtime::builtin::PROFILE,
-                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
             );
             if broken.is_empty() {
                 s.push_str("；已经下好的文件按清单核过，内容都对得上，一个字节都不用重下");
@@ -736,10 +835,12 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             ))
         }
         "uninstall_builtin_runtime" => {
+            // S-03：同上 —— 实际路径写进卡片，不写「~/.hunter/runtime」这种想当然的默认值
             p.summary = Some(format!(
-                "删掉 colima 的 {} profile 与 {}（都是启动器自己生成的）",
+                "这会删掉 {} 里的东西：colima 的 {} profile（连同它的虚拟机磁盘）与那棵树里的一切。\
+                 都是启动器自己下载、自己生成的，不碰你这台机器上别的 Docker",
+                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy()),
                 crate::runtime::builtin::PROFILE,
-                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy())
             ));
         }
         "reuse_existing_hunter" => {
@@ -807,13 +908,15 @@ pub fn execute(call: &Call, confirmed: bool) -> AppResult<Outcome> {
 
 /// 真去执行（I5：带授权档位）。
 ///
-/// 四道门，缺一不可：
+/// 五道门，缺一不可：
 /// 1. **方向归谁定**（I8）—— [`Spec::user_only`] 的动作，用户没开口就不执行；
 /// 2. [`plan`] —— 动作在不在表里、参数合不合法、`argv` 过不过 [`guard::argv`]；
 /// 3. 授权档位 —— [`Mode::needs_confirm`] 说要问而调用方没给 `confirmed`，就**不执行**；
-/// 4. 各分支自己的守卫 —— 写文件过 [`guard::writable_path`]，动容器过 [`guard::own_container`]。
+/// 4. **授权级别**（F-02）—— 这一步要的那一档（[`required_grant`]）超过了用户授权到的
+///    上限（[`ensure_granted`]）就不执行，并说清缺的是哪一档；
+/// 5. 各分支自己的守卫 —— 写文件过 [`guard::writable_path`]，动容器过 [`guard::own_container`]。
 ///
-/// 这四道都在**执行路径上**，不在界面里 —— 界面可以有 bug，这一层不能有。
+/// 这五道都在**执行路径上**，不在界面里 —— 界面可以有 bug，这一层不能有。
 ///
 /// 第 1 道**排在 `plan` 前面**，两个理由：
 ///
@@ -872,6 +975,19 @@ pub fn execute_as(
             by,
             Some(p.level),
             "拒绝：还没得到确认",
+        );
+        return Err(e);
+    }
+    // ② 授权级别闸（F-02）。**排在档位确认之后**：先看这一步要不要在这个档位下确认，
+    // 再看用户授权到哪一档 —— 两条都不满足时，「点一下就能继续」比
+    // 「你得先去把授权打开」更像用户此刻能做的事。
+    if let Err(e) = ensure_granted(call) {
+        guard::audit(
+            &call.id,
+            &call.args,
+            by,
+            Some(p.level),
+            &format!("拒绝：{}", e.msg),
         );
         return Err(e);
     }
@@ -1783,13 +1899,264 @@ pub(crate) mod tests {
         }
     }
 
-    /// I9 新加的那条动作要在表里，而且级别是 Safe（只动 `~/.hunter/runtime`）。
+    /// I9 加的那条动作要在表里；**S-03 起它的级别是 `Sensitive`**。
+    ///
+    /// 原来是 `Safe`（理由写的是「只动 `~/.hunter/runtime`」）。引入
+    /// `[runtime] data_dir` 之后那个理由不再成立 —— 运行时可以被指到别的盘，
+    /// 而这条动作会**删掉那棵树深处的东西**（colima profile、lima 实例目录）。
+    /// 它仍然不弹任何系统授权框，所以授权档位还是二级；但对用户来说
+    /// 「这会删东西，而且删的路径是你自己配的」值得单独看一眼。
     #[test]
     fn 重建内置运行时这条动作在表里且级别正确() {
         let s = spec("repair_builtin_runtime").expect("该在表里");
-        assert_eq!(s.level, Level::Safe);
+        assert_eq!(s.level, Level::Sensitive, "S-03 起要用户看得见");
         assert!(!s.user_only);
-        // 描述里要写清「只动 ~/.hunter/runtime」—— 这是给模型看的边界
-        assert!(s.desc.contains("~/.hunter/runtime"), "{}", s.desc);
+        // 描述里要写清边界：只动**启动器自己那棵运行时目录**
+        assert!(s.desc.contains("运行时目录"), "{}", s.desc);
+        // 而且**不能**再把「只动 ~/.hunter/runtime」当成事实写死 ——
+        // data_dir 一改这句话就是错的（这正是 S-03 要堵的那个坑）
+        assert!(
+            !s.desc.contains("只动 ~/.hunter/runtime"),
+            "别把默认路径当成事实：{}",
+            s.desc
+        );
+        // 卡片上要出现**实际**路径，不是想当然的默认值
+        let p = plan(&Call::new("repair_builtin_runtime")).expect("该能规划出来");
+        let sum = p.summary.clone().unwrap_or_default();
+        let real = crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy());
+        assert!(sum.contains(&real), "卡片里没写实际路径：{sum}");
+        assert!(sum.contains("删掉"), "卡片里没说清这会删东西：{sum}");
+    }
+
+    /// 卸载内置运行时同样是 `Sensitive`，卡片上同样要写出**实际**路径。
+    #[test]
+    fn 卸载内置运行时这条动作级别正确且写明实际路径() {
+        let s = spec("uninstall_builtin_runtime").expect("该在表里");
+        assert_eq!(s.level, Level::Sensitive, "S-03 起要用户看得见");
+        let p = plan(&Call::new("uninstall_builtin_runtime")).expect("该能规划出来");
+        let sum = p.summary.clone().unwrap_or_default();
+        let real = crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy());
+        assert!(sum.contains(&real), "卡片里没写实际路径：{sum}");
+        assert!(sum.contains("删掉"), "卡片里没说清这会删东西：{sum}");
+    }
+
+    // ── F-02：三级授权（判据单测）────────────────────────────────────
+    //
+    // 这一组是任务书点名要的那两条：
+    //   · L2 动作在只授权 L1 时被否决；
+    //   · L3 动作在只授权 L2 时被否决，**且说明缺的是哪一级**。
+
+    /// 把 `HUNTER_HOME` 指到一个干净的临时目录，并把授权写成指定的那一档。
+    fn 授权到(tag: &str, g: guard::Grant) -> crate::paths::TestHome {
+        let h = crate::paths::test_home(tag);
+        let mut c = crate::config::LauncherConfig::load();
+        c.assist.set_grant(guard::GrantSet::up_to(g));
+        c.save().expect("把授权写进 launcher.toml");
+        h
+    }
+
+    /// 出厂默认：**勾了一级 + 二级，没勾三级**。
+    ///
+    /// 这一条同时钉住两个方向：装 / 起自己那套运行时（二级）开箱就能自动做；
+    /// 会弹系统授权框的那一步（三级）**必须等用户亲手勾**。
+    #[test]
+    fn 出厂默认勾到二级不勾三级() {
+        let _h = crate::paths::test_home("grant-default");
+        let g = crate::config::LauncherConfig::load().assist.grant_set();
+        assert!(g.at_least(guard::Grant::Observe));
+        assert!(g.at_least(guard::Grant::Local));
+        assert!(!g.at_least(guard::Grant::Elevated), "三级出厂一律不勾");
+        // 配置里那张清单自己就该读得懂
+        assert_eq!(
+            crate::config::LauncherConfig::load().assist.grants,
+            vec!["l1", "l2"]
+        );
+        ensure_granted(&Call::new("install_runtime")).expect("默认就该能自动装自己那套运行时");
+        assert!(
+            ensure_granted(&Call::with("start_runtime", "app", "systemd")).is_err(),
+            "要弹系统授权框的那一步默认不授权"
+        );
+    }
+
+    /// **判据一：L2 动作在只授权 L1 时被否决。**
+    #[test]
+    fn 本机安全动作在只授权一级时被否决() {
+        let _h = 授权到("grant-l1", guard::Grant::Observe);
+        // 二级的动作 —— 装 / 起自己那套运行时、改自己的配置
+        for id in [
+            "start_builtin_runtime",
+            "repair_builtin_runtime",
+            "uninstall_builtin_runtime",
+            "install_runtime",
+            "remap_ports",
+            "restart_stack",
+        ] {
+            let c = Call::new(id);
+            assert_eq!(
+                required_grant(&c.id, &c.args),
+                guard::Grant::Local,
+                "{id} 应该是二级"
+            );
+            let e = ensure_granted(&c).expect_err(&format!("{id} 在只授权一级时不该放行"));
+            assert!(e.msg.contains("二级"), "{id} 要说清缺的是哪一级：{}", e.msg);
+            assert!(
+                e.msg.contains("只读观察"),
+                "{id} 还要说清现在授权到哪一档：{}",
+                e.msg
+            );
+        }
+        // 一级的动作（只看不改）照样放行 —— 授权一级本来就够它们
+        for id in ["docker_version", "check_ports", "probe_vm_dns"] {
+            let c = Call::new(id);
+            assert_eq!(required_grant(&c.id, &c.args), guard::Grant::Observe);
+            ensure_granted(&c).unwrap_or_else(|e| panic!("{id} 只读，不该被挡：{}", e.msg));
+        }
+    }
+
+    /// **判据二：L3 动作在只授权 L2 时被否决，且说明缺的是哪一级。**
+    #[test]
+    fn 系统提权动作在只授权二级时被否决并说清缺哪一级() {
+        let _h = 授权到("grant-l2", guard::Grant::Local);
+        let c = Call::with("start_runtime", "app", "systemd");
+        assert_eq!(required_grant(&c.id, &c.args), guard::Grant::Elevated);
+        let e = ensure_granted(&c).expect_err("会弹系统授权框的那一步，二级授权不该放行");
+        assert!(e.msg.contains("三级"), "要说清缺的是三级：{}", e.msg);
+        assert!(
+            e.msg.contains("需要系统提权"),
+            "还要说清三级是什么：{}",
+            e.msg
+        );
+        assert!(
+            e.msg.contains("本机安全操作"),
+            "并且说清现在只到哪一档：{}",
+            e.msg
+        );
+        // 二级的另外几条**不受影响** —— 只有需要提权的那一条被挡
+        ensure_granted(&Call::new("install_runtime")).expect("装自己那套运行时是二级，照旧");
+    }
+
+    /// 授权到三级之后，那一条放行；**但表外的动作照样在 `plan` 那一步就断**。
+    /// 三级授权不是万能的通行证。
+    #[test]
+    fn 授权到三级也不是万能通行证() {
+        let _h = 授权到("grant-l3", guard::Grant::Elevated);
+        assert_eq!(
+            ensure_granted(&Call::with("start_runtime", "app", "systemd")).expect("该放行"),
+            guard::Grant::Elevated
+        );
+        // 表外的动作要的是**最高的那一档**（其实什么授权都不够 —— plan 会拒）
+        for bad in ["rm_rf_everything", "shell", ""] {
+            let c = Call::new(bad);
+            assert_eq!(required_grant(&c.id, &c.args), guard::Grant::Elevated);
+            assert!(plan(&c).is_err(), "「{bad}」不该能规划出来");
+        }
+    }
+
+    /// 这道闸在**执行入口**上真的挡得住 —— 不是只有一个纯函数在自说自话。
+    /// 用的是 `remap_ports`：它在三个平台上都规划得出来，只授权一级时必被拦。
+    #[test]
+    fn 授权不够时执行入口直接拒绝并留痕() {
+        let _h = 授权到("grant-exec", guard::Grant::Observe);
+        // `Mode::Auto` 下确认那一道是不问的 —— 所以挡住的只可能是授权那一道
+        let e = execute_as(
+            &Call::new("remap_ports"),
+            Mode::Auto,
+            false,
+            guard::Proposer::User,
+        )
+        .expect_err("只授权一级时不该执行改动类动作");
+        assert!(e.msg.contains("二级"), "{}", e.msg);
+        // **拒绝这件事本身要留痕**
+        let tail = std::fs::read_to_string(guard::audit_path()).unwrap_or_default();
+        assert!(
+            tail.contains("remap_ports") && tail.contains("二级"),
+            "拒绝没写进审计：{tail}"
+        );
+    }
+
+    /// **`install_runtime` 是二级，尽管它的兜底链里那几段可能弹框。**
+    ///
+    /// 它要办的这件事是「装 Hunter 自己那套运行时」，默认那条内置路线全程用户态、
+    /// 不要密码；链子里真要用到管理员权限的那一步会**当场**弹系统授权框，
+    /// 用户点取消那一步就不做 —— 那不是一笔可以提前一揽子授予的权限。
+    /// 把它记成三级的话，出厂默认（一级 + 二级）就装不了 Docker，
+    /// 而那正是这个产品存在的理由。
+    #[test]
+    fn 装运行时是二级不算系统级变更() {
+        let a = |app: &str| {
+            let mut m = BTreeMap::new();
+            m.insert("app".to_string(), app.to_string());
+            m
+        };
+        assert_eq!(
+            required_grant("install_runtime", &BTreeMap::new()),
+            guard::Grant::Local
+        );
+        // 同一个动作换一个 `app` 就换档 —— 判据看的是「这件事本身是不是改系统」，
+        // 不是「有没有可能弹框」
+        assert_eq!(
+            required_grant("start_runtime", &BTreeMap::new()),
+            guard::Grant::Local
+        );
+        assert_eq!(
+            required_grant("start_runtime", &a("colima")),
+            guard::Grant::Local
+        );
+        assert_eq!(
+            required_grant("start_runtime", &a("systemd")),
+            guard::Grant::Elevated
+        );
+    }
+
+    /// 二级 / 三级的动作在过程流里各有一句人话，一级的没有（那是噪音）。
+    #[test]
+    fn 二级三级的动作在过程流里说人话() {
+        let two = grant_line(&Call::new("install_runtime")).expect("二级要说一句");
+        assert!(two.contains("本机安全操作"), "{two}");
+        assert!(!two.contains("授权框"), "二级不弹框，别吓人：{two}");
+
+        let three =
+            grant_line(&Call::with("start_runtime", "app", "systemd")).expect("三级要说一句");
+        assert!(three.contains("需要系统提权"), "{three}");
+        assert!(three.contains("授权框"), "三级要讲清会弹框：{three}");
+
+        // 只看不改的不报备
+        assert!(grant_line(&Call::new("docker_version")).is_none());
+        assert!(grant_line(&Call::new("check_ports")).is_none());
+    }
+
+    /// 授权那几句话**说的是人话，不是命令**，而且一定要说清是哪一档。
+    #[test]
+    fn 授权那几句话只说人话不写命令() {
+        let _h = 授权到("grant-wording", guard::Grant::Observe);
+        let mut msgs = vec![
+            ensure_granted(&Call::new("install_runtime"))
+                .unwrap_err()
+                .msg,
+            ensure_granted(&Call::with("start_runtime", "app", "systemd"))
+                .unwrap_err()
+                .msg,
+        ];
+        msgs.extend(grant_line(&Call::new("install_runtime")));
+        msgs.extend(grant_line(&Call::with("start_runtime", "app", "systemd")));
+        for m in msgs {
+            assert!(!m.is_empty());
+            for bad in [
+                "sudo",
+                "pkexec",
+                "osascript",
+                "systemctl",
+                "/bin/",
+                "$",
+                "`",
+                "&&",
+                "|",
+                "--",
+            ] {
+                assert!(!m.contains(bad), "文案里混进了命令的样子（{bad}）：{m}");
+            }
+            // 档位那句话必须原样在里头 —— 用户才知道缺的是哪一级
+            assert!(m.contains("级"), "没说清是哪一档：{m}");
+        }
     }
 }
