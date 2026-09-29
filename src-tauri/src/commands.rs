@@ -2320,7 +2320,7 @@ pub async fn import_offline(
             let st = state(&app);
             let mut cfg = st.config();
             if let Some(p) = &r.registry_prefix {
-                // 包里的前缀正好是我们认得的两个候选源之一就用它（界面上能显示「腾讯云 · 香港」
+                // 包里的前缀正好是我们认得的两个候选源之一就用它（界面上能显示「中国国内云服务」
                 // 这种人话）；不是的话当成自定义源，如实显示前缀本身
                 let owned;
                 let cand: &registry::Candidate =

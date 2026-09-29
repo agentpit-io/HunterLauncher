@@ -1,0 +1,74 @@
+I17 现场造景 · 项目名 hunter · 工作目录 /home/support/.hunter/app · 起点版本 1.2.0 · 超前版本 1.2.2
+2026-09-29 05:10:51 UTC
+
+[1m== A1-1 造现场：docker compose stop web api opencode llm-shim redis（只留 postgres） ==[0m
+    api exited
+    llm-shim exited
+    opencode exited
+    postgres running
+    redis exited
+    web exited
+  [32m✓[0m 只有 1 个在跑
+
+[1m== A1-1 面板会拿到什么 ==[0m
+    PANEL running=false
+    PANEL posture=Partial
+    PANEL web_ok=false
+    PANEL web_url=None
+    PANEL uptime_seconds=None
+    PANEL hunter_tag=Some("1.2.0")
+    PANEL 服务=web:exited api:exited opencode:exited llm-shim:exited postgres:running redis:exited
+    BOOT posture=Partial
+    BOOT headline=Hunter 在跑，但 web、api、opencode、llm-shim、redis 停着（需要启动）、网页打不开
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · running · 健康
+    BOOT line=redis · exited · 未启动
+    BOOT line=这几个容器退出了（不是「还没就绪」）：web、api、opencode、llm-shim、redis
+    BOOT line=GET http://127.0.0.1:3101/ → 请求 127.0.0.1:3101 失败：io: Connection refused (os error 111)
+  [31m✗[0m running=
+  [31m✗[0m web_url 有值 —— 会给出一个打不开的地址
+  [31m✗[0m 还给了时长 
+  [32m✓[0m posture=Partial（有服务不正常）
+  [32m✓[0m 开机判定没说「运行中」
+
+[1m== A1-1 恢复现场：把五个容器起回来 ==[0m
+  [32m✓[0m 6/6 健康
+
+[1m== A1-3 造现场：六个容器全停（客户 10:44 的现场） ==[0m
+    api exited
+    llm-shim exited
+    opencode exited
+    postgres exited
+    redis exited
+    web exited
+  [32m✓[0m 六个全是 exited
+
+[1m== A1-3 面板会拿到什么 ==[0m
+    PANEL running=false
+    PANEL posture=Stopped
+    PANEL web_ok=false
+    PANEL web_url=None
+    PANEL uptime_seconds=None
+    PANEL hunter_tag=Some("1.2.0")
+    PANEL 服务=web:exited api:exited opencode:exited llm-shim:exited postgres:exited redis:exited
+    BOOT posture=Stopped
+    BOOT headline=Hunter 装好了，但 6 个容器都停着 —— 点「启动」就能用
+    BOOT line=web · exited · 未启动
+    BOOT line=api · exited · 未启动
+    BOOT line=opencode · exited · 未启动
+    BOOT line=llm-shim · exited · 未启动
+    BOOT line=postgres · exited · 未启动
+    BOOT line=redis · exited · 未启动
+    BOOT line=6 个容器全部已退出 —— 装是装好了，只是没在跑
+  [31m✗[0m running 不是 false
+  [31m✗[0m 给了地址
+  [31m✗[0m 给了时长
+  [32m✓[0m posture=Stopped
+
+[1m== A1-3 恢复现场 ==[0m
+  [32m✓[0m 6/6 健康
+
+有失败项

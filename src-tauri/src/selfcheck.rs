@@ -648,7 +648,18 @@ fn finish_full(
             if what.is_empty() {
                 what.push("有服务不正常".into());
             }
-            format!("Hunter 在跑，但 {}", what.join("、"))
+            // **网页都不应答的时候不能说「在跑」**（I17 · P0-1 顺手补的一处）。
+            //
+            // 客户 HL-GFV764 那份日志里 09:52:35 那一行就是这句话：
+            // 「开机判定：Hunter 在跑，但 web、api、opencode、llm-shim、redis 停着（需要启动）、网页打不开」
+            // —— 六个容器里只有 postgres 活着、网页一个字节都回不来，却把话说成「在跑」。
+            // 这和面板上那个把假「运行中」点亮的绿点是同一个毛病：
+            // **拿不到应答就说「没在跑」**，宁严不宽（`flow::running_now` 是同一条口径）。
+            if web_status.is_none() {
+                format!("Hunter 没跑起来：{}", what.join("、"))
+            } else {
+                format!("Hunter 在跑，但 {}", what.join("、"))
+            }
         }
         Posture::Healthy => format!(
             "Hunter 已经在正常运行（{ready} / {} 健康{}）",
@@ -1221,5 +1232,65 @@ mod tests {
         // 容器本身是全绿的 —— 这一档下「关闭」仍然该是主按钮
         assert!(r.services_all_ready());
         assert!(r.headline.contains("网页打不开"), "{}", r.headline);
+    }
+
+    /// **网页不应答就不许说「在跑」**（I17 · P0-1）。
+    ///
+    /// 客户 HL-GFV764 那份日志里 09:52:35 那一行是：
+    /// 「Hunter 在跑，但 web、api、opencode、llm-shim、redis 停着（需要启动）、网页打不开」——
+    /// 六个容器里只有 postgres 活着，网页一个字节都回不来。
+    /// 面板那边已经改说话了，这一句也得跟上，否则日志里两个地方两套说法。
+    #[test]
+    fn 网页打不开时不说「Hunter 在跑」() {
+        // 只有 postgres 活着（客户 2026-09-29 的现场）
+        let services: Vec<ServiceStatus> = EXPECTED
+            .iter()
+            .map(|n| {
+                let state = if *n == "postgres" { "running" } else { "exited" };
+                svc(n, state, compose::Health::Pending, None)
+            })
+            .collect();
+        let r = finish_full(
+            Posture::Partial,
+            services,
+            None,
+            Some("Connection refused".into()),
+            Vec::new(),
+            Instant::now(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            Some(3100),
+        );
+        assert_eq!(r.posture, Posture::Partial);
+        assert!(
+            !r.headline.contains("在跑"),
+            "网页打不开就不许说「在跑」：{}",
+            r.headline
+        );
+        assert!(r.headline.contains("没跑起来"), "{}", r.headline);
+        assert!(!r.all_good());
+
+        // 反面对照：网页应答得了、只是有服务没就绪 —— 这时候说「在跑」是对的
+        let r2 = finish_full(
+            Posture::Partial,
+            EXPECTED
+                .iter()
+                .map(|n| svc(n, "running", compose::Health::Healthy, None))
+                .collect(),
+            Some(200),
+            None,
+            Vec::new(),
+            Instant::now(),
+            false,
+            Vec::new(),
+            vec!["opencode".to_string()],
+            Some(3100),
+        );
+        assert!(
+            r2.headline.contains("在跑"),
+            "网页打得开、只是有服务没就绪，说「在跑」没错：{}",
+            r2.headline
+        );
     }
 }

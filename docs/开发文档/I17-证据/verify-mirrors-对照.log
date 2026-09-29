@@ -1,0 +1,61 @@
+### 正对照 + 过滤器 + 前导 v · 2026-09-29 13:01:50
+
+$ bash scripts/verify-mirrors.sh v1.2.2
+校验镜像源：tag=1.2.2
+（只探测，不推任何东西；国内源的同步由另一条链路负责）
+
+── GHCR（ghcr.io/agentpit-io）
+   ✓ hunter-community-web               1.2.2
+   ✓ hunter-community-api               1.2.2
+   ✓ hunter-community-opencode          1.2.2
+   ✓ hunter-community-llm-shim          1.2.2
+
+── 中国国内云服务（hkccr.ccs.tencentyun.com/agentpit）
+   ✓ hunter-community-web               1.2.2
+   ✓ hunter-community-api               1.2.2
+   ✓ hunter-community-opencode          1.2.2
+   ✓ hunter-community-llm-shim          1.2.2
+
+──────────────────────────────────────────────
+结果：8 / 8 可拉
+两源四个镜像都齐了 —— 这一条可以打勾。
+退出码=0
+
+$ bash scripts/verify-mirrors.sh 1.2.3 --only cn
+校验镜像源：tag=1.2.3
+（只探测，不推任何东西；国内源的同步由另一条链路负责）
+
+── 中国国内云服务（hkccr.ccs.tencentyun.com/agentpit）
+   ✗ hunter-community-web               1.2.3 —— 这一版在源上不存在（HTTP 404）
+   ✗ hunter-community-api               1.2.3 —— 这一版在源上不存在（HTTP 404）
+   ✗ hunter-community-opencode          1.2.3 —— 这一版在源上不存在（HTTP 404）
+   ✗ hunter-community-llm-shim          1.2.3 —— 这一版在源上不存在（HTTP 404）
+
+──────────────────────────────────────────────
+结果：0 / 4 可拉
+
+缺这些：
+  · 中国国内云服务  hkccr.ccs.tencentyun.com/agentpit/hunter-community-web:1.2.3  —— 这一版在源上不存在（HTTP 404）
+  · 中国国内云服务  hkccr.ccs.tencentyun.com/agentpit/hunter-community-api:1.2.3  —— 这一版在源上不存在（HTTP 404）
+  · 中国国内云服务  hkccr.ccs.tencentyun.com/agentpit/hunter-community-opencode:1.2.3  —— 这一版在源上不存在（HTTP 404）
+  · 中国国内云服务  hkccr.ccs.tencentyun.com/agentpit/hunter-community-llm-shim:1.2.3  —— 这一版在源上不存在（HTTP 404）
+
+国内源缺的话：先手动触发一次同步，再跑一遍这个脚本。
+  gh workflow run cn-mirror.yml --repo agentpit-io/HunterLauncher
+两源齐了才算这次发布完成（方案 §4.2①：这一条是发布清单的最后一勾）。
+退出码=1
+
+$ bash scripts/verify-mirrors.sh 1.2.3 --only ghcr
+校验镜像源：tag=1.2.3
+（只探测，不推任何东西；国内源的同步由另一条链路负责）
+
+── GHCR（ghcr.io/agentpit-io）
+   ✓ hunter-community-web               1.2.3
+   ✓ hunter-community-api               1.2.3
+   ✓ hunter-community-opencode          1.2.3
+   ✓ hunter-community-llm-shim          1.2.3
+
+──────────────────────────────────────────────
+结果：4 / 4 可拉
+两源四个镜像都齐了 —— 这一条可以打勾。
+退出码=0
