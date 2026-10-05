@@ -42,6 +42,8 @@ import type {
   Preflight,
   OwnKeyCheck,
   PullProgress,
+  AssistEvent,
+  UpgradeResult,
   RegistryProbe,
   RuntimeMetrics,
   RuntimeStatus,
@@ -322,6 +324,117 @@ export const demoUpgradeSteps: string[] = [
   '正在取 v1.2.2 的 compose 与配置',
   '已备份（升级失败可以回滚）',
   '正在拉取新版本的镜像…',
+]
+
+/**
+ * I19 · P1-C：**「修不好」那一屏**的演示结果（`HUNTER_DEMO_PAGE=update-repair-failed`）。
+ *
+ * 数字全部是**演示值**（界面右上角有「演示数据」角标），但形状与真机一致：
+ * 卡在哪一步、自愈了几轮、回滚了没有、备份在哪、错误码是什么。
+ */
+export const demoUpgradeFailedResult: UpgradeResult = {
+  ok: false,
+  from: '1.2.0',
+  to: '1.2.2',
+  backupId: 'pre-upgrade-1.2.0-20261005-101530',
+  backupSqlBytes: 41_238_528,
+  rolledBack: true,
+  cancelled: false,
+  message:
+    '升到 v1.2.2 没成功：卡在「下载新版本」，启动器自己试着修了 5 次，还是没成。' +
+    '原因：两个镜像源上都拉不到 hunter-community-web:1.2.2。已回滚到 v1.2.0，6 个服务重新就绪。' +
+    '升级前的备份在 ~/.hunter/backups/pre-upgrade-1.2.0-20261005-101530。',
+  repairRounds: 5,
+  exhausted: true,
+  errorCode: 'E_PULL_FAILED',
+}
+
+/**
+ * I19 · P0-B：升级自愈的过程流（「发现问题 → 分析 → 处理 → 已解决」四张卡）。
+ *
+ * 与 `assist://event` 推的是同一形状；演示模式下由 `RepairStream` 直接铺进去。
+ * **规则判的**（`by: 'rule'`）与**模型判的**（`by: 'model'`）各留一张，
+ * 好让界面上那枚角标在截图里也看得见。
+ */
+export const demoRepairEvents: AssistEvent[] = [
+  {
+    id: 1,
+    parent: null,
+    kind: 'issue',
+    status: 'warn',
+    title: '发现问题：组件下载失败',
+    detail: '拉取 hunter-community-api:1.2.2 时连接被重置',
+    tech: ['错误码 E_PULL_FAILED｜拉取失败'],
+    at: '2026-10-05T10:16:02+08:00',
+  },
+  {
+    id: 2,
+    parent: 1,
+    kind: 'analyze',
+    status: 'ok',
+    title: '分析中…',
+    detail: '查了 5 个端口 · 本机还有 0 套 Hunter',
+    at: '2026-10-05T10:16:03+08:00',
+  },
+  {
+    id: 3,
+    parent: 1,
+    kind: 'analyze',
+    status: 'ok',
+    title: '找到原因',
+    detail: '当前这个下载源拉不动，刚测过「全球镜像（GHCR）」是通的，换过去重来。',
+    by: 'rule',
+    at: '2026-10-05T10:16:03+08:00',
+  },
+  {
+    id: 4,
+    parent: 1,
+    kind: 'action',
+    status: 'ok',
+    title: '正在处理：切换下载源',
+    detail: '二级 · 本机安全操作',
+    elapsedMs: 620,
+    at: '2026-10-05T10:16:04+08:00',
+  },
+  {
+    id: 5,
+    parent: 1,
+    kind: 'verify',
+    status: 'ok',
+    title: '重新试一次刚才失败的那一步',
+    detail: '下载新版本',
+    at: '2026-10-05T10:16:05+08:00',
+  },
+  {
+    id: 6,
+    parent: 1,
+    kind: 'issue',
+    status: 'warn',
+    title: '发现问题：组件下载失败',
+    detail: '换源之后仍然是同一条原话',
+    at: '2026-10-05T10:16:41+08:00',
+  },
+  {
+    id: 7,
+    parent: 6,
+    kind: 'analyze',
+    status: 'ok',
+    title: '模型的判断',
+    detail: '证据里两个源都取不到这一版的 manifest，判断为镜像尚未同步。',
+    by: 'model',
+    tokens: 3120,
+    elapsedMs: 2400,
+    at: '2026-10-05T10:16:44+08:00',
+  },
+  {
+    id: 8,
+    parent: 6,
+    kind: 'failed',
+    status: 'failed',
+    title: '这个问题我解决不了',
+    detail: '没有可以安全执行的办法',
+    at: '2026-10-05T10:16:45+08:00',
+  },
 ]
 
 export const demoRuntime: RuntimeStatus = {

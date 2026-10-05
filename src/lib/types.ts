@@ -903,6 +903,15 @@ export interface UpgradeResult {
   /** I16：是用户自己点的「取消」，不是出了错。界面要把这两件事分开说 */
   cancelled: boolean
   message: string
+  /**
+   * I19 · P0-B：这一轮升级一共用掉几个修复回合。**实测值**（后端计数器给的），
+   * 「修不好」那一屏照着它说「自己排查处理了 N 轮」。
+   */
+  repairRounds?: number
+  /** I19：是不是「5 个回合都用完了才停」（区别于守卫判定「不该修」） */
+  exhausted?: boolean
+  /** I19：失败时的错误码。「把日志交给开发者」按钮原样带给后端 */
+  errorCode?: string | null
 }
 
 export interface UpgradeStatus {
@@ -1247,6 +1256,12 @@ export interface AssistEvent {
   tokens?: number
   elapsedMs?: number
   choices?: AssistChoice[]
+  /**
+   * I19 · B.4：这一步是**规则直接判的**还是**问了模型**。
+   * 规则判的更快更准、也不花 token —— 过程流里要能分辨（对用户是诚实）。
+   * 只有「找到原因」那一类事件会带上它。
+   */
+  by?: 'rule' | 'model' | 'orchestrator' | 'user'
   at: string
 }
 

@@ -992,7 +992,31 @@ const zhCN = {
       '拉镜像或起容器失败时，启动器会把配置写回升级前那一整套并用旧镜像重新启动（错误码 E_UPDATE_FAILED）。数据库不会被自动覆盖。',
     succeeded: '升级完成',
     failed: '升级失败',
+    /** I19：用户自己点了「取消」——与「失败」不是一回事，别混 */
+    canceled: '已取消',
     backupAt: (p: string) => `备份：${p}`,
+    // ── I19 · P0-B / P1-C：升级自己修 + 修不好 ────────────────────────
+    //
+    // 升级某一步失败之后，启动器先自己排查处理（整轮最多 5 个修复回合）。
+    // 下面这几句是那一块过程流与「修不好」卡片的文案。
+    /** 过程流那一块的标题（与 U5 的进度面板并列） */
+    repairTitle: '升级遇到问题，正在排查',
+    /** 「找到原因」那张卡是哪一层判的 —— 规则更快更准，也不花 token */
+    repairRule: '规则判定',
+    repairModel: '模型判定',
+    repairReview: '复核',
+    repairShowTech: '详情',
+    repairHideTech: '收起详情',
+    repairWaiting: '正在收集现场信息…',
+    /** 「修不好」那一屏：**真实数字**，不是编的 */
+    repairTried: (n: number) => `启动器自己排查处理了 ${n} 轮，还是没能修好。`,
+    repairNoTry: '这一步启动器没能自己修好，也没有安全可行的修法。',
+    repairExhausted: '排查处理次数已经用完',
+    repairRolledBack: '配置已经写回升级前那一份',
+    repairNotRolled: '配置没能完全写回升级前那一份',
+    repairBackup: (id: string) => `升级前的备份：${id}`,
+    /** 「把日志交给开发者」那一步的说明 */
+    repairLogHint: '把这一屏的现场发给我们，我们照着追踪码查最快。',
     // ── 备份 ──
     backupsTitle: '备份',
     backupsHint: '每次升级前自动做一份；也可以随时手动做一份（换机器、动配置前都用得上）。',

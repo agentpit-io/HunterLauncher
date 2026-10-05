@@ -511,15 +511,42 @@ export async function upgradeHunter(tag: string, registry?: string): Promise<voi
   await call<void>('upgrade_hunter', { tag, registry: registry ?? null })
 }
 
+/**
+ * I19：演示模式下**同步**拿一份升级状态。
+ *
+ * 真机上 `st` 是点「升级」点出来的；而 `update-repair-failed` / `upgrade-upload-*`
+ * 这几页要**一进页面就摆在那一态上**（截图脚本没法「点两下点出一次失败的升级」）。
+ * `HunterCard` 初始化时同步调它。**非演示构建返回 `null`**（发布包里这段数据进不来）。
+ */
+export function demoUpgradeStatus(): UpgradeStatus | null {
+  if (!DEMO) return null
+  const p = demoPage()
+  // I18 · U5：升级正在进行中那一屏
+  if (p === 'update-running' || p === 'update-retry') {
+    return { running: true, steps: demo.demoUpgradeSteps, result: null, error: null }
+  }
+  // I19 · P1-C：**「修不好」那一屏**（A5/A6 出图用）。
+  // `upgrade-upload-*` 也走这一屏 —— A6 要点的那颗「把日志交给开发者」
+  // 按钮就长在这一屏上，不把这一屏铺出来就点不到它。
+  if (
+    p === 'update-repair-failed' ||
+    p === 'upgrade-upload-preview' ||
+    p === 'upgrade-upload-done'
+  ) {
+    return {
+      running: false,
+      steps: demo.demoUpgradeSteps,
+      result: demo.demoUpgradeFailedResult,
+      error: null,
+    }
+  }
+  return null
+}
+
 export async function upgradeStatus(): Promise<UpgradeStatus> {
   if (DEMO) {
-    // I18 · U5：`update-running` / `update-retry` 这两页就是「升级正在进行中」那一屏，
-    // 演示模式下直接报「在跑」—— 真机上这一态是点「升级」点出来的
-    // （要真点两下才出得来，截图脚本不好稳定定位，I17 的 `update-no-tag` 就吃过这个亏）
-    if (demoPage() === 'update-running' || demoPage() === 'update-retry') {
-      return { running: true, steps: demo.demoUpgradeSteps, result: null, error: null }
-    }
-    return { running: false, steps: [], result: null, error: null }
+    const d = demoUpgradeStatus()
+    return d ?? { running: false, steps: [], result: null, error: null }
   }
   return call<UpgradeStatus>('upgrade_status')
 }

@@ -2407,6 +2407,15 @@ fn cmd_upgrade(st: &AppState, args: &Args) -> AppResult<()> {
 
     let tty = std::io::stdout().is_terminal();
     let mut last_print = Instant::now() - Duration::from_secs(5);
+    // I19 · P0-B：命令行升级也接上自愈。事件打到 stdout（`Stdout` sink）——
+    // 命令行本来就该看得见「它正在自己修」。
+    let bus = std::sync::Arc::new(crate::assist::events::Bus::new(
+        Box::new(crate::assist::events::Stdout::new()),
+        false,
+    ));
+    let mode = config::LauncherConfig::load().assist.mode();
+    let mut repairer =
+        crate::upgrade_repair::UpgradeRepairer::new(bus, mode, st.hunter_key(), st.cancel.clone());
     let r = crate::upgrade::upgrade(
         st,
         &target,
@@ -2432,7 +2441,13 @@ fn cmd_upgrade(st: &AppState, args: &Args) -> AppResult<()> {
                 human_bytes(p.total_bytes)
             );
         },
+        Some(&mut repairer),
     )?;
+    if !r.ok {
+        // 失败带回一份结果（I19 · P1-C）：如实打印，并用非零退出码收场
+        println!("\n  ✗ {}\n", r.message);
+        return Err(AppError::new(Code::UpdateFailed, r.message));
+    }
     println!("\n  ✓ {}\n", r.message);
     Ok(())
 }

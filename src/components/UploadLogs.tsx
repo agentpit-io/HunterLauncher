@@ -43,17 +43,29 @@ export function UploadLogs({
   const { t } = useStore()
   const [busy, setBusy] = useState<'preview' | 'upload' | null>(null)
   // 截图脚本用 HUNTER_DEMO_PAGE=upload-preview / upload-done 直接把这两屏打开 ——
-  // 它们都在弹窗里，不先点一下按钮是截不到的
-  const [preview, setPreview] = useState<LogshipPreview | null>(() =>
-    ipc.DEMO && ipc.demoPage() === 'upload-preview' && testId === 'dashboard-upload-logs'
-      ? demoPreview()
-      : null,
-  )
-  const [outcome, setOutcome] = useState<LogshipOutcome | null>(() =>
-    ipc.DEMO && ipc.demoPage() === 'upload-done' && testId === 'dashboard-upload-logs'
-      ? demoOutcome()
-      : null,
-  )
+  // 它们都在弹窗里，不先点一下按钮是截不到的。
+  // I19：升级失败那一屏的按钮（`upgrade-upload-logs`）用**另外两个页面名**
+  // （`upgrade-upload-preview` / `upgrade-upload-done`）—— 不与 I16 那两张
+  // 挂在运行面板上的图（`upload-preview` / `upload-done`）抢同一个名字。
+  // A6（点按钮 → 预览 → 确认 → 追踪码）在演示构建里才出得了图。
+  const demoHere =
+    ipc.DEMO && (testId === 'dashboard-upload-logs' || testId === 'upgrade-upload-logs')
+  const [preview, setPreview] = useState<LogshipPreview | null>(() => {
+    if (!demoHere) return null
+    const p = ipc.demoPage()
+    if (testId === 'upgrade-upload-logs') {
+      return p === 'upgrade-upload-preview' ? demoPreview() : null
+    }
+    return p === 'upload-preview' ? demoPreview() : null
+  })
+  const [outcome, setOutcome] = useState<LogshipOutcome | null>(() => {
+    if (!demoHere) return null
+    const p = ipc.demoPage()
+    if (testId === 'upgrade-upload-logs') {
+      return p === 'upgrade-upload-done' ? demoOutcome() : null
+    }
+    return p === 'upload-done' ? demoOutcome() : null
+  })
   const [err, setErr] = useState<string | null>(null)
   const [copied, setCopied] = useState<boolean | null>(null)
 

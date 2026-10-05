@@ -112,6 +112,12 @@ const DEMO_STATES: Record<string, State> = {
   // 换源重试那一档（`attempt=2`）：ETA 已作废重算，显示的是「剩余时间未知」，
   // 同时明细展开（A5-3 / A5-4）
   'update-retry': { name: 'Ready' },
+  // I19 · P1-C：**「修不好」那一屏**（5 轮自愈用满仍失败）：过程流四张卡 +
+  // 「自己试了几次 / 回滚了没有 / 备份在哪」+ 「把日志交给开发者」按钮。
+  'update-repair-failed': { name: 'Ready' },
+  // A6 那两屏（点「把日志交给开发者」之后的预览 / 完成）——同样落在更新页上
+  'upgrade-upload-preview': { name: 'Ready' },
+  'upgrade-upload-done': { name: 'Ready' },
   // I9：上一次没装成功留下的内置运行时残骸（用户 Mac 上 0.1.8 那次的现场）。
   // 这一页同时也是「启动器已经替你做了这几步」那一块的样子
   'error-builtin': {
@@ -138,6 +144,16 @@ function initialOverlay(): Overlay {
   if (page === 'update-no-tag') return 'update'
   // I18 · U5：升级进行中那两屏也是更新页
   if (page === 'update-running' || page === 'update-retry') return 'update'
+  // I19 · P1-C：「修不好」那一屏同样是更新页。
+  // A6 要点的「把日志交给开发者」按钮就长在这一屏上 —— 它的预览/完成两态
+  // 用**另外两个页面名**（`upgrade-upload-*`），不与 I16 那两张 dashboard 上的图冲突。
+  if (
+    page === 'update-repair-failed' ||
+    page === 'upgrade-upload-preview' ||
+    page === 'upgrade-upload-done'
+  ) {
+    return 'update'
+  }
   return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
     ? page
     : null

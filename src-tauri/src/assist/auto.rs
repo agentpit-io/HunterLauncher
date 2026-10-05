@@ -72,6 +72,46 @@ pub const MAX_ROUNDS_TOTAL: usize = 10;
 /// 放宽到 20 万（仍只占日额度 2%），让 `MAX_ROUNDS_TOTAL` 的回合数先于 token 预算起作用。
 pub const MAX_TOKENS: u64 = 200_000;
 
+/// **修复回合眼里的「卡在哪一步」**（I19 抽出来的中间层）。
+///
+/// 安装（[`Step`]）与升级（`upgrade::UpgradeStep`）各有一套步骤枚举，
+/// 但修复这台机器只关心三件事：人话标题、给侦察员看的阶段 id、
+/// 以及这一步像不像「拉镜像 / 起容器」（决定侦察员要不要去实测容器网络与 DNS）。
+/// 两个枚举各自 `Into<Stage>`，修复的那几个函数只认这个结构 —— 于是
+/// `repair` / `scout` / `rule_plan` / `ask_model` 与安装彻底解耦（I19 · P0-B）。
+#[derive(Debug, Clone, Copy)]
+pub struct Stage {
+    /// 人话标题（事件流与日志里的那一步）
+    pub title: &'static str,
+    /// 给侦察员看的阶段 id（`probe::collect` 用它挑该采哪些现场）
+    pub id: &'static str,
+    /// 像「拉镜像 / 起容器」那一步吗（决定要不要实测「容器能不能上网」）
+    pub net_like: bool,
+    /// 像「起容器 / 等健康」那一步吗（决定要不要查「容器手里那份 DNS 过时了没有」）
+    pub start_like: bool,
+}
+
+/// 修复回合的预算。**安装与升级各一份，不共用**（I19 · B.3）。
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    /// 单个问题最多几个回合
+    pub per_issue: usize,
+    /// 整次操作最多几个回合
+    pub total: usize,
+    pub tokens: u64,
+}
+
+impl Budget {
+    /// 安装用的是设计文档 §八 那三个数。
+    pub const fn install() -> Self {
+        Self {
+            per_issue: MAX_ROUNDS_PER_ISSUE,
+            total: MAX_ROUNDS_TOTAL,
+            tokens: MAX_TOKENS,
+        }
+    }
+}
+
 /// 安装的几个步骤。**失败重跑的就是这一个枚举里的一项**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +142,21 @@ impl Step {
             Step::Pull => "pull",
             Step::Start => "start",
         }
+    }
+    /// 这一步在修复回合眼里的样子（见 [`Stage`]）。
+    pub fn stage(self) -> Stage {
+        Stage {
+            title: self.title(),
+            id: self.as_str(),
+            net_like: matches!(self, Step::Pull | Step::Start),
+            start_like: matches!(self, Step::Start),
+        }
+    }
+}
+
+impl From<Step> for Stage {
+    fn from(s: Step) -> Stage {
+        s.stage()
     }
 }
 
@@ -284,6 +339,8 @@ pub struct Orchestrator {
     /// 那边没有人能点，一直等下去就是把进程挂死。为 false 时卡片照发（要留痕），
     /// 但当场按「不」处理并说清原因。
     interactive: bool,
+    /// 修复回合的预算（安装/升级各一份，见 [`Budget`]）。
+    budget: Budget,
 }
 
 impl Orchestrator {
@@ -310,6 +367,37 @@ impl Orchestrator {
             answer_reader: None,
             rebound: Vec::new(),
             interactive: true,
+            budget: Budget::install(),
+        }
+    }
+
+    /// 换一份预算（升级那条路用它，见 [`Budget`]）。
+    pub fn set_budget(&mut self, budget: Budget) {
+        self.budget = budget;
+    }
+
+    /// 这次操作一共花掉多少 token（A7③ 的判据：规则优先时它必须是 0）。
+    pub fn tokens(&self) -> u64 {
+        self.tokens
+    }
+
+    /// **通用修复回合**（不依赖安装语义）。升级那条路用它。
+    ///
+    /// 返回 `true` = 做了点什么，**重跑失败的那一步就是验证**；
+    /// `false` = 规则与模型都没辙，或者复核员连续否决，或者预算到头。
+    pub(crate) fn repair_round(
+        &mut self,
+        state: &AppState,
+        stage: Stage,
+        e: &AppError,
+        issue_rounds: usize,
+    ) -> bool {
+        match self.repair(state, stage, e, issue_rounds) {
+            Ok(v) => v,
+            Err(re) => {
+                crate::lwarn!("修复回合本身出错了：{}", re.msg);
+                false
+            }
         }
     }
 
@@ -348,7 +436,7 @@ impl Orchestrator {
             open: self.open,
             tokens: self.tokens,
             rounds: self.rounds,
-            max_rounds: MAX_ROUNDS_TOTAL,
+            max_rounds: self.budget.total,
             elapsed_ms: self.t0.elapsed().as_millis() as u64,
             phase: phase.to_string(),
         };
@@ -915,8 +1003,18 @@ impl Orchestrator {
                         return Err(e);
                     }
                     // 修复回合：侦察 → 诊断 → 守卫 → 执行
-                    match self.repair(state, opts, step, &e, issue_rounds) {
-                        Ok(true) => continue, // 下一圈的 run_step 就是验证
+                    match self.repair(state, step.stage(), &e, issue_rounds) {
+                        Ok(true) => {
+                            // 修复动作多半改过 launcher.toml（换端口 / 换源 / 调超时），
+                            // `opts.registry` 是命令行/界面一开始定死的那个 —— 不同步过来的话，
+                            // 下一次 prepare 又会把那个拉不动的源钉回去，白换一场
+                            //（场景 4 首轮实测：换到腾讯云之后还是去连 ghcr）
+                            let fresh = LauncherConfig::load();
+                            if opts.registry.as_deref() != Some(fresh.hunter.registry_id.as_str()) {
+                                opts.registry = Some(fresh.hunter.registry_id.clone());
+                            }
+                            continue; // 下一圈的 run_step 就是验证
+                        }
                         Ok(false) => return Err(e),
                         Err(re) => {
                             crate::lwarn!("修复回合本身出错了：{}", re.msg);
@@ -930,20 +1028,22 @@ impl Orchestrator {
 
     /// 预算到头了吗。到了就**如实说清是哪一条到头了**，不含糊其辞。
     fn budget_stop(&self, issue_rounds: usize) -> Option<String> {
-        if issue_rounds >= MAX_ROUNDS_PER_ISSUE {
+        if issue_rounds >= self.budget.per_issue {
             return Some(format!(
-                "同一个问题已经试了 {MAX_ROUNDS_PER_ISSUE} 回合还没解决，不再继续猜了。"
+                "同一个问题已经试了 {} 回合还没解决，不再继续猜了。",
+                self.budget.per_issue
             ));
         }
-        if self.rounds >= MAX_ROUNDS_TOTAL {
+        if self.rounds >= self.budget.total {
             return Some(format!(
-                "这次安装一共用掉了 {MAX_ROUNDS_TOTAL} 个修复回合，到上限了。"
+                "这次操作一共用掉了 {} 个修复回合，到上限了。",
+                self.budget.total
             ));
         }
-        if self.tokens >= MAX_TOKENS {
+        if self.tokens >= self.budget.tokens {
             return Some(format!(
-                "这次安装已经用掉 {} token（上限 {MAX_TOKENS}），不再继续问模型了。",
-                self.tokens
+                "这次操作已经用掉 {} token（上限 {}），不再继续问模型了。",
+                self.tokens, self.budget.tokens
             ));
         }
         None
@@ -1486,8 +1586,8 @@ impl Orchestrator {
 
     /// 采一份证据（零 token）。**这是 0.1.4 最缺的东西** ——
     /// 当时送给模型的诊断里没有「端口被谁占着」，模型只好自己编一个原因。
-    fn scout(&self, step: Step, e: &AppError) -> Evidence {
-        let report = probe::collect(Some(e.code.as_str()), Some(&e.msg), Some(step.as_str()));
+    fn scout(&self, stage: Stage, e: &AppError) -> Evidence {
+        let report = probe::collect(Some(e.code.as_str()), Some(&e.msg), Some(stage.id));
         let survey = crate::ports::Survey::collect();
         let cfg = LauncherConfig::load();
         let mut port_lines = Vec::new();
@@ -1504,7 +1604,7 @@ impl Orchestrator {
         let container_net = if matches!(
             e.code,
             Code::StartTimeout | Code::ContainerOffline | Code::RuntimeNoDns | Code::ProxyBlock
-        ) && matches!(step, Step::Pull | Step::Start)
+        ) && stage.net_like
         {
             let o = crate::runtime::netcheck::probe();
             crate::linfo!("侦察员：{}", o.one_line());
@@ -1514,7 +1614,7 @@ impl Orchestrator {
         };
         // 「容器手里那份 DNS 过时了吗」只在虚拟机 DNS 现在是好的、
         // 而服务又起不来的时候才值得查（那正是 P0-3 那个现场）
-        let stale_dns = if matches!(step, Step::Start)
+        let stale_dns = if stage.start_like
             && matches!(e.code, Code::StartTimeout | Code::ContainerOffline)
             && report
                 .vm_dns
@@ -1544,11 +1644,13 @@ impl Orchestrator {
 
     /// 一个修复回合：侦察 → 诊断 → 守卫 → 执行。
     /// 返回 `Ok(true)` 表示做了点什么，值得重跑这一步；`Ok(false)` 表示无计可施。
+    ///
+    /// **不依赖安装语义**（I19 · P0-B）：步骤只以一个 [`Stage`] 传进来，
+    /// `InstallOptions` 也不在这里 —— 升级那条路复用的就是这一条。
     fn repair(
         &mut self,
         state: &AppState,
-        opts: &mut InstallOptions,
-        step: Step,
+        stage: Stage,
         e: &AppError,
         issue_rounds: usize,
     ) -> AppResult<bool> {
@@ -1566,7 +1668,7 @@ impl Orchestrator {
         let an = self
             .bus
             .emit(EventDraft::new(Kind::Analyze, "分析中…").under(issue));
-        let mut ev = self.scout(step, e);
+        let mut ev = self.scout(stage, e);
         self.bus.finish(
             an,
             Status::Ok,
@@ -1590,93 +1692,17 @@ impl Orchestrator {
         }
 
         // 第一层规则 → 第二层模型 → **复核员**（只有含 Sensitive 的计划才走）。
-        //
-        // 复核被否决时退回诊断员，**并且把否决理由一起交给它**——
-        // 不带理由地重问一遍，模型多半会原样再提一次同一个计划。
-        // 整个循环最多两趟：第二趟还被否决就不再猜了。
-        let mut skip_rules = false;
-        let (calls, why, by) = 'plan: loop {
-            let first = if skip_rules {
-                None
-            } else {
-                self.rule_plan(step, e, &ev)
-            };
-            let got = match first {
-                Some((c, w)) => Some((c, w, Proposer::Rule)),
-                None => self
-                    .ask_model(issue, step, e, &ev)
-                    .map(|(c, w)| (c, w, Proposer::Model)),
-            };
-            let Some((calls, why, by)) = got else {
-                // 规则与模型都没辙了。要不要请用户出手在函数末尾统一判，
-                // 免得同一个问题问两遍
-                self.bus.emit(
-                    EventDraft::new(Kind::Failed, "这个问题我解决不了")
-                        .under(issue)
-                        .status(Status::Failed)
-                        .detail("没有可以安全执行的办法"),
-                );
-                if let Some((what, why)) = cannot_do(e) {
-                    self.say_cannot(issue, &what, &why);
-                }
-                return Ok(false);
-            };
-            if calls.is_empty() {
-                return Ok(false);
-            }
-            if !super::reviewer::needs_review(&calls) {
-                break 'plan (calls, why, by);
-            }
-            let v = self.review(issue, &calls, &why, &ev);
-            if v.approve {
-                break 'plan (calls, why, by);
-            }
-            // 否决。理由进证据，下一趟诊断员看得到
-            let note = format!(
-                "复核员否决了上一个计划（{}）：{}",
-                calls
-                    .iter()
-                    .map(|c| c.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join("、"),
-                v.reasons.join("；")
-            );
-            crate::lwarn!("{note}");
-            ev.notes.push(format!(
-                "{note}。换一个不会碰到这些东西的办法，或者如实说做不到。"
-            ));
-            if skip_rules {
-                // 已经重来过一趟了，第二趟还被否决 —— 不再猜
-                self.bus.emit(
-                    EventDraft::new(Kind::Failed, "这个办法没能过复核")
-                        .under(issue)
-                        .status(Status::Failed)
-                        .detail("换了一个办法还是没过，不再继续试了"),
-                );
-                if let Some((what, why)) = cannot_do(e) {
-                    self.say_cannot(issue, &what, &why);
-                }
-                return Ok(false);
-            }
-            skip_rules = true;
-            // 退回诊断员**要计一个回合**（否则模型可以靠不停被否决把预算绕过去）
-            self.rounds += 1;
-            if let Some(stop) = self.budget_stop(issue_rounds) {
-                self.bus.emit(
-                    EventDraft::new(Kind::Failed, "不再继续试了")
-                        .under(issue)
-                        .status(Status::Failed)
-                        .detail(stop),
-                );
-                return Ok(false);
-            }
+        let Some((calls, why, by)) = self.plan_for(issue, stage, e, &mut ev, issue_rounds) else {
+            return Ok(false);
         };
 
+        // **规则判的还是模型判的，界面上要能分辨**（I19 · B.4）。
         self.bus.emit(
             EventDraft::new(Kind::Analyze, "找到原因")
                 .under(issue)
                 .status(Status::Ok)
-                .detail(why),
+                .detail(why)
+                .by(by),
         );
 
         let mut did = false;
@@ -1812,7 +1838,7 @@ impl Orchestrator {
                         crate::linfo!(
                             "动作 {} 改变不了失败的原因，不因为它重跑「{}」",
                             call.id,
-                            step.title()
+                            stage.title
                         );
                     } else {
                         did = true;
@@ -1834,21 +1860,15 @@ impl Orchestrator {
         }
         if did {
             // 动作多半改过 launcher.toml（换端口 / 换源 / 调超时），
-            // 把内存里那一份同步过来，否则后面几步还在用旧值
-            let fresh = LauncherConfig::load();
-            // **换过源就要跟着换**：`opts.registry` 是命令行/界面一开始定死的那个，
-            // `switch_registry` 改的是 launcher.toml —— 不同步过来的话，
-            // 下一次 prepare 又会把那个拉不动的源钉回去，白换一场
-            // （场景 4 首轮实测：换到腾讯云之后还是去连 ghcr）
-            if opts.registry.as_deref() != Some(fresh.hunter.registry_id.as_str()) {
-                opts.registry = Some(fresh.hunter.registry_id.clone());
-            }
-            state.set_config(fresh);
+            // 把内存里那一份同步过来，否则后面几步还在用旧值。
+            // （`opts.registry` 的同步归调用方 —— 那一份只在安装那条路上有，见
+            //   `run_step_with_repair`。）
+            state.set_config(LauncherConfig::load());
             self.bus.emit(
                 EventDraft::new(Kind::Verify, "重新试一次刚才失败的那一步")
                     .under(issue)
                     .status(Status::Running)
-                    .detail(step.title()),
+                    .detail(stage.title),
             );
             return Ok(true);
         }
@@ -1864,7 +1884,7 @@ impl Orchestrator {
         //
         // 所以先问一句：下一回合还有没有**不一样的**办法？有就接着走
         // （回合上限、token 预算那几道闸在 `run_step_with_repair` 里照常管着）。
-        if self.rule_plan(step, e, &ev).is_some() {
+        if self.rule_plan(stage, e, &ev).is_some() {
             self.bus.emit(
                 EventDraft::new(Kind::Verify, "换个办法再试一次")
                     .under(issue)
@@ -1882,11 +1902,112 @@ impl Orchestrator {
         Ok(false)
     }
 
+    /// 规则 → 模型 → 复核员，选出一串要执行的动作。
+    ///
+    /// **规则认得出来就不问模型**（I19 · B.4）。抽成单独一个方法，是为了让这件事
+    /// **考得了**：A7③ 那条单测直接调它、断言 `by == Proposer::Rule`，而当时
+    /// 根本没有 key —— 真走了模型那一层只会返回 `None`。
+    ///
+    /// 复核被否决时退回诊断员，**并把否决理由一起交给它**（不带理由地重问一遍，
+    /// 模型多半会原样再提一次同一个计划）。整个循环最多两趟。
+    pub(crate) fn plan_for(
+        &mut self,
+        issue: u64,
+        stage: Stage,
+        e: &AppError,
+        ev: &mut Evidence,
+        issue_rounds: usize,
+    ) -> Option<(Vec<Call>, String, Proposer)> {
+        let mut skip_rules = false;
+        loop {
+            let first = if skip_rules {
+                None
+            } else {
+                self.rule_plan(stage, e, ev)
+            };
+            let got = match first {
+                Some((c, w)) => Some((c, w, Proposer::Rule)),
+                None => self
+                    .ask_model(issue, stage, e, ev)
+                    .map(|(c, w)| (c, w, Proposer::Model)),
+            };
+            let Some((calls, why, by)) = got else {
+                // 规则与模型都没辙了。要不要请用户出手在函数末尾统一判，
+                // 免得同一个问题问两遍
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "这个问题我解决不了")
+                        .under(issue)
+                        .status(Status::Failed)
+                        .detail("没有可以安全执行的办法"),
+                );
+                if let Some((what, why)) = cannot_do(e) {
+                    self.say_cannot(issue, &what, &why);
+                }
+                return None;
+            };
+            if calls.is_empty() {
+                return None;
+            }
+            if !super::reviewer::needs_review(&calls) {
+                return Some((calls, why, by));
+            }
+            let v = self.review(issue, &calls, &why, ev);
+            if v.approve {
+                return Some((calls, why, by));
+            }
+            // 否决。理由进证据，下一趟诊断员看得到
+            let note = format!(
+                "复核员否决了上一个计划（{}）：{}",
+                calls
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("、"),
+                v.reasons.join("；")
+            );
+            crate::lwarn!("{note}");
+            ev.notes.push(format!(
+                "{note}。换一个不会碰到这些东西的办法，或者如实说做不到。"
+            ));
+            if skip_rules {
+                // 已经重来过一趟了，第二趟还被否决 —— 不再猜
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "这个办法没能过复核")
+                        .under(issue)
+                        .status(Status::Failed)
+                        .detail("换了一个办法还是没过，不再继续试了"),
+                );
+                if let Some((what, why)) = cannot_do(e) {
+                    self.say_cannot(issue, &what, &why);
+                }
+                return None;
+            }
+            skip_rules = true;
+            // 退回诊断员**要计一个回合**（否则模型可以靠不停被否决把预算绕过去）
+            self.rounds += 1;
+            if let Some(stop) = self.budget_stop(issue_rounds) {
+                self.bus.emit(
+                    EventDraft::new(Kind::Failed, "不再继续试了")
+                        .under(issue)
+                        .status(Status::Failed)
+                        .detail(stop),
+                );
+                return None;
+            }
+        }
+    }
+
     // ── 诊断员 · 第一层（确定性规则） ────────────────────────────────────
 
     /// 规则层。认得出来就给一串动作与一句「为什么」，**一个 token 都不花**。
-    fn rule_plan(&self, step: Step, e: &AppError, ev: &Evidence) -> Option<(Vec<Call>, String)> {
-        let (calls, why) = self.rule_plan_raw(step, e, ev)?;
+    fn rule_plan(
+        &self,
+        stage: impl Into<Stage>,
+        e: &AppError,
+        ev: &Evidence,
+    ) -> Option<(Vec<Call>, String)> {
+        let stage = stage.into();
+        let (calls, why) = self.rule_plan_raw(stage, e, ev)?;
         // 这一次安装里**已经失败过**的动作不再提第二次。
         // 场景 2 首轮实测：`systemctl start docker` 没权限、退出码 1，
         // 规则层每一回合都原样再提一次，三个回合白花 4 分 39 秒。
@@ -1935,10 +2056,11 @@ impl Orchestrator {
 
     fn rule_plan_raw(
         &self,
-        step: Step,
+        stage: impl Into<Stage>,
         e: &AppError,
         ev: &Evidence,
     ) -> Option<(Vec<Call>, String)> {
+        let stage = stage.into();
         match e.code {
             // ① 端口冲突：这是本轮的主角
             Code::PortConflict | Code::PortInUse => {
@@ -2205,7 +2327,7 @@ impl Orchestrator {
             //    0.1.9 在用户 Mac 上就是这一档：opencode 的健康检查要外网，
             //    虚拟机没有 DNS，于是等满 180 秒报「启动超时」。
             //    那一次规则层在这里 `None` 了，整件事掉到模型那边、最后 unknown。
-            Code::StartTimeout if step == Step::Start => {
+            Code::StartTimeout if stage.start_like => {
                 let vm_broken = ev
                     .report
                     .vm_dns
@@ -2309,10 +2431,11 @@ impl Orchestrator {
     fn ask_model(
         &mut self,
         parent: u64,
-        step: Step,
+        stage: impl Into<Stage>,
         e: &AppError,
         ev: &Evidence,
     ) -> Option<(Vec<Call>, String)> {
+        let stage = stage.into();
         if self.mode == Mode::Off {
             self.degrade(parent, "AI 那一层在设置里关着，只用确定性规则。");
             return None;
@@ -2339,7 +2462,7 @@ impl Orchestrator {
                 "安装走到「{}」这一步失败了。\n错误码：{}\n原话：{}\n\n{}\n\n\
                  请只做一件事：从工具表里挑出**最可能解决它**的动作（可以挑多个，按执行顺序），\
                  并用一句话说清原因。原因必须基于上面给出的证据，证据里没有的事实不要写。",
-                step.title(), e.code.as_str(), crate::redact::redact(&e.msg), ev.to_prompt()
+                stage.title, e.code.as_str(), crate::redact::redact(&e.msg), ev.to_prompt()
             )}),
         ];
         let resp = match super::ai::call_gateway(&messages, &key) {

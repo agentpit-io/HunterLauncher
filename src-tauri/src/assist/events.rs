@@ -93,6 +93,12 @@ pub struct Event {
     /// 「需要你」卡片上的两个按钮。`kind == NeedUser` 时才有
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<Choice>,
+    /// **这一步是规则直接判的还是问了模型**（I19 · B.4）。
+    ///
+    /// 规则判的更快更准，而且一个 token 都不花 —— 界面上要能分辨（对用户是诚实）。
+    /// 只有「找到原因」那一类事件会带上它，其余为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<crate::assist::guard::Proposer>,
     /// 上海时间
     pub at: String,
 }
@@ -306,6 +312,7 @@ impl Bus {
             tokens: e.tokens,
             elapsed_ms: e.elapsed_ms,
             choices: e.choices,
+            by: e.by,
             at: crate::timefmt::now_shanghai(),
         };
         self.push(ev);
@@ -390,6 +397,8 @@ pub struct EventDraft {
     pub tokens: Option<u64>,
     pub elapsed_ms: Option<u64>,
     pub choices: Vec<Choice>,
+    /// 见 [`Event::by`]
+    pub by: Option<crate::assist::guard::Proposer>,
 }
 
 impl EventDraft {
@@ -404,7 +413,13 @@ impl EventDraft {
             tokens: None,
             elapsed_ms: None,
             choices: Vec::new(),
+            by: None,
         }
+    }
+    /// 标一下「这一步是谁判的」（规则 / 模型）。
+    pub fn by(mut self, by: crate::assist::guard::Proposer) -> Self {
+        self.by = Some(by);
+        self
     }
     pub fn under(mut self, parent: u64) -> Self {
         self.parent = Some(parent);

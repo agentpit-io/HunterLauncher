@@ -46,6 +46,7 @@ use crate::compose::{self, PullProgress};
 use crate::config;
 use crate::err::{AppError, AppResult, Code};
 use crate::flow::{self, AppState, InstallOptions};
+use crate::upgrade_repair::{RepairVerdict, UpgradeRepairer};
 use crate::{linfo, lwarn, registry};
 
 /// 前置体检探一次 manifest 给多久。**比拉取短得多** —— 它只问一句
@@ -117,6 +118,17 @@ pub struct UpgradeResult {
     /// 会让他以为自己把机器点坏了。
     pub cancelled: bool,
     pub message: String,
+    /// 这一轮升级一共用掉几个修复回合（I19 · P0-B）。**真实计数，不编**。
+    #[serde(default)]
+    pub repair_rounds: usize,
+    /// 是不是「5 个回合都用完了才停」（而不是守卫/规则判定不该修）。
+    /// 界面据此把「自己试了几次」和「这条路走不通」分开说。
+    #[serde(default)]
+    pub exhausted: bool,
+    /// 失败时的错误码（`E_UPDATE_FAILED` / `E_PULL_FAILED` / …）。
+    /// 「交日志」按钮把它原样带给后端（I19 · P1-C）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 // ── 版本检查 ──────────────────────────────────────────────────────────────
@@ -498,6 +510,103 @@ pub fn preflight(cfg: &config::LauncherConfig, target: &str) -> Preflight {
 
 // ── 升级 ──────────────────────────────────────────────────────────────────
 
+/// 升级这条路的每一步（I19）。**修复回合按这个枚举分派**，界面上的过程流也按它组织。
+///
+/// `RuntimeReady` 必须是第一个 —— 「先起不来的先起起来」是这一轮的 P0-A。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpgradeStep {
+    /// ⓪ 运行环境就绪（复用 I18 的 `ensure_runtime_up`，零 AI）
+    RuntimeReady,
+    /// ① 取新版 compose
+    FetchCompose,
+    /// ①.5 前置体检（探当前镜像源有没有这一版，只读）
+    Preflight,
+    /// ② 备份（数据库 + 配置）
+    Backup,
+    /// ③ 写新 compose / 新 .env / 覆盖文件
+    WriteConfig,
+    /// ④ 校验 + 端口自查
+    ConfigCheck,
+    /// ⑤ 拉镜像
+    Pull,
+    /// ⑥ 起容器 + 等健康
+    Up,
+}
+
+/// 升级步骤的先后顺序。**单测钉住「运行环境就绪排在最前」** ——
+/// 这一条是 P0-A 的判据层：谁把顺序挪了，这里先红。
+pub(crate) const UPGRADE_STEP_ORDER: &[UpgradeStep] = &[
+    UpgradeStep::RuntimeReady,
+    UpgradeStep::FetchCompose,
+    UpgradeStep::Preflight,
+    UpgradeStep::Backup,
+    UpgradeStep::WriteConfig,
+    UpgradeStep::ConfigCheck,
+    UpgradeStep::Pull,
+    UpgradeStep::Up,
+];
+
+impl UpgradeStep {
+    /// 界面上的一句话（与 `assist::auto::Stage::title` 同一个用途）。
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            UpgradeStep::RuntimeReady => "确认运行环境",
+            UpgradeStep::FetchCompose => "取新版配置",
+            UpgradeStep::Preflight => "确认镜像源",
+            UpgradeStep::Backup => "备份",
+            UpgradeStep::WriteConfig => "写配置",
+            UpgradeStep::ConfigCheck => "校验配置",
+            UpgradeStep::Pull => "下载新版本",
+            UpgradeStep::Up => "启动新版本",
+        }
+    }
+    /// 给侦察员看的阶段 id（`probe` 用它挑该采哪些现场）。
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            UpgradeStep::RuntimeReady => "runtime",
+            UpgradeStep::FetchCompose => "compose",
+            UpgradeStep::Preflight => "preflight",
+            UpgradeStep::Backup => "backup",
+            UpgradeStep::WriteConfig => "config",
+            UpgradeStep::ConfigCheck => "config",
+            UpgradeStep::Pull => "pull",
+            // 起容器那一步与安装的 `Step::Start` 同源 —— 侦察员据此去实测容器网络/DNS
+            UpgradeStep::Up => "start",
+        }
+    }
+    /// 这一步失败时，回滚门是否已经打开（第 ③ 步 `arm_upgrade` 之后才会留下中间态）。
+    pub(crate) fn past_config_write(self) -> bool {
+        matches!(
+            self,
+            UpgradeStep::WriteConfig
+                | UpgradeStep::ConfigCheck
+                | UpgradeStep::Pull
+                | UpgradeStep::Up
+        )
+    }
+    /// 这一步在修复回合眼里的样子（见 [`crate::assist::auto::Stage`]）。
+    pub(crate) fn stage(self) -> crate::assist::auto::Stage {
+        crate::assist::auto::Stage {
+            title: self.title(),
+            id: self.as_str(),
+            // 「下载新版本 / 启动新版本」才需要实测容器网络
+            net_like: matches!(self, UpgradeStep::Pull | UpgradeStep::Up),
+            start_like: matches!(self, UpgradeStep::Up),
+        }
+    }
+}
+
+/// 「运行环境就绪」这一步（I19 · P0-A）。**复用 I18 那一份**，不另抄。
+///
+/// 它把每一句过程都想方设法送进升级的步骤流（`note`），界面上看得见
+/// 「先替你把它拉起来」这件事。**失败在这里不算错** —— 调用方随后会用
+/// `effective::current().running` 如实判「引擎到底能不能用」。
+fn ensure_runtime_ready(note: &mut impl FnMut(&str)) {
+    let mut steps: Vec<String> = Vec::new();
+    let mut say = |line: &str| note(line);
+    let _ = crate::commands::ensure_runtime_up(&mut steps, &mut say);
+}
+
 /// 把 Hunter 升到 `target` 这个 tag。失败自动回滚到升级前那一整套配置。
 ///
 /// `note` 收每一步的文字（界面上的步骤条与 headless 的终端输出共用它），
@@ -509,6 +618,9 @@ pub fn upgrade(
     switch_registry: Option<&str>,
     mut note: impl FnMut(&str),
     on_pull: impl FnMut(&PullProgress),
+    // I19 · P0-B：升级失败先自己修的那一套。`None` = 这条路还没接自愈
+    //（命令行 `--upgrade` 现在给的是 `Some`，见 `headless.rs`）。
+    mut repair: Option<&mut UpgradeRepairer>,
 ) -> AppResult<UpgradeResult> {
     let cfg0 = state.config();
     let from = cfg0.hunter.tag.clone();
@@ -531,6 +643,40 @@ pub fn upgrade(
     note(&format!("升级 Hunter：v{from} → v{target}"));
     if is_major_jump(&from, target) {
         note("这是一次跨大版本升级，升级前请先读一遍这个版本的 Release Notes");
+    }
+
+    // ⓪ **运行环境就绪**（I19 · P0-A）。这一格排在第 ① 步之前，是整轮升级的第一步。
+    //
+    // 顺序由 `UPGRADE_STEP_ORDER` 声明、单测钉着；日志里也照实打一份，方便对现场。
+    //
+    // 客户那台 Windows（HL-AMJ9NG / HL-K6MND3）「点启动能起来、点升级还是撞同一堵墙」——
+    // I18 做的「装了没跑就替你拉起来」只挂在「启动服务」按钮上，升级这条路一个字都没挂。
+    // 于是引擎没起时，第 ② 步的备份会在 `ensure_postgres_up` 里直接甩出一句
+    // 「拉起 postgres 失败：failed to connect to the docker API」——那是内层错误，
+    // 用户看不懂，也不是这里的真话（真话是「运行环境没在跑」）。
+    //
+    // 口径与 I18 一致：**只在「装了、只是没在跑」时动手**；「没装」不插手。
+    // 拉不起来**不算升级失败**（`ensure_runtime_up` 自己就吞掉那条错），
+    // 但下面必须**如实说清引擎现在用不了**，并走 E_DAEMON_DOWN 那条路 ——
+    // 而不是让内层错误从备份那一步漏出来。
+    note("先确认一下运行环境（Docker）在不在跑…");
+    linfo!(
+        "升级步骤顺序：{}",
+        UPGRADE_STEP_ORDER
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" → ")
+    );
+    ensure_runtime_ready(&mut note);
+    if !crate::runtime::effective::current().running {
+        let msg = format!(
+            "运行环境（Docker）现在用不了，这次升级先停在这里 —— {}。\
+             上面那几行是启动器替你把它拉起来的经过。",
+            crate::upgrade_repair::stopped_config_state(UpgradeStep::RuntimeReady)
+        );
+        note(&msg);
+        return Err(AppError::new(Code::DaemonDown, msg));
     }
 
     // ① 新版 compose。严格模式：取不到就停在这里，此时什么都还没动
@@ -628,7 +774,22 @@ pub fn upgrade(
 
     // ─── 从这里开始，失败要回滚 ───
     // 用 `cfg_work`（可能换过源）；回滚仍然用 `cfg0` —— 失败就该连源一起回到升级前
-    let r = do_upgrade(state, &cfg_work, target, &new_yml, &mut note, on_pull);
+    let r = do_upgrade(
+        state,
+        &cfg_work,
+        target,
+        &new_yml,
+        &mut note,
+        on_pull,
+        repair.as_deref_mut(),
+    );
+    // 这一轮升级一共用掉几个修复回合、是不是修不好才停的（I19 · P1-C）。
+    // 不管成功还是失败都如实带上 —— 界面要把「自己试了几次」上屏。
+    let repair_rounds = repair.as_ref().map(|r| r.rounds_used()).unwrap_or(0);
+    let repair_exhausted = repair
+        .as_ref()
+        .map(|r| r.stopped_exhausted())
+        .unwrap_or(false);
     let out = match r {
         Ok(()) => {
             let mut cfg = state.config();
@@ -659,6 +820,9 @@ pub fn upgrade(
                 rolled_back: false,
                 cancelled: false,
                 message: msg,
+                repair_rounds,
+                exhausted: false,
+                error_code: None,
             })
         }
         // ── 用户自己点了「取消」（I16） ───────────────────────────────
@@ -667,7 +831,8 @@ pub fn upgrade(
         // 镜像还没拉全」之后 —— **没有走到回滚**，机器就停在一个说不清的中间态。
         // 有了「取消」这条路，同样的现场会走完整的回滚，而且说得清楚：
         // 版本没变、容器没动。
-        Err(e) if state.cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+        Err(f) if state.cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+            let e = f.err;
             linfo!("升级被用户取消：{}", e.msg);
             note("已取消，正在把配置写回升级前那一份…");
             let rolled = rollback(state, &cfg0, &backup.id, &mut note);
@@ -704,9 +869,14 @@ pub fn upgrade(
                 rolled_back: rolled.is_ok(),
                 cancelled: true,
                 message: msg,
+                repair_rounds,
+                exhausted: false,
+                error_code: Some(e.code.as_str().to_string()),
             })
         }
-        Err(e) => {
+        Err(f) => {
+            let e = f.err;
+            let failed_step = f.step.title();
             lwarn!("升级失败，开始回滚：{}", e.msg);
             note(&format!("升级失败：{}", e.msg));
             note(&format!("正在回滚到 v{from}…"));
@@ -732,10 +902,32 @@ pub fn upgrade(
                 ),
             };
             note(&tail);
-            Err(AppError::new(
-                Code::UpdateFailed,
-                format!("升到 v{target} 失败：{}。{tail}", e.msg),
-            ))
+            // **修不好就停下来说清楚**（I19 · P1-C）：
+            // 卡在哪一步、自己试了几次、为什么没成、现在机器什么状态（回滚了没有）。
+            // 这一句带着**真实数字**（repair_rounds 是实测的），界面直接上屏。
+            let tries = if repair_rounds > 0 {
+                format!("启动器自己试着修了 {repair_rounds} 次，还是没成。")
+            } else {
+                "这一步启动器没能自己修好。".to_string()
+            };
+            let msg = format!(
+                "升到 v{target} 没成功：卡在「{failed_step}」，{tries}原因：{}。{tail}",
+                e.msg
+            );
+            note(&msg);
+            Ok(UpgradeResult {
+                ok: false,
+                from,
+                to: target.to_string(),
+                backup_id: Some(backup.id),
+                backup_sql_bytes: backup.sql_bytes,
+                rolled_back: rolled.is_ok(),
+                cancelled: false,
+                message: msg,
+                repair_rounds,
+                exhausted: repair_exhausted,
+                error_code: Some(e.code.as_str().to_string()),
+            })
         }
     };
     // 三个分支（成功 / 取消回滚 / 失败回滚）都在上面走完了该走的收尾，
@@ -746,86 +938,192 @@ pub fn upgrade(
 }
 
 /// ③④⑤⑥ —— 真正会改变现状的那几步。任何一处出错都由调用方回滚。
+///
+/// **I19 · P0-B**：每一步外面套一层修复循环 —— 失败先交给
+/// [`UpgradeRepairer`]（规则优先、模型兜底），修好了**重跑这一步就是验证**。
 fn do_upgrade(
     state: &AppState,
     cfg0: &config::LauncherConfig,
     target: &str,
     new_yml: &str,
     note: &mut impl FnMut(&str),
-    on_pull: impl FnMut(&PullProgress),
-) -> AppResult<()> {
-    // ③ 写新配置
-    config::write_compose(new_yml)?;
-    crate::flow::write_version_file(target);
-    let mut cfg = cfg0.clone();
-    cfg.hunter.tag = target.to_string();
-    flow::rewrite_env_and_override(state, &cfg, target)?;
-    // **从这里开始，退出会留下中间态**（I17 · P0-4）。
-    //
-    // 客户 2026-09-29 那次就是在下一步（拉镜像）里点了「应用退出」：进程一死，
-    // 下面那条会回滚的取消路径根本不会跑，于是 `.env` 已经是 1.2.3、镜像不齐、
-    // 容器全停 —— 一个说不清的中间态。三条退出入口都读这个标记，在这个窗口里
-    // 先问一句。（第 ③ 步之前失败时什么都没改，那时候退出不该弹任何东西。）
-    state.arm_upgrade(target);
-    note(&format!(
-        "已写入新的 compose 与 .env（HUNTER_VERSION={target}，端口不变）"
-    ));
-
-    // ④ 让 compose 自己解析一遍，顺便复核红线 4
-    let rendered = compose::config_check_json()?;
-    let bind = crate::config::WebBind::detect();
-    flow::verify_bindings(&rendered, bind)?;
-    note(if bind.lan_exposed() {
-        // 用户 2026-09-21 19:05 的决定第三点：升级**不自动改动**已有配置。
-        // 但不能不说 —— 说清楚现状与怎么收紧，运行面板上还有一个按钮。
-        "docker compose config 校验通过。这台机器的网页端口升级前就对局域网开放，本次没有改动它；         新版本默认只允许本机访问，运行面板上点「只允许本机访问」就能收紧（收紧后不能再放开）。"
-    } else {
-        "docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）"
-    });
-
-    // ⑤ 拉新镜像
-    let prep = prepare_pull(&cfg, target, note)?;
-    let opts = InstallOptions {
-        // 不指定源 = 拉不动时 flow::pull 会自动换到另一个源重试
-        //（国内源同步滞后时正好靠它退回 GHCR，`plan/国内镜像与下载源.md` 要求的行为）
-        registry: None,
-        tag: target.to_string(),
+    mut on_pull: impl FnMut(&PullProgress),
+    repair: Option<&mut UpgradeRepairer>,
+) -> Result<(), FailedStep> {
+    // 后面一律按 `&mut dyn` 用 —— 修复循环里要在「跑一步」与「说一句」之间来回借
+    let note: &mut dyn FnMut(&str) = &mut *note;
+    let steps = Steps {
+        state,
+        cfg0,
+        target,
+        new_yml,
     };
-    note("正在拉取新版本的镜像…");
-    flow::pull(state, &prep, &opts, on_pull)?;
-    // I16 · P2-5：**拉完要说清到底下了没有。** 客户那台 Windows 上本机已经有
-    // 一整套镜像，首装时那句「拉取完成，用时 4 秒」让他以为下载成功了，
-    // 于是后面升级真要下载时卡住就显得莫名其妙
-    note(&{
-        let p = state
-            .pull
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| compose::PullProgress::empty());
-        if p.net_bytes == 0 {
-            format!("{} 个镜像本机都已有，没有下载", p.images.len())
-        } else {
-            format!(
-                "镜像拉好了：{} 个镜像共下载 {}",
-                p.images.len(),
-                flow::human_bytes(p.net_bytes)
-            )
-        }
-    });
+    let mut repair = repair;
 
-    // ⑥ 起容器 + 等健康
-    note("正在用新镜像重建容器…");
-    compose::up()?;
-    let list = compose::wait_healthy(compose::START_TIMEOUT, |v| {
-        if let Ok(mut g) = state.services.lock() {
-            *g = v.to_vec();
-        }
+    // ③ 写新配置
+    run_step(&steps, note, &mut repair, UpgradeStep::WriteConfig, |n| {
+        steps.write_config(n)
     })?;
-    note(&format!(
-        "{} 个服务全部就绪",
-        list.iter().filter(|s| compose::service_ready(s)).count()
-    ));
+    // ④ 校验 + 端口自查
+    run_step(&steps, note, &mut repair, UpgradeStep::ConfigCheck, |n| {
+        steps.config_check(n)
+    })?;
+    // ⑤ 拉新镜像
+    run_step(&steps, note, &mut repair, UpgradeStep::Pull, |n| {
+        steps.pull(n, &mut on_pull)
+    })?;
+    // ⑥ 起容器 + 等健康
+    run_step(&steps, note, &mut repair, UpgradeStep::Up, |n| steps.up(n))?;
     Ok(())
+}
+
+/// 升级这条路上会改现状的四步。抽成一个结构是为了让修复循环能**反复调同一步**
+/// （`FnMut` 闭包里持有 `&self`，没有借用打架）。
+struct Steps<'a> {
+    state: &'a AppState,
+    cfg0: &'a config::LauncherConfig,
+    target: &'a str,
+    new_yml: &'a str,
+}
+
+impl Steps<'_> {
+    /// ③ 写新 compose / 新 .env / 覆盖文件，并 arm 上「退出会留中间态」那个标记。
+    fn write_config(&self, note: &mut dyn FnMut(&str)) -> AppResult<()> {
+        config::write_compose(self.new_yml)?;
+        crate::flow::write_version_file(self.target);
+        let mut cfg = self.cfg0.clone();
+        cfg.hunter.tag = self.target.to_string();
+        flow::rewrite_env_and_override(self.state, &cfg, self.target)?;
+        // **从这里开始，退出会留下中间态**（I17 · P0-4）。
+        //
+        // 客户 2026-09-29 那次就是在下一步（拉镜像）里点了「应用退出」：进程一死，
+        // 会回滚的取消路径根本不会跑，于是 `.env` 已经是 1.2.3、镜像不齐、
+        // 容器全停 —— 一个说不清的中间态。三条退出入口都读这个标记，在这个窗口里
+        // 先问一句。（第 ③ 步之前失败时什么都没改，那时候退出不该弹任何东西。）
+        self.state.arm_upgrade(self.target);
+        note(&format!(
+            "已写入新的 compose 与 .env（HUNTER_VERSION={}，端口不变）",
+            self.target
+        ));
+        Ok(())
+    }
+
+    /// ④ 让 compose 自己解析一遍，顺便复核红线 4。
+    fn config_check(&self, note: &mut dyn FnMut(&str)) -> AppResult<()> {
+        let rendered = compose::config_check_json()?;
+        let bind = crate::config::WebBind::detect();
+        flow::verify_bindings(&rendered, bind)?;
+        note(if bind.lan_exposed() {
+            // 用户 2026-09-21 19:05 的决定第三点：升级**不自动改动**已有配置。
+            // 但不能不说 —— 说清楚现状与怎么收紧，运行面板上还有一个按钮。
+            "docker compose config 校验通过。这台机器的网页端口升级前就对局域网开放，本次没有改动它；         新版本默认只允许本机访问，运行面板上点「只允许本机访问」就能收紧（收紧后不能再放开）。"
+        } else {
+            "docker compose config 校验通过，六个服务的端口全部绑在 127.0.0.1（红线 4）"
+        });
+        Ok(())
+    }
+
+    /// ⑤ 拉新镜像。**每次重跑都重新读一遍配置** —— 修复动作（换源）改的是
+    /// `launcher.toml`，不重读就还会去连那个拉不动的源。
+    fn pull(
+        &self,
+        note: &mut dyn FnMut(&str),
+        on_pull: &mut dyn FnMut(&PullProgress),
+    ) -> AppResult<()> {
+        let cfg = config::LauncherConfig::load();
+        let prep = prepare_pull(&cfg, self.target, note)?;
+        let opts = InstallOptions {
+            // 不指定源 = 拉不动时 flow::pull 会自动换到另一个源重试
+            //（国内源同步滞后时正好靠它退回 GHCR，`plan/国内镜像与下载源.md` 要求的行为）
+            registry: None,
+            tag: self.target.to_string(),
+        };
+        note("正在拉取新版本的镜像…");
+        flow::pull(self.state, &prep, &opts, on_pull)?;
+        // I16 · P2-5：**拉完要说清到底下了没有。** 客户那台 Windows 上本机已经有
+        // 一整套镜像，首装时那句「拉取完成，用时 4 秒」让他以为下载成功了，
+        // 于是后面升级真要下载时卡住就显得莫名其妙
+        note(&{
+            let p = self
+                .state
+                .pull
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| compose::PullProgress::empty());
+            if p.net_bytes == 0 {
+                format!("{} 个镜像本机都已有，没有下载", p.images.len())
+            } else {
+                format!(
+                    "镜像拉好了：{} 个镜像共下载 {}",
+                    p.images.len(),
+                    flow::human_bytes(p.net_bytes)
+                )
+            }
+        });
+        Ok(())
+    }
+
+    /// ⑥ 起容器 + 等健康。
+    fn up(&self, note: &mut dyn FnMut(&str)) -> AppResult<()> {
+        note("正在用新镜像重建容器…");
+        compose::up()?;
+        let list = compose::wait_healthy(compose::START_TIMEOUT, |v| {
+            if let Ok(mut g) = self.state.services.lock() {
+                *g = v.to_vec();
+            }
+        })?;
+        note(&format!(
+            "{} 个服务全部就绪",
+            list.iter().filter(|s| compose::service_ready(s)).count()
+        ));
+        Ok(())
+    }
+}
+
+/// 升级在哪一步、因为什么停下（I19 · P0-B）。`do_upgrade` 用它把「卡在哪一步」
+/// 带回去 —— P1-C 那句大白话要说出卡在哪一步。
+struct FailedStep {
+    step: UpgradeStep,
+    err: AppError,
+}
+
+/// 跑升级的一步；失败就交给修复循环，修好了**重跑这一步**。
+///
+/// 这是 I19 · P0-B 的那条纪律：**验证 = 重跑失败那一步，不问模型「好了吗」**。
+/// 整轮的回合计数在 [`UpgradeRepairer`] 里（不是这里），所以任何一步失败
+/// 触发的自愈都算进同一个计数器。
+fn run_step(
+    steps: &Steps,
+    note: &mut dyn FnMut(&str),
+    repair: &mut Option<&mut UpgradeRepairer>,
+    step: UpgradeStep,
+    mut body: impl FnMut(&mut dyn FnMut(&str)) -> AppResult<()>,
+) -> Result<(), FailedStep> {
+    loop {
+        match body(note) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                note(&format!("「{}」这一步没成：{}", step.title(), e.msg));
+                let Some(r) = repair.as_mut().map(|r| &mut **r) else {
+                    return Err(FailedStep { step, err: e });
+                };
+                match r.repair(steps.state, step, &e) {
+                    RepairVerdict::Repaired => note("重新试一次刚才失败的那一步"),
+                    RepairVerdict::Exhausted => {
+                        note(&format!(
+                            "{} 个修复回合都用完了，停在这里不再继续试",
+                            r.rounds_used()
+                        ));
+                        return Err(FailedStep { step, err: e });
+                    }
+                    RepairVerdict::Rejected => {
+                        note("这一步没有安全可行的修法，停在这里");
+                        return Err(FailedStep { step, err: e });
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 给 [`flow::pull`] 攒一份 `PrepareResult`。
@@ -836,7 +1134,7 @@ fn do_upgrade(
 fn prepare_pull(
     cfg: &config::LauncherConfig,
     tag: &str,
-    note: &mut impl FnMut(&str),
+    note: &mut dyn FnMut(&str),
 ) -> AppResult<flow::PrepareResult> {
     let specs = config::images(&cfg.hunter.registry_prefix, &cfg.hunter.base_prefix, tag);
     let arch = registry::oci_arch();
@@ -1234,6 +1532,36 @@ pub fn quit_guard(armed_tag: Option<&str>) -> Option<QuitGuard> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // ── I19 · P0-A：升级开场先把运行环境弄起来 ──────────────────────────
+
+    /// **A1 的判据层**：整轮升级的第一步必须是「运行环境就绪」。
+    ///
+    /// 客户那台机器「点启动能起来、点升级还是撞同一堵墙」，根因就是升级这条路
+    /// 开场没确认引擎在不在跑。谁把这一步挪出第一位，这里先红。
+    #[test]
+    fn 升级第一步是运行环境就绪() {
+        assert_eq!(
+            UPGRADE_STEP_ORDER.first(),
+            Some(&UpgradeStep::RuntimeReady),
+            "运行环境就绪必须排在升级的第一步（I19 · P0-A）"
+        );
+        // 八步齐全、首尾对得上 —— 顺序被谁改短了也看得见
+        assert_eq!(UPGRADE_STEP_ORDER.len(), 8);
+        assert_eq!(UPGRADE_STEP_ORDER.last(), Some(&UpgradeStep::Up));
+        // 写配置之后的每一步都认「该回滚」，之前的都认「什么都没改」
+        let split = UPGRADE_STEP_ORDER
+            .iter()
+            .position(|s| *s == UpgradeStep::WriteConfig)
+            .expect("顺序里有写配置这一步");
+        for (i, s) in UPGRADE_STEP_ORDER.iter().enumerate() {
+            assert_eq!(
+                s.past_config_write(),
+                i >= split,
+                "{s:?} 的「该不该回滚」判错了"
+            );
+        }
+    }
 
     // ── 上一次升级没做完（I16 · P1-2） ──────────────────────────────────
 

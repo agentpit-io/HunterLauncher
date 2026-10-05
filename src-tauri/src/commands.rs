@@ -966,7 +966,10 @@ pub async fn stack_op(
 /// 口径 A 把它抹平：**只在「已经装了、只是没在跑」时替用户拉起来**。
 /// 「装没装」仍然不插手（那要管理员、要重启，是另一个量级的工程）——
 /// 所以下面 `installed == false` 时一个字节都不动，照旧交给它自己的错误路径去说。
-fn ensure_runtime_up(
+/// **I19 · P0-A**：这一条现在也挂在**升级**那条路上（`upgrade.rs` 的
+/// `ensure_runtime_ready`），所以从私有提成 `pub(crate)` —— 口径 A 只有这一份，
+/// 升级不另抄一份。
+pub(crate) fn ensure_runtime_up(
     steps: &mut Vec<String>,
     say: &mut impl FnMut(&str),
 ) -> crate::err::AppResult<()> {
@@ -1873,17 +1876,55 @@ pub fn upgrade_hunter(app: tauri::AppHandle, tag: String, registry: Option<Strin
             }
             let _ = h_step.emit(EV_UPGRADE, line);
         };
+        // I19 · P0-B：升级失败先自己修的那一套。事件走 `assist://event`，
+        // 与安装那条路同一个总线（升级页上订阅它，画「AI 正在排查」那块过程流）。
+        // **不落盘**：`assist-events.jsonl` 是「本次安装的事件流」，升级不挤占它。
+        let bus = std::sync::Arc::new(crate::assist::events::Bus::new(
+            Box::new(TauriSink(handle.clone())),
+            false,
+        ));
+        let mode = LauncherConfig::load().assist.mode();
+        let mut repairer = crate::upgrade_repair::UpgradeRepairer::new(
+            bus,
+            mode,
+            st.hunter_key(),
+            st.cancel.clone(),
+        );
         let h_pull = handle.clone();
-        let r = crate::upgrade::upgrade(&st, &tag, registry.as_deref(), note, move |p| {
-            let _ = h_pull.emit(EV_PULL, p);
-        });
+        let r = crate::upgrade::upgrade(
+            &st,
+            &tag,
+            registry.as_deref(),
+            note,
+            move |p| {
+                let _ = h_pull.emit(EV_PULL, p);
+            },
+            Some(&mut repairer),
+        );
         let mut failed: Option<(String, String)> = None;
         if let Ok(mut g) = upgrade_slot().lock() {
             g.running = false;
             match r {
-                Ok(res) => g.result = Some(res),
+                Ok(res) => {
+                    // **失败也是这一条路**（I19 · P1-C）：备份之后才失败的会带回一份
+                    // `ok: false` 的结果，里面是回滚有没有做、备份在哪、自愈试了几次。
+                    // 界面据此画「修不好」那张卡片 + 「把日志交给开发者」按钮。
+                    if !res.ok {
+                        // **`g.error` 这里不设**：这一份 `ok: false` 的结果自己带着
+                        // 完整的 message 与回滚/备份/自愈信息，界面按 `result` 画那一屏。
+                        // 再往 `error` 里塞一遍只会让同一句话说两遍。
+                        let code = res
+                            .error_code
+                            .clone()
+                            .unwrap_or_else(|| "E_UPDATE_FAILED".to_string());
+                        crate::lerror!("升级没成功：{}", res.message);
+                        failed = Some((code, res.message.clone()));
+                    }
+                    g.result = Some(res);
+                }
                 Err(e) => {
-                    crate::lerror!("升级失败：{}", e.msg);
+                    // 还没开始就停了（版本号不对 / 没装过 / 前置体检 / 运行环境不可用…）
+                    crate::lerror!("升级没能开始：{}", e.msg);
                     g.error = Some(e.to_string());
                     failed = Some((e.code.as_str().to_string(), e.msg.clone()));
                 }

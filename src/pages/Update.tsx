@@ -4,6 +4,8 @@ import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { LogBox } from '../components/LogBox'
 import { Modal } from '../components/Modal'
+import { RepairStream } from '../components/RepairStream'
+import { UploadLogs } from '../components/UploadLogs'
 import { PlainLayout } from '../components/WizardLayout'
 import { useAsync } from '../lib/useAsync'
 import { isoToShanghai } from '../lib/format'
@@ -180,7 +182,11 @@ function HunterCard() {
    */
   const demoingUpgrade = ipc.demoPage() === 'update-running' || ipc.demoPage() === 'update-retry'
   const [st, setSt] = useState<UpgradeStatus | null>(() =>
-    demoingUpgrade ? { running: true, steps: [], result: null, error: null } : null,
+    demoingUpgrade
+      ? { running: true, steps: [], result: null, error: null }
+      : // I19：`update-repair-failed` / `upgrade-upload-*` 那几页一进来就摆在
+        // 「修不好」那一态上（截图脚本没法点出一次失败的升级）。非演示构建返回 null。
+        ipc.demoUpgradeStatus(),
   )
   const timer = useRef<number | undefined>(undefined)
   const d = c.data ?? null
@@ -295,6 +301,8 @@ function HunterCard() {
     setPull(null)
     setShowImages(false)
     setSt({ running: true, steps: [], result: null, error: null })
+    // 上一轮「AI 正在排查」的过程流也不作数了 —— 换一轮就清一块（I19）
+    setRepairNonce((n) => n + 1)
     try {
       await ipc.upgradeHunter(tag, registry)
       poll()
@@ -315,6 +323,8 @@ function HunterCard() {
   const [checking, setChecking] = useState(false)
   /** 体检发现「当前源还没有这一版」时的那一问（I17 · §4.2②） */
   const [ask, setAsk] = useState<Preflight | null>(null)
+  /** I19：换一轮升级就 +1 —— 「AI 正在排查」那块过程流据此清空重来 */
+  const [repairNonce, setRepairNonce] = useState(0)
 
   /** 取消升级。后端收到之后会杀子进程、回滚配置，然后照常把结果写进 upgradeStatus。 */
   async function cancel() {
@@ -382,7 +392,13 @@ function HunterCard() {
                 : st.error
                   ? t.update.failed
                   : st.result
-                    ? t.update.succeeded
+                    ? // I19：成功 / 取消 / 失败三种结果分开说 ——
+                      // 取消（用户自己点的）显示成「升级完成」会让人以为装好了
+                      st.result.ok
+                      ? t.update.succeeded
+                      : st.result.cancelled
+                        ? t.update.canceled
+                        : t.update.failed
                     : ''}
             </span>
           </div>
@@ -392,6 +408,12 @@ function HunterCard() {
             「再等两分钟就好」，等了一分钟就点「一起停止」退出，把机器留在了中间态。
           */}
           {pull && <PullPanel p={pull} open={showImages} onToggle={() => setShowImages((v) => !v)} />}
+          {/*
+            I19 · P0-B：**「AI 正在排查」的过程流**。升级某一步失败之后，
+            启动器先自己排查处理（规则优先、模型兜底，整轮最多 5 个修复回合）——
+            那些事都推在 `assist://event` 上，这里画出来。**不再只有一行红字。**
+          */}
+          <RepairStream key={repairNonce} running={running} />
           <LogBox lines={st.steps} className="mt-[8px] max-h-[160px]" emptyText={t.common.loading} />
           {st.error && (
             <div className="mt-[10px] text-sm leading-[1.6] text-danger" data-testid="upgrade-error">
@@ -400,10 +422,47 @@ function HunterCard() {
           )}
           {st.result && (
             <div
-              className={`mt-[10px] text-sm leading-[1.6] ${st.result.cancelled ? 'text-muted' : 'text-amber-text'}`}
+              className={`mt-[10px] text-sm leading-[1.6] ${st.result.ok ? 'text-amber-text' : st.result.cancelled ? 'text-muted' : 'text-danger'}`}
               data-testid="upgrade-result"
             >
               {st.result.message}
+            </div>
+          )}
+          {/*
+            I19 · P1-C：**修不好就停下来，把话说清楚，给一个出口。**
+            这一屏以前只有一行红字，用户没有任何出路。现在补上：
+            「自己试了几次 / 回滚了没有 / 备份在哪」上屏 + 一个「把日志交给开发者」按钮。
+            **默认不自动传**（`auto_ship` 那条判据一个字没动），循环中也不传 ——
+            这是用户 2026-10-05 拍板的口径。
+          */}
+          {st.result && !st.result.ok && !st.result.cancelled && (
+            <div
+              className="mt-[12px] rounded-md border border-danger/45 bg-danger-soft px-3 py-3"
+              data-testid="upgrade-repair-failed"
+            >
+              <div className="text-sm leading-[1.6] text-body">
+                {(st.result.repairRounds ?? 0) > 0
+                  ? t.update.repairTried(st.result.repairRounds ?? 0)
+                  : t.update.repairNoTry}
+              </div>
+              <div className="mt-[6px] flex flex-wrap gap-x-3 gap-y-1 text-xs leading-[1.6] text-muted">
+                {st.result.exhausted && <span>{t.update.repairExhausted}</span>}
+                <span>
+                  {st.result.rolledBack ? t.update.repairRolledBack : t.update.repairNotRolled}
+                </span>
+                {st.result.backupId && <span>{t.update.repairBackup(st.result.backupId)}</span>}
+              </div>
+              <div className="mt-[12px] flex flex-wrap items-center gap-3">
+                <UploadLogs
+                  stage="upgrade"
+                  errorCode={upgradeErrorCode(st.result.errorCode)}
+                  summary={st.result.message}
+                  size="md"
+                  variant="primary"
+                  testId="upgrade-upload-logs"
+                />
+                <span className="text-xs leading-[1.5] text-muted">{t.update.repairLogHint}</span>
+              </div>
             </div>
           )}
           {/* I16 · P1-1：升级过程中可以取消。
@@ -608,6 +667,18 @@ function PullPanel({ p, open, onToggle }: { p: PullProgress; open: boolean; onTo
       )}
     </div>
   )
+}
+
+/**
+ * I19 · P1-C：升级失败那一屏传给「上传日志」的错误码。
+ *
+ * 只认三条（方案 §四 A5/A6 点名的那些），其余一律归到 `E_UPDATE_FAILED` ——
+ * 后端带回来的是**真实的错误码**，这里只做「挑一个已知的给上传用」，
+ * **不编**一个不存在的。
+ */
+function upgradeErrorCode(code: string | null | undefined): string {
+  if (code === 'E_PULL_FAILED' || code === 'E_PULL_STALLED') return code
+  return 'E_UPDATE_FAILED'
 }
 
 // ── 备份 ─────────────────────────────────────────────────────────────────

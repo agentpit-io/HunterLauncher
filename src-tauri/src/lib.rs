@@ -72,6 +72,7 @@ pub mod timefmt;
 pub mod tray;
 pub mod uninstall;
 pub mod upgrade;
+pub mod upgrade_repair;
 pub mod upstream;
 pub mod zip;
 
