@@ -256,3 +256,55 @@ runtime = "user"
 > 另注：§三 里写的预期输出「容器引擎: Windows: …（可用: false）」与 0.1.22 实际输出不一致，
 > 实机输出的是诊断首行的 `Docker <来源> · server <None|Some("版本")> · compose <None|…>`，
 > 以及按规则追加的「## Docker 现在可用，而这一套还没装完」小节。判据请以本节 4.1 表为准。
+
+
+---
+
+## 五、环境重建：中继机与测试机
+
+验收要两台机器，都按需拉起。**中继机是临时机** —— 它只负责「把安装包发给测试机」和
+「把测试机的回传落盘」，上面还开着 2375 的容器接口给 W2 当「真容器后台」用，
+所以验完就收走（`relay-down`），下次要用再 `relay-up`。
+
+> ⚠️ 下面这些命令必须在**有谷歌云权限的机器**上跑。香港开发机虽然装了 gcloud，
+> 但服务账号 scope 不足，跑起来会报 `insufficient authentication scopes`。
+
+### 5.1 一条命令管环境开关
+
+```bash
+bash scripts/windows-verify-env.sh status       # 看两台机器在不在
+bash scripts/windows-verify-env.sh relay-up     # 拉起中继机 + 装容器后台(2375) + 铺两条通道
+bash scripts/windows-verify-env.sh relay-down   # 收走中继机
+bash scripts/windows-verify-env.sh test-up      # 拉起 Windows 测试机（已在则只打印）
+```
+
+`relay-up` 之后，把要发的安装包拷上去即可：
+
+```bash
+gcloud compute scp hunter-launcher_0.1.22_x64_en-US.msi hl-docker-relay:/tmp/hl/ --zone=us-central1-a
+# 测试机侧从 http://10.128.0.14:8000/<文件名> 取
+```
+
+### 5.2 两台机器的规格（照这个建就对）
+
+| | 中继机 `hl-docker-relay` | Windows 测试机 `hunter-win-test` |
+|---|---|---|
+| 区域 | us-central1-a | us-central1-a |
+| 机型 | e2-small | e2-standard-2 |
+| 系统 | Ubuntu 24.04（`ubuntu-2404-lts-amd64`） | Windows Server 2022（`windows-2022`，**无桌面**） |
+| 启动盘 | 20GB pd-standard（随实例删） | 100GB pd-standard |
+| 内网 | 10.128.0.14 | 10.128.0.13 |
+| 角色 | 8000 发安装包 / 8001 收回传 / 2375 真容器后台 | 被验对象 |
+
+两台都在 `default` 网络的同一网段（10.128.0.0/20），内网互通，不用额外开防火墙规则。
+
+### 5.3 测试机怎么注入、怎么看进度
+
+- 注入只有一招：写实例元数据 `windows-startup-script-ps1`，然后 `gcloud compute instances reset`
+- **回传首选「测试机 PUT 到中继机」**：`http://10.128.0.14:8001/p/<名字>`，落盘在 `/tmp/hl/rep/`。
+  比 guest attributes 好 —— 没有陈旧值、没有大小限制、二进制原样落盘
+- 等待与判读都放在**中继机**上（一个每 10 秒看一眼的小循环），驱动方只发两条短命令
+  （写元数据 + 重启），避免在本地机器上长跑
+- 串口 `gcloud compute instances get-serial-port-output` 仍是一手排障源：脚本的 `Write-Host`
+  会逐行出现在里面，**含 ParserError 的行号**
+- 脚本里的中文会让整段注入失败（见 §一 第 1 条），所以**判读逻辑写在 Python 里、不要写进 .ps1**
