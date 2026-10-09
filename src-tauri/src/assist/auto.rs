@@ -3990,7 +3990,7 @@ mod tests {
     #[test]
     fn 没有可用的_docker_时不会自动续装() {
         let _g = crate::paths::test_home("auto-resume-no-docker");
-        if crate::runtime::effective::current().usable() {
+        if crate::runtime::engine::usable() {
             // 这台机器上真有一个在跑的 docker（测试机就是），这一条断言不了
             return;
         }
