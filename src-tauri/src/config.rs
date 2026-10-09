@@ -1664,10 +1664,18 @@ pub fn mark_stopped_by_user(v: bool) {
 /// 值域和 [`crate::runtime::effective::Kind`] 一致（`builtin` / `user` / `none`），
 /// **读的是现状**，不是配置里的意图。
 fn runtime_label() -> String {
-    match crate::runtime::effective::current().kind {
-        crate::runtime::effective::Kind::Builtin => "builtin".to_string(),
-        crate::runtime::effective::Kind::User => "user".to_string(),
-        crate::runtime::effective::Kind::None => "none".to_string(),
+    if crate::runtime::OS == crate::runtime::Os::Windows {
+        if crate::runtime::engine::usable() || crate::runtime::docker::detect().installed {
+            "user".to_string()
+        } else {
+            "none".to_string()
+        }
+    } else {
+        match crate::runtime::effective::current().kind {
+            crate::runtime::effective::Kind::Builtin => "builtin".to_string(),
+            crate::runtime::effective::Kind::User => "user".to_string(),
+            crate::runtime::effective::Kind::None => "none".to_string(),
+        }
     }
 }
 

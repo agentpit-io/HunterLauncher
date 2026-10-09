@@ -281,7 +281,7 @@ fn diagnose_inner(
 ///
 /// 这个函数没有副作用，界面与命令层都可以随便调。
 pub fn can_resume_install() -> bool {
-    if !crate::runtime::effective::current().usable() {
+    if !crate::runtime::engine::usable() {
         return false;
     }
     // compose 文件或 .env 还没写出来 —— 那是「配置这一步都没走完」

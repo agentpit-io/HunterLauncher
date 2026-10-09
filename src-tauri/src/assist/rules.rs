@@ -555,6 +555,8 @@ mod tests {
             arch: "aarch64".into(),
             os_version: Some("15.1".into()),
             effective_runtime: "当前生效运行时：测试（测试）".into(),
+            engine_usable: true,
+            engine_status: "测试引擎状态".into(),
             error_code: None,
             error_message: None,
             stage: Some("docker".into()),

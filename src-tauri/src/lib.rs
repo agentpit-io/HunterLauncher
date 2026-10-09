@@ -424,7 +424,7 @@ pub fn run() {
                     linfo!("开机自查容器：上一次是你自己在界面上点的「停止」，这次不替你起回来");
                     return;
                 }
-                if !crate::runtime::effective::current().running {
+                if !crate::runtime::engine::usable() {
                     return;
                 }
                 let services = match compose::ps() {

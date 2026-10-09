@@ -596,15 +596,37 @@ impl UpgradeStep {
     }
 }
 
-/// 「运行环境就绪」这一步（I19 · P0-A）。**复用 I18 那一份**，不另抄。
+/// 运行环境未就绪时的提示文案（I20 · P0-3 纯函数，可单测）。
+///
+/// 区分两态：
+/// 1. 尝试拉起过（`ready_steps` 非空）：如实保留「上面那几行是启动器替你把它拉起来的经过。」
+/// 2. 根本没动手（`ready_steps` 为空）：说明真话（未检测到可用容器引擎或未在运行），不谎称拉起经过。
+pub(crate) fn format_runtime_down_message(ready_steps: &[String], stopped_state: &str) -> String {
+    if !ready_steps.is_empty() {
+        format!(
+            "运行环境（Docker）现在用不了，这次升级先停在这里 —— {stopped_state}。\
+             上面那几行是启动器替你把它拉起来的经过。"
+        )
+    } else {
+        let (_, summary) = crate::runtime::engine::summary();
+        format!(
+            "运行环境（Docker）现在用不了（{summary}），这次升级先停在这里 —— {stopped_state}。"
+        )
+    }
+}
+
+/// 「运行环境就绪」这一步（I19 · P0-A，I20 · P0-1/P0-3 修正）。**复用 I18 那一份**，不另抄。
 ///
 /// 它把每一句过程都想方设法送进升级的步骤流（`note`），界面上看得见
 /// 「先替你把它拉起来」这件事。**失败在这里不算错** —— 调用方随后会用
-/// `effective::current().running` 如实判「引擎到底能不能用」。
-fn ensure_runtime_ready(note: &mut impl FnMut(&str)) {
+/// `runtime::engine::usable()` 如实判「引擎到底能不能用」。
+///
+/// 返回尝试拉起所产生的步骤文本列表（如果启动器根本没动手拉起，则返回空）。
+fn ensure_runtime_ready(note: &mut impl FnMut(&str)) -> Vec<String> {
     let mut steps: Vec<String> = Vec::new();
     let mut say = |line: &str| note(line);
     let _ = crate::commands::ensure_runtime_up(&mut steps, &mut say);
+    steps
 }
 
 /// 把 Hunter 升到 `target` 这个 tag。失败自动回滚到升级前那一整套配置。
@@ -668,13 +690,10 @@ pub fn upgrade(
             .collect::<Vec<_>>()
             .join(" → ")
     );
-    ensure_runtime_ready(&mut note);
-    if !crate::runtime::effective::current().running {
-        let msg = format!(
-            "运行环境（Docker）现在用不了，这次升级先停在这里 —— {}。\
-             上面那几行是启动器替你把它拉起来的经过。",
-            crate::upgrade_repair::stopped_config_state(UpgradeStep::RuntimeReady)
-        );
+    let ready_steps = ensure_runtime_ready(&mut note);
+    if !crate::runtime::engine::usable() {
+        let stopped_state = crate::upgrade_repair::stopped_config_state(UpgradeStep::RuntimeReady);
+        let msg = format_runtime_down_message(&ready_steps, stopped_state);
         note(&msg);
         return Err(AppError::new(Code::DaemonDown, msg));
     }
@@ -1561,6 +1580,24 @@ mod tests {
                 "{s:?} 的「该不该回滚」判错了"
             );
         }
+    }
+
+    /// **P0-3 验收**：文案两态：动手过才讲「拉起来的经过」，没动手如实给真话
+    #[test]
+    fn 运行环境用不了时文案区分是否动手() {
+        let stopped = crate::upgrade_repair::stopped_config_state(UpgradeStep::RuntimeReady);
+        // 1. 尝试过拉起（有步骤流）
+        let steps = vec!["启动运行时：ok".to_string()];
+        let msg1 = format_runtime_down_message(&steps, stopped);
+        assert!(msg1.contains("上面那几行是启动器替你把它拉起来的经过"));
+        assert!(msg1.contains(stopped));
+
+        // 2. 根本没动手（空步骤流）
+        let empty_steps = Vec::new();
+        let msg2 = format_runtime_down_message(&empty_steps, stopped);
+        assert!(!msg2.contains("上面那几行是启动器替你把它拉起来的经过"));
+        assert!(msg2.contains(stopped));
+        assert!(msg2.contains("运行环境（Docker）现在用不了"));
     }
 
     // ── 上一次升级没做完（I16 · P1-2） ──────────────────────────────────

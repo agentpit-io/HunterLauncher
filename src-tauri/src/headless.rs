@@ -2520,12 +2520,11 @@ fn cmd_backup(args: &Args) -> AppResult<()> {
     };
 
     // 运行环境都没起 → 记为跳过，**不擅自把整套服务拉起来**
-    let eff = crate::runtime::effective::current();
-    if !eff.running {
+    if !crate::runtime::engine::usable() {
+        let (_, summary) = crate::runtime::engine::summary();
         let why = format!(
-            "跳过：Hunter 的运行环境现在没在跑（{}）。备份需要 postgres，\
-             而这条路不会替你把整套服务启动起来。下次打开启动器时可以点「立即备份一次」。",
-            eff.why
+            "跳过：Hunter 的运行环境现在没在跑（{summary}）。备份需要 postgres，\
+             而这条路不会替你把整套服务启动起来。下次打开启动器时可以点「立即备份一次」。"
         );
         println!("  ⚠ {why}");
         crate::lwarn!("{what}{why}");

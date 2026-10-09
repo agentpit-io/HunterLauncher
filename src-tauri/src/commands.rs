@@ -973,10 +973,10 @@ pub(crate) fn ensure_runtime_up(
     steps: &mut Vec<String>,
     say: &mut impl FnMut(&str),
 ) -> crate::err::AppResult<()> {
-    let eff = crate::runtime::effective::current();
-    if eff.running {
+    if crate::runtime::engine::usable() {
         return Ok(());
     }
+    let eff = crate::runtime::effective::current();
     if !eff.builtin_down() {
         return ensure_user_runtime_up(steps, say);
     }
@@ -1777,6 +1777,14 @@ pub async fn check_launcher_update(
 /// 成功时装完**自动重启进程**，这个调用不会返回。
 #[tauri::command]
 pub async fn install_launcher_update(app: tauri::AppHandle) -> Result<()> {
+    // I20 · P1-6：启动器自更新与 Hunter 升级互斥。
+    // Hunter 升级进行中（拉镜像、改配置、重启等）严禁触发自更新重启，否则会截断升级留中间态。
+    let busy_upgrade = upgrade_slot().lock().map(|s| s.running).unwrap_or(false)
+        || app.state::<AppState>().upgrade_in_flight().is_some();
+    if busy_upgrade {
+        return Err("Hunter 升级正在进行中，请等待升级完成后再更新启动器".to_string());
+    }
+
     match crate::selfupdate::install(&app).await {
         Ok(()) => {
             crate::linfo!("自更新完成，重启启动器");

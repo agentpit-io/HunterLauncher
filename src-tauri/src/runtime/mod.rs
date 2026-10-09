@@ -17,6 +17,7 @@ pub mod disk;
 pub mod docker;
 pub mod effective;
 pub mod elevate;
+pub mod engine;
 pub mod env;
 pub mod manifest;
 pub mod netcheck;

@@ -89,6 +89,13 @@ pub struct Report {
     /// 那台还没起来的虚拟机。模型于是照着「用户装了 Colima」去想办法。
     pub effective_runtime: String,
 
+    /// **容器引擎可用性**（I20 · P0-4）。统一判据。
+    pub engine_usable: bool,
+
+    /// **容器引擎状态说明**（I20 · P0-4）。人话真话：Windows 上如实反映
+    /// Docker 后台是否运行或未安装，不再误报「没有容器运行时」。
+    pub engine_status: String,
+
     pub docker_installed: bool,
     pub daemon_running: bool,
     pub docker_runtime: String,
@@ -212,6 +219,7 @@ pub fn collect(
         Some((f, t)) => (Some(f), Some(t)),
         None => (None, None),
     };
+    let (engine_usable, engine_status) = crate::runtime::engine::summary();
 
     Report {
         launcher_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -223,6 +231,8 @@ pub fn collect(
         stage: stage.map(str::to_string),
 
         effective_runtime: clean(&crate::runtime::effective::current().one_line()),
+        engine_usable,
+        engine_status: clean(&engine_status),
 
         docker_installed: d.installed,
         daemon_running: d.daemon_running,
@@ -325,6 +335,10 @@ impl Report {
             s.push_str(&format!("卡在: {st}\n"));
         }
         s.push_str(&format!("\n{}\n", self.effective_runtime));
+        s.push_str(&format!(
+            "容器引擎: {}（可用: {}）\n",
+            self.engine_status, self.engine_usable
+        ));
         s.push_str(&format!(
             "Docker: 装了={} daemon在跑={} 运行时={} 客户端={} 服务端={}\ncompose: {} / {}\n",
             self.docker_installed,
@@ -779,6 +793,8 @@ mod tests {
             arch: "aarch64".into(),
             os_version: Some("15.1".into()),
             effective_runtime: "当前生效运行时：测试（测试）".into(),
+            engine_usable: false,
+            engine_status: "测试引擎状态".into(),
             error_code: Some("E_DOCKER_MISSING".into()),
             // 和 `collect` 一样走 clean —— 这里测的是「采集路径过了脱敏之后报文是干净的」
             error_message: Some(clean(&format!("用 key {FAKE} 校验过了"))),
@@ -877,6 +893,8 @@ mod tests {
             arch: "x86_64".into(),
             os_version: None,
             effective_runtime: "当前生效运行时：测试（测试）".into(),
+            engine_usable: false,
+            engine_status: "测试引擎状态".into(),
             error_code: None,
             error_message: None,
             stage: None,
