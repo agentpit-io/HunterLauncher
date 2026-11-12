@@ -81,10 +81,77 @@ pub fn diagnose(r: &Report) -> Suggestion {
     if let Some(s) = port_taken(r) {
         return s;
     }
+    if let Some(s) = atomcode_token_desync(r) {
+        return s;
+    }
+    if let Some(s) = atomcode_mcp_stuck(r) {
+        return s;
+    }
     if let Some(s) = disk_low(r) {
         return s;
     }
     unknown(r)
+}
+
+/// AtomCode 专属自愈规则 1：`web` 或 `api` 读不到 `/run/hca/daemon-token`（EACCES）或鉴权 401。
+fn atomcode_token_desync(r: &Report) -> Option<Suggestion> {
+    let mut text = r.error_message.clone().unwrap_or_default();
+    for l in &r.log_tail {
+        text.push('\n');
+        text.push_str(l);
+    }
+    let hit = text.contains("读不到 daemon token")
+        || text.contains("daemonFetch") && text.contains("401")
+        || (text.contains("daemon-token") && (text.contains("EACCES") || text.contains("401")));
+    if !hit {
+        return None;
+    }
+    let calls = [
+        Call::with("restart_own_service", "service", "daemon"),
+        Call::with("restart_own_service", "service", "web"),
+    ];
+    let actions: Vec<actions::Plan> = calls.iter().filter_map(|c| actions::plan(c).ok()).collect();
+    Some(Suggestion {
+        rule: "atomcode-token-desync".into(),
+        code: r.error_code.clone().or_else(|| Some("E_DAEMON_TOKEN".into())),
+        title: "网页服务与 AtomCode 对话引擎的令牌没对上".into(),
+        detail: "web 服务在读取 /run/hca/daemon-token 时遇到权限或令牌不一致（401 / EACCES）。\n\
+                 启动器可以自动重新创建 daemon 与 web 两个容器，让 daemon 重新生成 0640 共享令牌并刷新 web 缓存，你的对话记录与数据卷不会受到任何影响。"
+            .to_string(),
+        actions,
+        confident: true,
+    })
+}
+
+/// AtomCode 专属自愈规则 2：`daemon` 启动时因机器高负载导致 MCP 子进程初始化超时或未就绪。
+fn atomcode_mcp_stuck(r: &Report) -> Option<Suggestion> {
+    let mut text = r.error_message.clone().unwrap_or_default();
+    for l in &r.log_tail {
+        text.push('\n');
+        text.push_str(l);
+    }
+    let mcp_stuck = text.contains("有 MCP 没连上")
+        || text.contains("MCP server closed stdout")
+        || (r.error_code.as_deref() == Some("E_START_TIMEOUT")
+            && (text.contains("daemon（") || text.contains("没就绪：daemon")));
+    if !mcp_stuck {
+        return None;
+    }
+    let calls = [
+        Call::with("raise_timeouts", "seconds", "360"),
+        Call::with("restart_own_service", "service", "daemon"),
+    ];
+    let actions: Vec<actions::Plan> = calls.iter().filter_map(|c| actions::plan(c).ok()).collect();
+    Some(Suggestion {
+        rule: "atomcode-mcp-stuck".into(),
+        code: r.error_code.clone().or_else(|| Some("E_START_TIMEOUT".into())),
+        title: "AtomCode 对话引擎的 MCP 工具还在初始化或卡住了".into(),
+        detail: "daemon 容器启动时需要拉起 11 个投研与控制 MCP 子进程，电脑负载较高时可能超过默认等待时间。\n\
+                 启动器可以把等待上限调宽到 360 秒，并重启一次 daemon 容器触发 MCP 自动重连。"
+            .to_string(),
+        actions,
+        confident: true,
+    })
 }
 
 /// **Hunter 自己那套内置运行时装着、虚拟机没起来**（I9 的 P0-1）。
@@ -651,6 +718,15 @@ mod tests {
         let mut r = base();
         r.disk_free = Some(1024 * 1024 * 1024);
         cases.push(r);
+        // AtomCode daemon-token 失步
+        let mut r = base();
+        r.log_tail = vec!["web: 读不到 daemon token (/run/hca/daemon-token): EACCES".into()];
+        cases.push(r);
+        // AtomCode MCP 初始化超时
+        let mut r = base();
+        r.error_code = Some("E_START_TIMEOUT".into());
+        r.error_message = Some("等了 180 秒，还有 1 个服务没就绪：daemon（running · 启动中）".into());
+        cases.push(r);
         // 认不出来
         cases.push(base());
 
@@ -1194,5 +1270,36 @@ mod tests {
             running,
             evidence: evidence.into(),
         }
+    }
+
+    #[test]
+    fn atomcode_token_失步时自动重建_daemon_与_web() {
+        let _g = crate::paths::test_home("rules-atomcode-token");
+        let mut r = base();
+        r.log_tail = vec!["[web] daemonFetch /live/sessions -> 401 Unauthorized".into()];
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "atomcode-token-desync");
+        assert!(s.confident);
+        assert_eq!(s.actions.len(), 2);
+        assert_eq!(s.actions[0].id, "restart_own_service");
+        assert!(s.actions[0].command_line().contains("daemon"));
+        assert_eq!(s.actions[1].id, "restart_own_service");
+        assert!(s.actions[1].command_line().contains("web"));
+    }
+
+    #[test]
+    fn atomcode_mcp_超时时自动调宽超时并重启_daemon() {
+        let _g = crate::paths::test_home("rules-atomcode-mcp");
+        let mut r = base();
+        r.error_code = Some("E_START_TIMEOUT".into());
+        r.error_message =
+            Some("等了 180 秒，还有 1 个服务没就绪：daemon（running · 启动中）".into());
+        let s = diagnose(&r);
+        assert_eq!(s.rule, "atomcode-mcp-stuck");
+        assert!(s.confident);
+        assert_eq!(s.actions.len(), 2);
+        assert_eq!(s.actions[0].id, "raise_timeouts");
+        assert_eq!(s.actions[1].id, "restart_own_service");
+        assert!(s.actions[1].command_line().contains("daemon"));
     }
 }

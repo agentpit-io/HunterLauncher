@@ -240,8 +240,9 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
         },
     });
 
-    // ⑤ api 与 opencode 的容器日志（方案 §11.1 点名要这两个，各 100 行）
-    for svc in ["api", "opencode"] {
+    // ⑤ api、对话引擎（daemon 或 opencode）与 llm-shim 的容器日志（各 100 行）
+    let eng = crate::config::current_engine_service();
+    for svc in ["api", eng, "llm-shim"] {
         let (body, note) = match compose::logs(Some(svc), 100) {
             Ok(l) if !l.is_empty() => (l.join("\n"), None),
             Ok(_) => (String::new(), Some(format!("{svc} 没有日志输出"))),

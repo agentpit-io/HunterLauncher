@@ -550,14 +550,34 @@ pub fn create(kind: Kind, tag: &str, mut note: impl FnMut(&str)) -> AppResult<Ba
     }
 
     // ⑤ 数据卷。**密钥卷必打**（和数据库成对），另两个按设置
+    let vols = compose::volumes_of_project().unwrap_or_default();
     let mut wanted: Vec<&str> = vec![compose::VOL_SECRETS];
     if cfg.backup.include_skills {
         wanted.push(compose::VOL_SKILLS);
     }
     if cfg.backup.include_sessions {
-        wanted.push(compose::VOL_SESSIONS);
+        for sv in [
+            compose::VOL_ATOMCODE_HOME,
+            compose::VOL_WORKSPACE,
+            compose::VOL_SESSIONS,
+        ] {
+            if vols.iter().any(|v| v.short == sv) {
+                wanted.push(sv);
+            }
+        }
+        if !wanted.iter().any(|w| {
+            matches!(
+                *w,
+                compose::VOL_ATOMCODE_HOME | compose::VOL_WORKSPACE | compose::VOL_SESSIONS
+            )
+        }) {
+            if config::current_engine_service() == "opencode" {
+                wanted.push(compose::VOL_SESSIONS);
+            } else {
+                wanted.push(compose::VOL_ATOMCODE_HOME);
+            }
+        }
     }
-    let vols = compose::volumes_of_project().unwrap_or_default();
     for short in wanted {
         let file = format!("{}.tar.gz", short.trim_start_matches("hunter_"));
         let full = vols
@@ -1652,7 +1672,7 @@ pub fn external_suggestions() -> Vec<String> {
 
 /// 恢复时先停哪几个服务。**postgres 与 redis 留着**：转储要灌进正在跑的
 /// postgres，停了它就没地方灌了。
-pub const RESTORE_STOP: &[&str] = &["api", "opencode", "web", "llm-shim"];
+pub const RESTORE_STOP: &[&str] = &["api", "daemon", "opencode", "web", "llm-shim"];
 
 /// 真的恢复（方案 R6 6.4 的六步）。
 ///
@@ -1703,8 +1723,13 @@ pub fn restore(id_or_path: &str, mut note: impl FnMut(&str)) -> AppResult<Restor
         }
     }
 
-    // ② 停掉会写库的服务
-    let names: Vec<&str> = RESTORE_STOP.to_vec();
+    // ② 停掉会写库的服务（只停当前 compose 编排里存在的服务）
+    let eng = config::current_engine_service();
+    let names: Vec<&str> = RESTORE_STOP
+        .iter()
+        .copied()
+        .filter(|s| (*s != "daemon" && *s != "opencode") || *s == eng)
+        .collect();
     let mut args = vec!["stop"];
     args.extend_from_slice(&names);
     let _ = compose::run(&args, Duration::from_secs(180));

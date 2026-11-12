@@ -10,8 +10,8 @@ services:
     ports: !override ["${WEB_HOST_PORT:-3100}:3000"]
   api:
     ports: !override ["127.0.0.1:${API_HOST_PORT:-8100}:8000"]
-  opencode:
-    ports: !override ["127.0.0.1:${OPENCODE_HOST_PORT:-3921}:3901"]
+  daemon:
+    ports: !override ["127.0.0.1:${OPENCODE_HOST_PORT:-3921}:13456"]
   postgres:
     ports: !override ["127.0.0.1:${POSTGRES_HOST_PORT:-5442}:5432"]
   redis:

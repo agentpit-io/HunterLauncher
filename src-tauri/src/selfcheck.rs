@@ -60,8 +60,25 @@ use serde::Serialize;
 use crate::compose::{self, ServiceStatus};
 use crate::config::{LauncherConfig, PROJECT};
 
-/// compose 里应该有的六个服务。和 [`crate::compose::wait_healthy`] 用的是同一份名单。
-pub const EXPECTED: [&str; 6] = ["web", "api", "opencode", "llm-shim", "postgres", "redis"];
+/// compose 里应该有的六个服务（v3.0.0 AtomCode 统一版默认）。
+pub const EXPECTED: [&str; 6] = ["web", "api", "daemon", "llm-shim", "postgres", "redis"];
+
+/// 旧版 OpenCode 实例对应的六个服务。
+pub const EXPECTED_LEGACY: [&str; 6] = ["web", "api", "opencode", "llm-shim", "postgres", "redis"];
+
+/// 根据当前磁盘上的 `docker-compose.yml` 动态返回六个期望的服务名（`daemon` 或 `opencode`）。
+pub fn expected_services() -> [&'static str; 6] {
+    if crate::config::current_engine_service() == "opencode" {
+        EXPECTED_LEGACY
+    } else {
+        EXPECTED
+    }
+}
+
+/// 某个服务名是否属于本项目的合法服务（同时接受 `daemon` 与兼容旧版 `opencode`）。
+pub fn is_known_service(svc: &str) -> bool {
+    EXPECTED.contains(&svc) || svc == "opencode"
+}
 
 /// 本机 web 探测给多久。打不开就是打不开，不值得等。
 const WEB_TIMEOUT: Duration = Duration::from_secs(6);
@@ -414,9 +431,10 @@ pub fn review(deep: bool) -> Review {
         }
         return r;
     }
+    let expected = expected_services();
     let ours: Vec<ServiceStatus> = services
         .iter()
-        .filter(|s| EXPECTED.contains(&s.service.as_str()))
+        .filter(|s| expected.contains(&s.service.as_str()))
         .cloned()
         .collect();
     if ours.is_empty() {
@@ -431,7 +449,7 @@ pub fn review(deep: bool) -> Review {
             compose::health_cn(s.health)
         ));
     }
-    let missing: Vec<String> = EXPECTED
+    let missing: Vec<String> = expected
         .iter()
         .filter(|e| !ours.iter().any(|s| s.service == **e))
         .map(|e| (*e).to_string())
@@ -1171,7 +1189,7 @@ mod tests {
     fn 只把不正常的那几个列进要动的名单() {
         let mut services = all_healthy();
         services[2] = svc(
-            "opencode",
+            "daemon",
             "running",
             compose::Health::Unhealthy,
             Some(3921),
@@ -1186,7 +1204,7 @@ mod tests {
             Instant::now(),
             false,
             Vec::new(),
-            vec!["opencode".into(), "postgres".into()],
+            vec!["daemon".into(), "postgres".into()],
             Some(3100),
         );
         let mut to_start: Vec<&str> = Vec::new();
@@ -1197,7 +1215,7 @@ mod tests {
                 _ => to_start.push(name),
             }
         }
-        assert_eq!(to_restart, vec!["opencode"]);
+        assert_eq!(to_restart, vec!["daemon"]);
         assert_eq!(to_start, vec!["postgres"]);
         assert!(!r.all_good());
         assert!(!r.services_all_ready());

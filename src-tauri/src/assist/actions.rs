@@ -210,9 +210,9 @@ pub const ACTIONS: &[Spec] = &[
         level: Level::ReadOnly,
         title: "读某个服务的容器日志",
         why: "容器起来又退出时，退出的原因只在它自己的日志里",
-        desc: "读**本项目**某个服务最后 N 行日志（已脱敏）。service 只能是 api / llm-shim / opencode / postgres / redis / web；lines 1–200。",
+        desc: "读**本项目**某个服务最后 N 行日志（已脱敏）。service 只能是 api / daemon / llm-shim / opencode / postgres / redis / web；lines 1–200。",
         params: &[
-            ("service", "api | llm-shim | opencode | postgres | redis | web"),
+            ("service", "api | daemon | llm-shim | opencode | postgres | redis | web"),
             ("lines", "行数，1–200"),
         ],
         user_only: false,
@@ -267,8 +267,8 @@ pub const ACTIONS: &[Spec] = &[
         level: Level::Safe,
         title: "重启 Hunter 的某一个服务",
         why: "单个服务卡住时，重建它比把整套推倒重来快得多",
-        desc: "重新创建**本项目**的某一个服务。service 只能是 api / llm-shim / opencode / postgres / redis / web。",
-        params: &[("service", "api | llm-shim | opencode | postgres | redis | web")],
+        desc: "重新创建**本项目**的某一个服务。service 只能是 api / daemon / llm-shim / opencode / postgres / redis / web。",
+        params: &[("service", "api | daemon | llm-shim | opencode | postgres | redis | web")],
         user_only: false,
     },
     Spec {

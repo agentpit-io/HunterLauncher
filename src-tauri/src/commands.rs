@@ -913,7 +913,7 @@ pub async fn stack_op(
             }
             "restart" => match service.as_deref().filter(|s| !s.is_empty()) {
                 Some(svc) => {
-                    if !crate::selfcheck::EXPECTED.contains(&svc) {
+                    if !crate::selfcheck::is_known_service(svc) {
                         return Err(AppError::new(
                             Code::Unknown,
                             format!("「{svc}」不是这一套里的服务，不重启它"),

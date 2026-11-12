@@ -1499,22 +1499,24 @@ pub fn apply_model_change(state: &AppState) -> AppResult<String> {
         ));
     }
 
-    compose::up_services(&["api", "opencode", "llm-shim"])?;
+    let eng = config::current_engine_service();
+    let target_svcs = ["api", eng, "llm-shim"];
+    compose::up_services(&target_svcs)?;
     let deadline = std::time::Instant::now() + Duration::from_secs(180);
     loop {
         let list = compose::ps().unwrap_or_default();
-        let done = ["api", "opencode", "llm-shim"].iter().all(|n| {
+        let done = target_svcs.iter().all(|n| {
             list.iter()
                 .any(|s| s.service == *n && compose::service_ready(s))
         });
         if done {
             return Ok(format!(
-                "已重写 .env 并重建 api / opencode / llm-shim，三个服务都已就绪（模型模式 {}，模型 {llm_model}）。",
+                "已重写 .env 并重建 api / {eng} / llm-shim，三个服务都已就绪（模型模式 {}，模型 {llm_model}）。",
                 cfg.model.mode
             ));
         }
         if std::time::Instant::now() >= deadline {
-            let bad: Vec<String> = ["api", "opencode", "llm-shim"]
+            let bad: Vec<String> = target_svcs
                 .iter()
                 .filter(|n| {
                     !list

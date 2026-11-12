@@ -1395,7 +1395,12 @@ pub fn interrupted(cfg: &config::LauncherConfig) -> Option<Interrupted> {
         })
         // postgres:16-alpine / redis:7-alpine 的 tag 和 Hunter 的版本号无关，
         // 拿它们比版本会得出一堆假阳性 —— 只看我们自己那四个镜像
-        .filter(|(svc, _)| matches!(svc.as_str(), "web" | "api" | "opencode" | "llm-shim"))
+        .filter(|(svc, _)| {
+            matches!(
+                svc.as_str(),
+                "web" | "api" | "daemon" | "opencode" | "llm-shim"
+            )
+        })
         .collect();
     let specs = config::images(
         &cfg.hunter.registry_prefix,

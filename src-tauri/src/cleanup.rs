@@ -33,6 +33,7 @@ use crate::{backup, compose, config};
 pub const OWN_IMAGE_NAMES: &[&str] = &[
     "hunter-community-web",
     "hunter-community-api",
+    "hunter-community-daemon",
     "hunter-community-opencode",
     "hunter-community-llm-shim",
 ];
