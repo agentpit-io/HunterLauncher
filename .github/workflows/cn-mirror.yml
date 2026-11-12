@@ -101,7 +101,7 @@ jobs:
             fi
           }
           for t in ${{ steps.tags.outputs.tags }}; do
-            for s in web api opencode llm-shim; do
+            for s in web api daemon opencode llm-shim paper fin-worker; do
               cp1 "ghcr.io/agentpit-io/hunter-community-$s:$t" "$CN_REGISTRY/hunter-community-$s:$t"
             done
           done
@@ -114,7 +114,7 @@ jobs:
         continue-on-error: true
         run: |
           set -e
-          for s in web api opencode llm-shim; do
+          for s in web api daemon opencode llm-shim paper fin-worker; do
             N=$(crane ls "$CN_REGISTRY/hunter-community-$s" 2>/dev/null | wc -l)
             echo "$s：$N 个 tag"
             if [ "$N" -gt 80 ]; then

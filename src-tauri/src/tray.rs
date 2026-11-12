@@ -661,7 +661,7 @@ mod tests {
     fn 状态文字随服务变化() {
         assert_eq!(status_text(&[], None), "已停止");
 
-        let all_healthy: Vec<_> = ["web", "api", "opencode", "llm-shim", "postgres", "redis"]
+        let all_healthy: Vec<_> = crate::selfcheck::expected_services()
             .iter()
             .map(|n| svc(n, "running", Health::Healthy))
             .collect();

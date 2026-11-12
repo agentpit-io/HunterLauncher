@@ -431,9 +431,10 @@ pub fn run() {
                     Ok(v) => v,
                     Err(_) => return,
                 };
+                let expected = crate::selfcheck::expected_services();
                 let ours: Vec<_> = services
                     .iter()
-                    .filter(|s| crate::selfcheck::EXPECTED.contains(&s.service.as_str()))
+                    .filter(|s| expected.contains(&s.service.as_str()))
                     .collect();
                 if ours.is_empty() {
                     return;

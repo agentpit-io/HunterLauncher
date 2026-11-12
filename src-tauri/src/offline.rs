@@ -45,8 +45,11 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(1800);
 const SAVE_TIMEOUT: Duration = Duration::from_secs(1800);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 六个服务名。顺序与 [`config::images`] 一致。
-pub const SERVICES: [&str; 6] = ["web", "api", "opencode", "llm-shim", "postgres", "redis"];
+/// 六个服务名（v3.0.0 AtomCode 统一版默认）。顺序与 [`config::images`] 一致。
+pub const SERVICES: [&str; 6] = ["web", "api", "daemon", "llm-shim", "postgres", "redis"];
+
+/// 旧版 OpenCode 实例对应的六个服务名。
+pub const SERVICES_LEGACY: [&str; 6] = ["web", "api", "opencode", "llm-shim", "postgres", "redis"];
 
 /// 一次导入的结果。
 #[derive(Debug, Clone, Serialize)]
@@ -116,7 +119,7 @@ pub fn classify(reference: &str) -> Option<(String, String, String)> {
         None => "docker.io/library".to_string(),
     };
     if let Some(svc) = last.strip_prefix("hunter-community-") {
-        if SERVICES.contains(&svc) {
+        if SERVICES.contains(&svc) || svc == "opencode" {
             return Some((svc.to_string(), prefix, tag));
         }
         return None;
@@ -260,7 +263,14 @@ pub fn import(tar: &Path, mut note: impl FnMut(&str)) -> AppResult<ImportResult>
     // 复核：docker load 说成功不等于镜像真在（约束 2）
     let mut matched: Vec<MatchedImage> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    for svc in SERVICES {
+    let expected_svcs = if by_service.iter().any(|(s, _)| s == "opencode")
+        && !by_service.iter().any(|(s, _)| s == "daemon")
+    {
+        SERVICES_LEGACY
+    } else {
+        SERVICES
+    };
+    for svc in expected_svcs {
         match by_service.iter().find(|(s, _)| s == svc) {
             Some((_, reference)) => match inspect_size(reference) {
                 Some(n) => matched.push(MatchedImage {
@@ -448,7 +458,7 @@ Loaded image: postgres:16-alpine
 
     #[test]
     fn 六个服务名与_config_images_对得上() {
-        let specs = config::images("ghcr.io/agentpit-io", "docker.io/library", "1.2.0");
+        let specs = config::images("ghcr.io/agentpit-io", "docker.io/library", "3.0.0");
         let mut a: Vec<&str> = specs.iter().map(|s| s.service.as_str()).collect();
         let mut b: Vec<&str> = SERVICES.to_vec();
         a.sort_unstable();
@@ -458,12 +468,14 @@ Loaded image: postgres:16-alpine
 
     #[test]
     fn 每个服务的镜像引用都能被自己的分类器认回去() {
-        // 这条盯住「导出的包一定能被导入端认出来」—— 两边用的是同一套命名
+        // 这条盯住「导出的包一定能被导入端认出来」—— 两边用的是同一套命名（新旧两代都测）
         for prefix in ["ghcr.io/agentpit-io", "hkccr.ccs.tencentyun.com/agentpit"] {
-            for s in config::images(prefix, prefix, "1.2.0") {
-                let (svc, _, _) =
-                    classify(&s.reference).unwrap_or_else(|| panic!("认不出 {}", s.reference));
-                assert_eq!(svc, s.service);
+            for tag in ["1.2.0", "3.0.0"] {
+                for s in config::images(prefix, prefix, tag) {
+                    let (svc, _, _) =
+                        classify(&s.reference).unwrap_or_else(|| panic!("认不出 {}", s.reference));
+                    assert_eq!(svc, s.service);
+                }
             }
         }
     }

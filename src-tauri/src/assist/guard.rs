@@ -481,8 +481,10 @@ pub fn own_container(id_or_name: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 本项目的 6 个服务名。`restart_own_service` 只认这些。
-pub const OWN_SERVICES: &[&str] = &["api", "llm-shim", "opencode", "postgres", "redis", "web"];
+/// 本项目的服务名（同时包含新版 `daemon` 与兼容旧版的 `opencode`）。`restart_own_service` 只认这些。
+pub const OWN_SERVICES: &[&str] = &[
+    "api", "daemon", "llm-shim", "opencode", "postgres", "redis", "web",
+];
 
 // ── 命令守卫 ──────────────────────────────────────────────────────────────
 

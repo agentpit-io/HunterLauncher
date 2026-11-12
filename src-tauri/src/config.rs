@@ -26,12 +26,12 @@ use crate::registry::Candidate;
 /// 它只是**兜底**：全新安装时先问 GitHub 最新正式版（见 `flow::install_tag`），
 /// 问不到才用它。所以这里落后一两个版本不会让新用户装到旧版，但发 Hunter 新版时
 /// 顺手跟上，能让离线 / GitHub 不通的用户也装到新版。
-pub const BUNDLED_TAG: &str = "1.2.3";
+pub const BUNDLED_TAG: &str = "3.0.0";
 const BUNDLED_COMPOSE: &str =
-    include_str!("../../templates/docker-compose.hunter-community-1.2.3.yml");
+    include_str!("../../templates/docker-compose.hunter-community-3.0.0.yml");
 /// 内置副本的 sha256。下载回来的内容与它不一致时说明链路上有人动过手脚，宁可用内置的。
 pub const BUNDLED_COMPOSE_SHA256: &str =
-    "81cde74e8eed1571bda7d012df1397b02961158ca9dedf9147b322019ea66ae3";
+    "4bcf781eb7e34f3f8e1f57a6e3f436048273f50bdba5dc3303e5e309849ccca1";
 
 const ENV_TEMPLATE: &str = include_str!("../../templates/env.template");
 
@@ -1121,11 +1121,49 @@ pub struct ImageSpec {
     pub repo: String,
 }
 
+/// 检测一段 `docker-compose.yml` 文本使用的是 AtomCode 内核（`daemon`）还是旧版 OpenCode 内核（`opencode`）。
+pub fn engine_service_of_text(compose_yml: &str) -> &'static str {
+    if compose_yml.contains("\n  daemon:") || compose_yml.trim_start().starts_with("daemon:") {
+        "daemon"
+    } else {
+        "opencode"
+    }
+}
+
+/// 检测指定路径的 `docker-compose.yml` 使用的是 `"daemon"` 还是 `"opencode"`。
+/// 若文件尚不存在（例如全新安装前），默认返回 `"daemon"`（AtomCode v3.0.0 内核）。
+pub fn engine_service_of(compose_path: &Path) -> &'static str {
+    match std::fs::read_to_string(compose_path) {
+        Ok(s) => engine_service_of_text(&s),
+        Err(_) => "daemon",
+    }
+}
+
+/// 当前磁盘上已安装（或即将安装）实例的对话引擎服务名（`"daemon"` 或 `"opencode"`）。
+pub fn current_engine_service() -> &'static str {
+    engine_service_of(&paths::compose_file())
+}
+
+/// 根据目标 `tag` 判断对应的对话引擎服务名：
+/// - `v3.x` 及以上返回 `"daemon"`（镜像名 `hunter-community-daemon`）；
+/// - `v1.x` / `v2.x` 返回 `"opencode"`（镜像名 `hunter-community-opencode`）；
+/// - 非标准版本号则回退读取当前磁盘 compose 文件判断。
+pub fn engine_service_for_tag(tag: &str) -> &'static str {
+    let clean = tag.trim().trim_start_matches('v');
+    if let Some(first) = clean.split('.').next() {
+        if let Ok(major) = first.parse::<u32>() {
+            return if major >= 3 { "daemon" } else { "opencode" };
+        }
+    }
+    current_engine_service()
+}
+
 /// 六个服务对应的镜像。`postgres` / `redis` 在国内源下也换成镜像地址
 /// （`plan/国内镜像与下载源.md`：国内拉 Docker Hub 不稳，一并镜像过去了）。
 pub fn images(registry_prefix: &str, base_prefix: &str, tag: &str) -> Vec<ImageSpec> {
+    let eng = engine_service_for_tag(tag);
     let mut v = Vec::new();
-    for s in ["web", "api", "opencode", "llm-shim"] {
+    for s in ["web", "api", eng, "llm-shim"] {
         v.push(spec(
             &format!("{registry_prefix}/hunter-community-{s}"),
             tag,
@@ -1709,6 +1747,16 @@ const RESTART_POLICY: &str = "unless-stopped";
 /// 3. **六个服务一律 `restart: unless-stopped`**（I12 · R3+，见 [`RESTART_POLICY`]）。
 ///    `llm-shim` 在这份文件里原本一个字都没有，这一条是它出现的唯一理由。
 pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> String {
+    render_override_for_engine(ports, base_prefix, bind, current_engine_service())
+}
+
+/// 按指定的对话引擎服务名（`"daemon"` 或 `"opencode"`）生成 `docker-compose.launcher.yml`。
+pub fn render_override_for_engine(
+    ports: &Ports,
+    base_prefix: &str,
+    bind: WebBind,
+    engine: &str,
+) -> String {
     let mut s = String::new();
     s.push_str(
         "# ~/.hunter/app/docker-compose.launcher.yml\n\
@@ -1749,10 +1797,26 @@ pub fn render_override(ports: &Ports, base_prefix: &str, bind: WebBind) -> Strin
         "  api:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:8000\"]\n",
         ports.api
     ));
-    s.push_str(&format!(
-        "  opencode:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:3901\"]\n",
-        ports.opencode
-    ));
+    if engine == "daemon" {
+        s.push_str(&format!(
+            "  daemon:\n\
+             \x20   restart: {RESTART_POLICY}\n\
+             \x20   ports: !override [\"127.0.0.1:{}:13456\"]\n\
+             \x20   environment:\n\
+             \x20     HCA_LLM_BASE_URL: ${{LLM_SHIM_URL:-http://llm-shim:3999/v1}}\n\
+             \x20     HCA_LLM_MODEL: ${{LLM_DEFAULT_MODEL:-hunter-chat}}\n\
+             \x20     HCA_LLM_API_KEY: ${{LLM_API_KEY:-${{HUNTER_API_KEY:-}}}}\n\
+             \x20     LLM_BASE_URL: ${{LLM_BASE_URL:-}}\n\
+             \x20     LLM_DEFAULT_MODEL: ${{LLM_DEFAULT_MODEL:-hunter-chat}}\n\
+             \x20     LLM_API_KEY: ${{LLM_API_KEY:-${{HUNTER_API_KEY:-}}}}\n",
+            ports.opencode
+        ));
+    } else {
+        s.push_str(&format!(
+            "  opencode:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:3901\"]\n",
+            ports.opencode
+        ));
+    }
     // llm-shim 不发布端口，所以它在这份文件里只为了重启策略而存在（I12 · R3+）
     s.push_str(&format!("  llm-shim:\n    restart: {RESTART_POLICY}\n"));
 
@@ -1958,20 +2022,19 @@ pub fn validate_compose(s: &str) -> AppResult<()> {
             "里面没有 services: 段".to_string(),
         ));
     }
-    for svc in [
-        "web:",
-        "api:",
-        "opencode:",
-        "llm-shim:",
-        "postgres:",
-        "redis:",
-    ] {
+    for svc in ["web:", "api:", "llm-shim:", "postgres:", "redis:"] {
         if !s.contains(svc) {
             return Err(AppError::new(
                 Code::ComposeFetch,
                 format!("里面找不到服务 {svc}"),
             ));
         }
+    }
+    if !s.contains("daemon:") && !s.contains("opencode:") {
+        return Err(AppError::new(
+            Code::ComposeFetch,
+            "里面找不到对话引擎服务 daemon: 或 opencode:".to_string(),
+        ));
     }
     if !s.contains("hunter-community-web") {
         return Err(AppError::new(
@@ -2268,11 +2331,11 @@ mod tests {
             postgres: 5443,
             redis: 6480,
         };
-        let s = render_override(&ports, "docker.io/library", WebBind::Local);
+        let s = render_override_for_engine(&ports, "docker.io/library", WebBind::Local, "daemon");
         for (p, c) in [
             (3101, 3000),
             (8101, 8000),
-            (3922, 3901),
+            (3922, 13456),
             (5443, 5432),
             (6480, 6379),
         ] {
@@ -2281,6 +2344,21 @@ mod tests {
                 "{p} 没有绑到 127.0.0.1：\n{s}"
             );
         }
+        assert!(s.contains("HCA_LLM_BASE_URL:"), "{s}");
+        assert!(s.contains("HCA_LLM_MODEL:"), "{s}");
+        assert!(s.contains("HCA_LLM_API_KEY:"), "{s}");
+        assert!(s.contains("LLM_BASE_URL:"), "{s}");
+        assert!(s.contains("LLM_DEFAULT_MODEL:"), "{s}");
+        assert!(s.contains("LLM_API_KEY:"), "{s}");
+
+        // 兼容旧版 opencode 时映射 3901
+        let s_old =
+            render_override_for_engine(&ports, "docker.io/library", WebBind::Local, "opencode");
+        assert!(
+            s_old.contains("!override [\"127.0.0.1:3922:3901\"]"),
+            "{s_old}"
+        );
+
         // 红线 4 的反向断言（I7 起连 web 也算）：一行裸端口映射都不许有
         // （只看真正的映射行，注释里提到 !override 的那几行不算）
         let mapping_lines: Vec<&str> = s
@@ -2323,8 +2401,8 @@ mod tests {
             redis: 6480,
         };
         for bind in [WebBind::Local, WebBind::LegacyLan] {
-            let s = render_override(&ports, "docker.io/library", bind);
-            for svc in ["web", "api", "opencode", "llm-shim", "postgres", "redis"] {
+            let s = render_override_for_engine(&ports, "docker.io/library", bind, "daemon");
+            for svc in ["web", "api", "daemon", "llm-shim", "postgres", "redis"] {
                 let body: Vec<&str> = s
                     .lines()
                     .skip_while(|l| l.trim() != format!("{svc}:"))
@@ -2357,18 +2435,20 @@ mod tests {
             postgres: 5443,
             redis: 6480,
         };
-        let local = render_override(&ports, "docker.io/library", WebBind::Local);
+        let local =
+            render_override_for_engine(&ports, "docker.io/library", WebBind::Local, "daemon");
         assert!(
             local.contains("ports: !override [\"127.0.0.1:3101:3000\"]"),
             "{local}"
         );
         // 沿用老现状时 web 那一行是裸的，其余四行照样本机
-        let legacy = render_override(&ports, "docker.io/library", WebBind::LegacyLan);
+        let legacy =
+            render_override_for_engine(&ports, "docker.io/library", WebBind::LegacyLan, "daemon");
         assert!(
             legacy.contains("ports: !override [\"3101:3000\"]"),
             "{legacy}"
         );
-        for (p, c) in [(8101, 8000), (3922, 3901), (5443, 5432), (6480, 6379)] {
+        for (p, c) in [(8101, 8000), (3922, 13456), (5443, 5432), (6480, 6379)] {
             assert!(
                 legacy.contains(&format!("!override [\"127.0.0.1:{p}:{c}\"]")),
                 "{p} 没有绑到 127.0.0.1：\n{legacy}"
@@ -2614,15 +2694,25 @@ mod tests {
         assert_eq!(web.short_ref, "hunter-community-web");
         assert_eq!(web.host, "ghcr.io");
         assert_eq!(web.repo, "agentpit-io/hunter-community-web");
+        assert!(v.iter().any(|i| i.service == "opencode"));
         let pg = v.iter().find(|i| i.service == "postgres").unwrap();
         assert_eq!(pg.reference, "docker.io/library/postgres:16-alpine");
         assert_eq!(pg.host, "registry-1.docker.io");
         assert_eq!(pg.repo, "library/postgres");
 
+        // v3.0.0 (AtomCode 统一版) 使用 daemon 服务镜像
+        let v3 = images("ghcr.io/agentpit-io", "docker.io/library", "3.0.0");
+        assert_eq!(v3.len(), 6);
+        let daemon = v3.iter().find(|i| i.service == "daemon").unwrap();
+        assert_eq!(
+            daemon.reference,
+            "ghcr.io/agentpit-io/hunter-community-daemon:3.0.0"
+        );
+
         let cn = images(
             "hkccr.ccs.tencentyun.com/agentpit",
             "hkccr.ccs.tencentyun.com/agentpit",
-            "1.2.0",
+            "3.0.0",
         );
         let pg = cn.iter().find(|i| i.service == "postgres").unwrap();
         assert_eq!(
@@ -2630,6 +2720,40 @@ mod tests {
             "hkccr.ccs.tencentyun.com/agentpit/postgres:16-alpine"
         );
         assert_eq!(pg.host, "hkccr.ccs.tencentyun.com");
+    }
+
+    #[test]
+    fn 自动识别_daemon_与_opencode_双内核编排() {
+        let v3_yml = bundled_compose();
+        assert_eq!(engine_service_of_text(&v3_yml), "daemon");
+        validate_compose(&v3_yml).expect("v3.0.0 daemon 编排必须通过校验");
+
+        let v1_yml = include_str!("../../templates/docker-compose.hunter-community-1.2.3.yml");
+        assert_eq!(engine_service_of_text(v1_yml), "opencode");
+        validate_compose(v1_yml).expect("旧版 opencode 编排同样必须通过校验");
+
+        // 模拟从旧版 opencode 切换到新版 v3.0.0 daemon 时 engine_service_of(compose_path) 的磁盘识别与 override 渲染
+        let _h = paths::test_home("engine-upgrade-sim");
+        write_compose(v1_yml).expect("写入旧版 compose");
+        assert_eq!(engine_service_of(&paths::compose_file()), "opencode");
+        assert_eq!(
+            crate::selfcheck::expected_services(),
+            ["web", "api", "opencode", "llm-shim", "postgres", "redis"]
+        );
+        let ov_old = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
+        assert!(ov_old.contains("  opencode:\n"));
+        assert!(!ov_old.contains("  daemon:\n"));
+
+        // 升级写入 v3.0.0 compose 后自动切换为 daemon
+        write_compose(&v3_yml).expect("写入 v3.0.0 compose");
+        assert_eq!(engine_service_of(&paths::compose_file()), "daemon");
+        assert_eq!(
+            crate::selfcheck::expected_services(),
+            ["web", "api", "daemon", "llm-shim", "postgres", "redis"]
+        );
+        let ov_new = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
+        assert!(ov_new.contains("  daemon:\n"));
+        assert!(!ov_new.contains("  opencode:\n"));
     }
 
     #[test]

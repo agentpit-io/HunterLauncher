@@ -1074,14 +1074,18 @@ pub fn parse_ps(stdout: &str) -> Vec<ServiceStatus> {
 }
 
 /// 服务在界面上的固定排序，照视觉稿第 3 张的服务网格来：
-/// web / api / opencode 一行，llm-shim / postgres / redis 一行。
+/// web / api / daemon(或 opencode) 一行，llm-shim / postgres / redis 一行。
 /// **不按字母序** —— 那样 api 会排到 web 前面，和稿子对不上。
 fn display_order(service: &str) -> usize {
-    const ORDER: [&str; 6] = ["web", "api", "opencode", "llm-shim", "postgres", "redis"];
-    ORDER
-        .iter()
-        .position(|s| *s == service)
-        .unwrap_or(ORDER.len())
+    match service {
+        "web" => 0,
+        "api" => 1,
+        "daemon" | "opencode" => 2,
+        "llm-shim" => 3,
+        "postgres" => 4,
+        "redis" => 5,
+        _ => 6,
+    }
 }
 
 fn to_status(p: PsLine) -> ServiceStatus {
@@ -1690,11 +1694,15 @@ pub fn remove_own_stale_containers() -> AppResult<Vec<String>> {
     Ok(removed)
 }
 
+/// `up` 默认执行的子命令参数。带上 `--remove-orphans` 确保老用户从 v2.2.1(opencode)
+/// 升级到 v3.0.0(daemon) 时自动停止并清理旧的孤儿容器 `hunter-opencode-1`（绝不删除数据卷）。
+pub const UP_ARGS: &[&str] = &["up", "-d", "--remove-orphans"];
+
 pub fn up() -> AppResult<()> {
     guard_project_owner()?;
-    let r = run(&["up", "-d", "--remove-orphans"], Duration::from_secs(300))?;
+    let r = run(UP_ARGS, Duration::from_secs(300))?;
     if r.ok() {
-        crate::linfo!("docker compose up -d 完成");
+        crate::linfo!("docker compose up -d --remove-orphans 完成");
         Ok(())
     } else {
         // I5：**不再一律归成 E_START_TIMEOUT**。端口冲突有自己的错误码，
@@ -1715,7 +1723,7 @@ pub fn wait_healthy(
     mut on_tick: impl FnMut(&[ServiceStatus]),
 ) -> AppResult<Vec<ServiceStatus>> {
     let deadline = Instant::now() + timeout;
-    let expected = ["api", "llm-shim", "opencode", "postgres", "redis", "web"];
+    let expected = crate::selfcheck::expected_services();
     let mut last: Vec<ServiceStatus> = Vec::new();
     loop {
         match ps() {
@@ -2037,7 +2045,11 @@ pub fn parse_volumes(stdout: &str) -> Vec<VolumeInfo> {
 pub const VOLUME_NOTES: &[(&str, &str)] = &[
     ("hunter_pg_data", "数据库：账号、配置、自选股、历史分析"),
     ("hunter_secrets", "密钥卷：数据库里加密的配置靠它才解得开"),
-    ("hunter_opencode_data", "对话引擎的会话记录"),
+    ("hunter_atomcode_home", "AtomCode 对话引擎的会话与配置记录"),
+    ("hunter_workspace", "AtomCode 投研工作区资产（研报、策略与持仓）"),
+    ("hunter_daemon_token", "AtomCode 跨容器鉴权令牌"),
+    ("hunter_experiments", "智能体实验与回测产物"),
+    ("hunter_opencode_data", "旧版对话引擎的会话记录"),
     ("hunter_user_skills", "你自己建的技能"),
     ("hunter_packages", "依赖缓存（可再生）"),
     ("hunter_redis_data", "缓存（可再生）"),
@@ -2049,8 +2061,12 @@ pub const VOL_DB: &str = "hunter_pg_data";
 pub const VOL_SECRETS: &str = "hunter_secrets";
 /// 用户自建技能。备份可选项之一（I13 · R6）。
 pub const VOL_SKILLS: &str = "hunter_user_skills";
-/// 对话引擎的会话记录。备份可选项之一（I13 · R6）。
+/// 旧版对话引擎的会话记录。备份可选项之一（I13 · R6）。
 pub const VOL_SESSIONS: &str = "hunter_opencode_data";
+/// AtomCode 对话引擎的会话记录卷（v3.0.0+）。
+pub const VOL_ATOMCODE_HOME: &str = "hunter_atomcode_home";
+/// AtomCode 投研工作区卷（v3.0.0+）。
+pub const VOL_WORKSPACE: &str = "hunter_workspace";
 
 /// compose 文件里**声明过**的全部数据卷（短名）。
 ///
@@ -2914,6 +2930,26 @@ mod tests {
         let extra = format!("{lines}\n{{\"Service\":\"zzz\",\"State\":\"running\"}}");
         let v = parse_ps(&extra);
         assert_eq!(v.last().unwrap().service, "zzz");
+
+        // v3.0.0 daemon 同样排在第 3 位（web / api / daemon / llm-shim / postgres / redis）
+        let lines_v3 = ["redis", "postgres", "llm-shim", "daemon", "api", "web"]
+            .map(|s| {
+                format!("{{\"Service\":\"{s}\",\"State\":\"running\",\"Health\":\"healthy\"}}")
+            })
+            .join("\n");
+        let v3 = parse_ps(&lines_v3);
+        assert_eq!(
+            v3.iter().map(|s| s.service.as_str()).collect::<Vec<_>>(),
+            vec!["web", "api", "daemon", "llm-shim", "postgres", "redis"]
+        );
+    }
+
+    #[test]
+    fn up_必须带_remove_orphans_清理旧_opencode_孤儿容器() {
+        assert_eq!(UP_ARGS, &["up", "-d", "--remove-orphans"]);
+        let _h = paths::test_home("compose-up-orphans");
+        let (_, args) = argv(UP_ARGS);
+        assert!(args.iter().any(|a| a == "--remove-orphans"), "{args:?}");
     }
 
     #[test]
