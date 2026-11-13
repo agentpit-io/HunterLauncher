@@ -102,6 +102,10 @@ jobs:
           }
           for t in ${{ steps.tags.outputs.tags }}; do
             for s in web api daemon opencode llm-shim paper fin-worker; do
+              if [[ "$t" == 2.* && "$s" == "daemon" ]]; then
+                echo "⏭ $t 为 2.x 架构，跳过 daemon"
+                continue
+              fi
               cp1 "ghcr.io/agentpit-io/hunter-community-$s:$t" "$CN_REGISTRY/hunter-community-$s:$t"
             done
           done
