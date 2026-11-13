@@ -26,12 +26,27 @@ use crate::registry::Candidate;
 /// 它只是**兜底**：全新安装时先问 GitHub 最新正式版（见 `flow::install_tag`），
 /// 问不到才用它。所以这里落后一两个版本不会让新用户装到旧版，但发 Hunter 新版时
 /// 顺手跟上，能让离线 / GitHub 不通的用户也装到新版。
-pub const BUNDLED_TAG: &str = "3.0.0";
+/// v3.5.0 包含 20 个 MCP 服务（12 既有 + 8 券商专属）与 22 个金融 SKILL。
+pub const BUNDLED_TAG: &str = "3.5.0";
 const BUNDLED_COMPOSE: &str =
-    include_str!("../../templates/docker-compose.hunter-community-3.0.0.yml");
+    include_str!("../../templates/docker-compose.hunter-community-3.5.0.yml");
 /// 内置副本的 sha256。下载回来的内容与它不一致时说明链路上有人动过手脚，宁可用内置的。
 pub const BUNDLED_COMPOSE_SHA256: &str =
-    "4bcf781eb7e34f3f8e1f57a6e3f436048273f50bdba5dc3303e5e309849ccca1";
+    "008be712ca54f093ab519e245c61594dfd9535f575637b4c15a6f756c79422ac";
+
+/// v3.5.0 内置支持的 20 个 MCP 服务与 22 个金融 SKILL 自检清单。
+pub const EXPECTED_MCP_COUNT_V35: usize = 20;
+pub const EXPECTED_SKILL_COUNT_V35: usize = 22;
+pub const EXPECTED_BROKER_MCPS_V35: [&str; 8] = [
+    "broker_security",
+    "broker_market",
+    "broker_disclosure",
+    "broker_fundamental",
+    "broker_funds",
+    "broker_research",
+    "broker_education",
+    "broker_account_readonly",
+];
 
 const ENV_TEMPLATE: &str = include_str!("../../templates/env.template");
 
@@ -2744,8 +2759,8 @@ mod tests {
         assert!(ov_old.contains("  opencode:\n"));
         assert!(!ov_old.contains("  daemon:\n"));
 
-        // 升级写入 v3.0.0 compose 后自动切换为 daemon
-        write_compose(&v3_yml).expect("写入 v3.0.0 compose");
+        // 升级写入 v3.5.0 compose 后自动切换为 daemon
+        write_compose(&v3_yml).expect("写入 v3.5.0 compose");
         assert_eq!(engine_service_of(&paths::compose_file()), "daemon");
         assert_eq!(
             crate::selfcheck::expected_services(),
@@ -2754,6 +2769,10 @@ mod tests {
         let ov_new = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
         assert!(ov_new.contains("  daemon:\n"));
         assert!(!ov_new.contains("  opencode:\n"));
+        assert_eq!(BUNDLED_TAG, "3.5.0");
+        assert_eq!(EXPECTED_MCP_COUNT_V35, 20);
+        assert_eq!(EXPECTED_SKILL_COUNT_V35, 22);
+        assert_eq!(EXPECTED_BROKER_MCPS_V35.len(), 8);
     }
 
     #[test]
