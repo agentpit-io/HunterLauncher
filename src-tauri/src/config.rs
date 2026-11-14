@@ -32,7 +32,7 @@ const BUNDLED_COMPOSE: &str =
     include_str!("../../templates/docker-compose.hunter-community-3.5.0.yml");
 /// 内置副本的 sha256。下载回来的内容与它不一致时说明链路上有人动过手脚，宁可用内置的。
 pub const BUNDLED_COMPOSE_SHA256: &str =
-    "008be712ca54f093ab519e245c61594dfd9535f575637b4c15a6f756c79422ac";
+    "e8c8e3386afb0ec0d9c0131c546b9e7bd758b013693376a112aaa876997fe43f";
 
 /// v3.5.0 内置支持的 20 个 MCP 服务与 22 个金融 SKILL 自检清单。
 pub const EXPECTED_MCP_COUNT_V35: usize = 20;
@@ -1136,7 +1136,14 @@ pub struct ImageSpec {
     pub repo: String,
 }
 
-/// 检测一段 `docker-compose.yml` 文本使用的是 AtomCode 内核（`daemon`）还是旧版 OpenCode 内核（`opencode`）。
+/// 检测一段 `docker-compose.yml` 文本是否为 AtomCode 内核（无论是 `daemon:` 服务名，还是带 `HCA_DAEMON_PORT: "13456"` / `hostname: daemon` 的 `opencode:` 双兼容服务名）。
+pub fn is_atomcode_compose_text(compose_yml: &str) -> bool {
+    engine_service_of_text(compose_yml) == "daemon"
+        || compose_yml.contains("HCA_DAEMON_PORT:")
+        || compose_yml.contains("hostname: daemon")
+}
+
+/// 检测一段 `docker-compose.yml` 文本中对话引擎的 compose 服务名（`daemon` 或 `opencode`）。
 pub fn engine_service_of_text(compose_yml: &str) -> &'static str {
     if compose_yml.contains("\n  daemon:") || compose_yml.trim_start().starts_with("daemon:") {
         "daemon"
@@ -1146,11 +1153,11 @@ pub fn engine_service_of_text(compose_yml: &str) -> &'static str {
 }
 
 /// 检测指定路径的 `docker-compose.yml` 使用的是 `"daemon"` 还是 `"opencode"`。
-/// 若文件尚不存在（例如全新安装前），默认返回 `"daemon"`（AtomCode v3.0.0 内核）。
+/// 若文件尚不存在（例如全新安装前），默认返回内置 compose 模板的服务名。
 pub fn engine_service_of(compose_path: &Path) -> &'static str {
     match std::fs::read_to_string(compose_path) {
         Ok(s) => engine_service_of_text(&s),
-        Err(_) => "daemon",
+        Err(_) => engine_service_of_text(&bundled_compose()),
     }
 }
 
@@ -1159,15 +1166,26 @@ pub fn current_engine_service() -> &'static str {
     engine_service_of(&paths::compose_file())
 }
 
-/// 根据目标 `tag` 判断对应的对话引擎服务名：
-/// - `v3.x` 及以上返回 `"daemon"`（镜像名 `hunter-community-daemon`）；
-/// - `v1.x` / `v2.x` 返回 `"opencode"`（镜像名 `hunter-community-opencode`）；
-/// - 非标准版本号则回退读取当前磁盘 compose 文件判断。
+/// 根据目标 `tag` 判断对应的对话引擎镜像后缀：
+/// - `v3.5.x` 及当前内置模板使用 `"opencode"`（`hunter-community-opencode`，在 GHCR 与腾讯云 TCR 上均为公开仓库且兼容 0.1.22）；
+/// - `v3.0.x` ~ `v3.4.x` 若磁盘 compose 为 `"daemon"` 则返回 `"daemon"`；
+/// - `v1.x` / `v2.x` 返回 `"opencode"`。
 pub fn engine_service_for_tag(tag: &str) -> &'static str {
     let clean = tag.trim().trim_start_matches('v');
+    if clean.starts_with("3.0.")
+        || clean.starts_with("3.1.")
+        || clean.starts_with("3.2.")
+        || clean.starts_with("3.3.")
+        || clean.starts_with("3.4.")
+    {
+        return "daemon";
+    }
     if let Some(first) = clean.split('.').next() {
         if let Ok(major) = first.parse::<u32>() {
-            return if major >= 3 { "daemon" } else { "opencode" };
+            if major < 3 {
+                return "opencode";
+            }
+            return engine_service_of_text(&bundled_compose());
         }
     }
     current_engine_service()
@@ -1812,9 +1830,13 @@ pub fn render_override_for_engine(
         "  api:\n    restart: {RESTART_POLICY}\n    ports: !override [\"127.0.0.1:{}:8000\"]\n",
         ports.api
     ));
-    if engine == "daemon" {
+    let is_atomcode_opencode = engine == "opencode"
+        && std::fs::read_to_string(paths::compose_file())
+            .map(|c| is_atomcode_compose_text(&c))
+            .unwrap_or(false);
+    if engine == "daemon" || is_atomcode_opencode {
         s.push_str(&format!(
-            "  daemon:\n\
+            "  {engine}:\n\
              \x20   restart: {RESTART_POLICY}\n\
              \x20   ports: !override [\"127.0.0.1:{}:13456\"]\n\
              \x20   environment:\n\
@@ -2739,15 +2761,22 @@ mod tests {
 
     #[test]
     fn 自动识别_daemon_与_opencode_双内核编排() {
-        let v3_yml = bundled_compose();
-        assert_eq!(engine_service_of_text(&v3_yml), "daemon");
-        validate_compose(&v3_yml).expect("v3.0.0 daemon 编排必须通过校验");
+        let v35_yml = bundled_compose();
+        assert_eq!(engine_service_of_text(&v35_yml), "opencode");
+        assert!(is_atomcode_compose_text(&v35_yml));
+        validate_compose(&v35_yml).expect("v3.5.0 双兼容编排必须通过校验");
+
+        let v30_yml = include_str!("../../templates/docker-compose.hunter-community-3.0.0.yml");
+        assert_eq!(engine_service_of_text(v30_yml), "daemon");
+        assert!(is_atomcode_compose_text(v30_yml));
+        validate_compose(v30_yml).expect("v3.0.0 daemon 编排必须通过校验");
 
         let v1_yml = include_str!("../../templates/docker-compose.hunter-community-1.2.3.yml");
         assert_eq!(engine_service_of_text(v1_yml), "opencode");
+        assert!(!is_atomcode_compose_text(v1_yml));
         validate_compose(v1_yml).expect("旧版 opencode 编排同样必须通过校验");
 
-        // 模拟从旧版 opencode 切换到新版 v3.0.0 daemon 时 engine_service_of(compose_path) 的磁盘识别与 override 渲染
+        // 模拟从旧版 opencode 切换到新版 v3.0.0 daemon 及 v3.5.0 双兼容 opencode
         let _h = paths::test_home("engine-upgrade-sim");
         write_compose(v1_yml).expect("写入旧版 compose");
         assert_eq!(engine_service_of(&paths::compose_file()), "opencode");
@@ -2757,18 +2786,26 @@ mod tests {
         );
         let ov_old = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
         assert!(ov_old.contains("  opencode:\n"));
-        assert!(!ov_old.contains("  daemon:\n"));
+        assert!(ov_old.contains("127.0.0.1:3921:3901"));
 
-        // 升级写入 v3.5.0 compose 后自动切换为 daemon
-        write_compose(&v3_yml).expect("写入 v3.5.0 compose");
+        // 升级写入 v3.0.0 compose 后自动切换为 daemon
+        write_compose(v30_yml).expect("写入 v3.0.0 compose");
         assert_eq!(engine_service_of(&paths::compose_file()), "daemon");
         assert_eq!(
             crate::selfcheck::expected_services(),
             ["web", "api", "daemon", "llm-shim", "postgres", "redis"]
         );
-        let ov_new = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
-        assert!(ov_new.contains("  daemon:\n"));
-        assert!(!ov_new.contains("  opencode:\n"));
+        let ov_v30 = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
+        assert!(ov_v30.contains("  daemon:\n"));
+        assert!(!ov_v30.contains("  opencode:\n"));
+
+        // 升级写入 v3.5.0 双兼容 compose 后服务名为 opencode 但映射 AtomCode 13456 端口与 HCA_LLM_*
+        write_compose(&v35_yml).expect("写入 v3.5.0 compose");
+        assert_eq!(engine_service_of(&paths::compose_file()), "opencode");
+        let ov_v35 = render_override(&Ports::default(), "docker.io/library", WebBind::Local);
+        assert!(ov_v35.contains("  opencode:\n"));
+        assert!(ov_v35.contains("127.0.0.1:3921:13456"));
+        assert!(ov_v35.contains("HCA_LLM_BASE_URL:"));
         assert_eq!(BUNDLED_TAG, "3.5.0");
         assert_eq!(EXPECTED_MCP_COUNT_V35, 20);
         assert_eq!(EXPECTED_SKILL_COUNT_V35, 22);

@@ -2046,7 +2046,10 @@ pub const VOLUME_NOTES: &[(&str, &str)] = &[
     ("hunter_pg_data", "数据库：账号、配置、自选股、历史分析"),
     ("hunter_secrets", "密钥卷：数据库里加密的配置靠它才解得开"),
     ("hunter_atomcode_home", "AtomCode 对话引擎的会话与配置记录"),
-    ("hunter_workspace", "AtomCode 投研工作区资产（研报、策略与持仓）"),
+    (
+        "hunter_workspace",
+        "AtomCode 投研工作区资产（研报、策略与持仓）",
+    ),
     ("hunter_daemon_token", "AtomCode 跨容器鉴权令牌"),
     ("hunter_experiments", "智能体实验与回测产物"),
     ("hunter_opencode_data", "旧版对话引擎的会话记录"),

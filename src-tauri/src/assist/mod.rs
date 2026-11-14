@@ -590,6 +590,7 @@ mod tests {
     /// 第一层永远能跑，不需要 key、不需要网络、不花 token。
     #[test]
     fn 规则层不依赖_key_与网络() {
+        let _g = crate::paths::test_home("assist-rule-no-key");
         let st = diagnose(Some("E_DOCKER_MISSING"), Some("测试"), Some("docker"), None)
             .expect("规则层永远能跑");
         assert_eq!(st.total_tokens, 0, "规则层不许花 token");
@@ -603,6 +604,7 @@ mod tests {
 
     #[test]
     fn 没采过现场时问_ai_会如实报错而不是_panic() {
+        let _g = crate::paths::test_home("assist-ask-no-report");
         reset().unwrap();
         let e = ask(None).expect_err("没采过现场就该报错");
         assert!(e.msg.contains("还没有采过现场"), "{}", e.msg);
@@ -610,6 +612,7 @@ mod tests {
 
     #[test]
     fn 规则层给的动作必须在白名单里() {
+        let _g = crate::paths::test_home("assist-actions-whitelist");
         let st = diagnose(Some("E_PULL_FAILED"), None, Some("pull"), None).expect("能跑");
         for a in &st.rule.actions {
             assert!(
@@ -623,6 +626,7 @@ mod tests {
 
     #[test]
     fn 规则层给的动作_id_不存在时如实拒绝() {
+        let _g = crate::paths::test_home("assist-reject-unknown-action");
         diagnose(None, None, None, None).expect("能跑");
         let e = run_rule_action("不存在的动作", None).expect_err("该拒绝");
         assert!(e.msg.contains("不在这一条建议里"), "{}", e.msg);
@@ -661,6 +665,7 @@ mod tests {
 
     #[test]
     fn 快照里的轮数上限与_ai_那边一致() {
+        let _g = crate::paths::test_home("assist-max-rounds");
         let st = diagnose(None, None, None, None).expect("能跑");
         assert_eq!(st.max_rounds, ai::MAX_ROUNDS);
         assert_eq!(st.max_rounds, 3);

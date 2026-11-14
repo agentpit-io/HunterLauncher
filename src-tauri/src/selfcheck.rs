@@ -1188,12 +1188,7 @@ mod tests {
     #[test]
     fn 只把不正常的那几个列进要动的名单() {
         let mut services = all_healthy();
-        services[2] = svc(
-            "daemon",
-            "running",
-            compose::Health::Unhealthy,
-            Some(3921),
-        );
+        services[2] = svc("daemon", "running", compose::Health::Unhealthy, Some(3921));
         services[4] = svc("postgres", "exited", compose::Health::Pending, None);
         let r = finish_full(
             Posture::Partial,

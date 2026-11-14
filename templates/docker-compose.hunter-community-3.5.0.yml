@@ -1,13 +1,12 @@
 # Hunter Community Edition (AtomCode Unified v3.5.0) · 默认编排(**只用预构建镜像**)
 #
 # `git clone` 之后直接 `docker compose up -d` 就能起,不需要先改 .env、
-# 也不需要本地构建 —— 自家服务全部走 GHCR / 腾讯云镜像源上的预构建镜像。
+# 也不需要本地构建 —— 自家服务全部走 GHCR 上的预构建镜像。
 #
-# 内核说明:
-#   - 对话引擎已全面切换为 AtomCode 5.1.0 Fork 底座(`daemon` 服务,监听 13456)
-#   - 跨容器鉴权令牌通过 `/run/hca` (`hunter_daemon_token`) 共享
-#   - 会话与工作区资产落盘于 `hunter_atomcode_home` (atomcode_data) 与 `hunter_workspace` (atomcode_workspace)
-#   - 默认大模型底座为 Google Gemini 4 Argon (`gemini-4-argon`,网关别名 `hunter-chat`)
+# 开发者要改代码 / 改静态文件并立即生效,叠加开发覆盖文件:
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# 或使用服务器源码一键部署栈:
+#     bash deploy/up.sh
 
 name: hunter-community
 
@@ -78,7 +77,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-openai_compat}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gemini-4-argon}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-}
       LLM_SCHEMA_SANITIZE: ${LLM_SCHEMA_SANITIZE:-}
       ONE_API_MODEL: ${ONE_API_MODEL:-}
       AGENT_SUB_WL_MODEL: ${AGENT_SUB_WL_MODEL:-}
@@ -93,7 +92,7 @@ services:
       ASSISTANT_MODEL_COMPRESS: ${ASSISTANT_MODEL_COMPRESS:-}
       HTTP_PROXY: ${HTTP_PROXY_UPSTREAM:-}
       HTTPS_PROXY: ${HTTPS_PROXY_UPSTREAM:-}
-      NO_PROXY: ${NO_PROXY_UPSTREAM:-localhost,127.0.0.1,api,web,postgres,redis,daemon,llm-shim,paper,fin-worker,temporal}
+      NO_PROXY: ${NO_PROXY_UPSTREAM:-localhost,127.0.0.1,api,web,postgres,redis,daemon,opencode,llm-shim,paper,fin-worker,temporal}
       FORECAST_PROVIDER: ${FORECAST_PROVIDER:-}
       KRONOS_LOCAL_URL: ${KRONOS_LOCAL_URL:-}
       HUNTER_SAAS_KRONOS_URL: ${HUNTER_SAAS_KRONOS_URL:-}
@@ -216,7 +215,7 @@ services:
     <<: *restart
     depends_on:
       - api
-      - daemon
+      - opencode
     environment:
       HOSTNAME: "${HUNTER_BIND_HOST:-0.0.0.0}"
       NODE_ENV: production
@@ -247,11 +246,17 @@ services:
       LLM_TOOL_DENY: "${HCA_LLM_TOOL_DENY-atomgit_*,code_review,ast_grep,read_symbol,list_symbols,find_references,trace_callers,trace_callees,trace_chain,blast_radius,file_dependencies,lsp,list_sessions,schedule_wakeup,recall}"
       HTTP_PROXY: ${HTTP_PROXY_UPSTREAM:-}
       HTTPS_PROXY: ${HTTPS_PROXY_UPSTREAM:-}
-      NO_PROXY: ${NO_PROXY_UPSTREAM:-localhost,127.0.0.1,api,web,postgres,redis,daemon,llm-shim}
+      NO_PROXY: ${NO_PROXY_UPSTREAM:-localhost,127.0.0.1,api,web,postgres,redis,daemon,opencode,llm-shim}
 
-  daemon:
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-daemon:${HUNTER_VERSION:-3.5.0}
+  opencode:
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-opencode:${HUNTER_VERSION:-3.5.0}
+    hostname: daemon
     <<: *restart
+    networks:
+      default:
+        aliases:
+          - daemon
+          - opencode
     depends_on:
       api:
         condition: service_healthy
@@ -261,10 +266,12 @@ services:
       - "host.docker.internal:host-gateway"
     expose:
       - "13456"
+      - "3901"
     environment:
       HCA_DAEMON_PORT: "13456"
       HCA_DAEMON_INTERNAL_PORT: "13457"
       HCA_DAEMON_SERVICE_NAME: daemon
+      HCA_LEGACY_OPENCODE_PORT: "3901"
       HCA_WORKSPACE: /workspace
       ATOMCODE_HOME: /data/atomcode
       HCA_WORKSPACE_REFRESH: "1"
@@ -300,8 +307,6 @@ services:
       - hunter_atomcode_home:/data
       - hunter_daemon_token:/run/hca
       - hunter_secrets:/opt/hunter-secrets:ro
-    ports:
-      - "127.0.0.1:${OPENCODE_HOST_PORT:-3921}:13456"
     init: true
     security_opt:
       - no-new-privileges:true

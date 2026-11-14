@@ -725,7 +725,8 @@ mod tests {
         // AtomCode MCP 初始化超时
         let mut r = base();
         r.error_code = Some("E_START_TIMEOUT".into());
-        r.error_message = Some("等了 180 秒，还有 1 个服务没就绪：daemon（running · 启动中）".into());
+        r.error_message =
+            Some("等了 180 秒，还有 1 个服务没就绪：daemon（running · 启动中）".into());
         cases.push(r);
         // 认不出来
         cases.push(base());

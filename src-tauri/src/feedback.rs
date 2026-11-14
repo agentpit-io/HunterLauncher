@@ -964,6 +964,7 @@ mod tests {
     /// 一键反馈**不会**声称上报成功，而且路径与字节数都是真的。
     #[test]
     fn 一键反馈只在本机生成不发送() {
+        let _g = crate::paths::test_home("feedback-one-click");
         let r = one_click("E_PULL_FAILED", "docker compose pull 退出码 1").expect("能生成");
         assert!(r.bundle_bytes > 0, "包不该是空的");
         assert!(
