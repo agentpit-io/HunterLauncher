@@ -2361,6 +2361,7 @@ mod tests {
 
     #[test]
     fn 覆盖文件里五个发布端口全部绑本机() {
+        let _h = crate::paths::test_home("override-ports-local");
         let ports = Ports {
             web: 3101,
             api: 8101,
