@@ -72,7 +72,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.23'
+export const DEMO_LAUNCHER_VERSION = '0.1.24'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -641,7 +641,7 @@ export const demoDiagSections: DiagSection[] = [
       '时间: 2026-09-20 09:12:03\n启动器: 0.1.0\n系统: linux x86_64\n' +
       'Docker: DockerEngine · server 29.8.1 · compose v5.5.1\n' +
       'Hunter tag: 1.2.0\n镜像源: ghcr (ghcr.io/agentpit-io)\n' +
-      '端口: web 3101 · api 8101 · opencode 3922 · postgres 5443 · redis 6480\n' +
+      '端口: web 3101 · api 8101 · atomcode 3922 · postgres 5443 · redis 6480\n' +
       '模型: gateway · hunter-chat\n遥测: 关 · 上报端点: （无 · 暂未开启上报）\n',
     defaultOn: true,
     note: null,
@@ -651,7 +651,7 @@ export const demoDiagSections: DiagSection[] = [
     title: 'docker compose ps',
     body:
       'web        running    健康     端口 3101\napi        running    健康     端口 8101\n' +
-      'opencode   running    健康     端口 3922\nllm-shim   running    健康     端口 内部\n' +
+      'atomcode   running    健康     端口 3922\nllm-shim   running    健康     端口 内部\n' +
       'postgres   running    健康     端口 5443\nredis      running    健康     端口 6480\n',
     defaultOn: true,
     note: null,
@@ -691,7 +691,7 @@ export const demoLauncherLog: string[] = [
 export const demoComposeLog: string[] = [
   'hunter-api-1       | INFO:     127.0.0.1:52344 - "GET /api/health HTTP/1.1" 200 OK',
   'hunter-web-1       | ready - started server on 0.0.0.0:3000',
-  'hunter-opencode-1  | opencode server listening on 127.0.0.1:3901',
+  'hunter-atomcode-1  | atomcode server listening on 127.0.0.1:13456',
   'hunter-llm-shim-1  | shim ready, upstream=https://hunter.agentpit.io/api/saas/llm/v1',
   'hunter-postgres-1  | database system is ready to accept connections',
   'hunter-redis-1     | Ready to accept connections tcp',

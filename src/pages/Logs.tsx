@@ -16,7 +16,7 @@ const TAIL = 400
 const LIVE_MS = 2000
 
 /** compose 里的六个服务，顺序与视觉稿第 3 张的服务网格一致。 */
-const SERVICES = ['web', 'api', 'opencode', 'llm-shim', 'postgres', 'redis'] as const
+const SERVICES = ['web', 'api', 'atomcode', 'llm-shim', 'postgres', 'redis'] as const
 type Service = (typeof SERVICES)[number]
 type Source = 'launcher' | 'compose'
 

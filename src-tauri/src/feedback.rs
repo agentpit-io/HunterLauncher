@@ -144,7 +144,7 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
         cfg.hunter.registry_id, cfg.hunter.registry_prefix
     ));
     s.push_str(&format!(
-        "端口: web {} · api {} · opencode {} · postgres {} · redis {}\n",
+        "端口: web {} · api {} · atomcode {} · postgres {} · redis {}\n",
         cfg.hunter.ports.web,
         cfg.hunter.ports.api,
         cfg.hunter.ports.opencode,
@@ -182,9 +182,14 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
         Ok(list) if !list.is_empty() => {
             let mut b = String::new();
             for p in &list {
+                let shown_svc = if p.service == "opencode" || p.service == "daemon" {
+                    "atomcode"
+                } else {
+                    p.service.as_str()
+                };
                 b.push_str(&format!(
                     "{:<10} {:<10} {:<8} 端口 {}\n",
-                    p.service,
+                    shown_svc,
                     p.state,
                     compose::health_cn(p.health),
                     p.port
@@ -240,17 +245,18 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
         },
     });
 
-    // ⑤ api、对话引擎（daemon 或 opencode）与 llm-shim 的容器日志（各 100 行）
+    // ⑤ api、对话引擎（atomcode，底层服务名 daemon 或 opencode）与 llm-shim 的容器日志（各 100 行）
     let eng = crate::config::current_engine_service();
     for svc in ["api", eng, "llm-shim"] {
+        let shown_svc = if svc == eng { "atomcode" } else { svc };
         let (body, note) = match compose::logs(Some(svc), 100) {
             Ok(l) if !l.is_empty() => (l.join("\n"), None),
-            Ok(_) => (String::new(), Some(format!("{svc} 没有日志输出"))),
+            Ok(_) => (String::new(), Some(format!("{shown_svc} 没有日志输出"))),
             Err(e) => (String::new(), Some(format!("{}: {}", e.code, e.msg))),
         };
         out.push(Section {
-            id: format!("log-{svc}"),
-            title: format!("{svc} 容器日志（最近 100 行 · content/text 已整段抹除）"),
+            id: format!("log-{shown_svc}"),
+            title: format!("{shown_svc} 容器日志（最近 100 行 · content/text 已整段抹除）"),
             // 容器日志多过一道：模型的输入输出整段换掉（§12.3 第三条）
             body: redact::redact(&redact::mask_content_fields(&body)),
             default_on: true,
@@ -998,5 +1004,39 @@ mod tests {
         let dec = percent_decode(&url);
         assert!(dec.contains(&title), "链接里的标题和预览的不一样");
         assert!(dec.contains(body.trim()), "链接里的正文和预览的不一样");
+    }
+
+    #[test]
+    fn 诊断报告统一使用_atomcode_名称而非_opencode() {
+        let _g = crate::paths::test_home("feedback-collect-atomcode");
+        let cfg = LauncherConfig::default();
+        let sections = collect(&cfg, "0.1.24");
+        let summary = sections
+            .iter()
+            .find(|s| s.id == "summary")
+            .expect("必有 summary 分节");
+        assert!(
+            summary.body.contains("atomcode 3921"),
+            "概要端口行应显示 atomcode：{}",
+            summary.body
+        );
+        assert!(
+            !summary.body.contains("opencode"),
+            "概要不应残留 opencode：{}",
+            summary.body
+        );
+        let log_sec = sections
+            .iter()
+            .find(|s| s.id == "log-atomcode")
+            .expect("必有 log-atomcode 分节");
+        assert!(
+            log_sec.title.starts_with("atomcode 容器日志"),
+            "容器日志标题应为 atomcode：{}",
+            log_sec.title
+        );
+        assert!(
+            sections.iter().all(|s| s.id != "log-opencode"),
+            "不应生成 log-opencode 分节"
+        );
     }
 }

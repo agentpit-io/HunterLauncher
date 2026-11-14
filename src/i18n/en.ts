@@ -492,6 +492,8 @@ const en: Dict = {
     roles: {
       web: 'UI',
       api: 'Data & analysis',
+      atomcode: 'Conversation engine',
+      daemon: 'Conversation engine',
       opencode: 'Conversation engine',
       'llm-shim': 'Model proxy',
       postgres: 'Database',
@@ -667,7 +669,7 @@ const en: Dict = {
     restoreTitle: 'Restore data',
     restoreBody:
       'Your current data will be replaced by this backup. The launcher backs up the current data first, so you can come back if you picked the wrong one.',
-    restoreSteps: 'Restoring will: stop api / opencode / web → load the database back → restore the secrets volume and JWT_SECRET → start everything → wait for all six services to be healthy.',
+    restoreSteps: 'Restoring will: stop api / atomcode / web → load the database back → restore the secrets volume and JWT_SECRET → start everything → wait for all six services to be healthy.',
     restoreType: (phrase: string) => `To confirm, type "${phrase}" exactly`,
     restoreGo: 'Restore',
     restoring: 'Restoring…',
@@ -813,7 +815,7 @@ const en: Dict = {
     modelGatewayHint:
       'Uses your hunter key through the Hunter gateway; aliases hunter-chat / hunter-deep with a daily quota.',
     modelOwnHint:
-      'Uses your own OpenAI-compatible endpoint. Connectivity is verified with a real request first; on success .env is rewritten and api / opencode / llm-shim are recreated (takes tens of seconds).',
+      'Uses your own OpenAI-compatible endpoint. Connectivity is verified with a real request first; on success .env is rewritten and api / atomcode / llm-shim are recreated (takes tens of seconds).',
     modelBaseUrl: 'BASE_URL',
     modelName: 'Model name',
     modelApiKey: 'API key',
@@ -1030,7 +1032,7 @@ const en: Dict = {
     contactLabel: 'Contact (optional)',
     attachLabel: 'Attach diagnostics',
     attachHint:
-      'Includes launcher and Hunter versions, OS and Docker versions, compose ps output, last 100 lines of api and opencode logs (redacted). No key, no conversation content.',
+      'Includes launcher and Hunter versions, OS and Docker versions, compose ps output, last 100 lines of api and atomcode logs (redacted). No key, no conversation content.',
     preview: 'Preview what will be attached',
     exportBundle: 'Export bundle (zip)',
     openIssue: 'Open a GitHub issue',

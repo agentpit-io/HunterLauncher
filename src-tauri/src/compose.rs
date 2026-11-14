@@ -1074,13 +1074,13 @@ pub fn parse_ps(stdout: &str) -> Vec<ServiceStatus> {
 }
 
 /// 服务在界面上的固定排序，照视觉稿第 3 张的服务网格来：
-/// web / api / daemon(或 opencode) 一行，llm-shim / postgres / redis 一行。
+/// web / api / atomcode(或 daemon/opencode) 一行，llm-shim / postgres / redis 一行。
 /// **不按字母序** —— 那样 api 会排到 web 前面，和稿子对不上。
 fn display_order(service: &str) -> usize {
     match service {
         "web" => 0,
         "api" => 1,
-        "daemon" | "opencode" => 2,
+        "atomcode" | "daemon" | "opencode" => 2,
         "llm-shim" => 3,
         "postgres" => 4,
         "redis" => 5,
@@ -1902,18 +1902,39 @@ pub fn restart() -> AppResult<()> {
     }
 }
 
+/// 将传入的对话引擎服务名（`"atomcode"` / `"daemon"` / `"opencode"`）映射为当前磁盘
+/// `docker-compose.yml` 里实际声明的服务名（`"daemon"` 或 `"opencode"`）。
+fn resolve_log_service(service: &str) -> &str {
+    match service {
+        "atomcode" | "daemon" | "opencode" => crate::config::current_engine_service(),
+        other => other,
+    }
+}
+
+/// 将 `docker compose logs` 行首的旧版容器名前缀映射为统一的 `atomcode`。
+fn normalize_log_line_prefix(line: &str) -> String {
+    if let Some(rest) = line.strip_prefix("opencode-1  | ") {
+        format!("atomcode-1  | {rest}")
+    } else if let Some(rest) = line.strip_prefix("hunter-opencode-1  | ") {
+        format!("hunter-atomcode-1  | {rest}")
+    } else {
+        line.to_string()
+    }
+}
+
 /// 取日志。**返回前统一脱敏**（容器日志里可能带 key）。
 pub fn logs(service: Option<&str>, tail: usize) -> AppResult<Vec<String>> {
     let tail_s = tail.to_string();
     let mut args: Vec<&str> = vec!["logs", "--no-color", "--tail", tail_s.as_str()];
     if let Some(s) = service {
-        args.push(s);
+        args.push(resolve_log_service(s));
     }
     let r = run(&args, Duration::from_secs(60))?;
     let mut out: Vec<String> = Vec::new();
     for l in r.stdout.lines().chain(r.stderr.lines()) {
         if !l.trim().is_empty() {
-            out.push(crate::redact::redact(l));
+            let normalized = normalize_log_line_prefix(l);
+            out.push(crate::redact::redact(&normalized));
         }
     }
     Ok(out)
@@ -2945,6 +2966,29 @@ mod tests {
             v3.iter().map(|s| s.service.as_str()).collect::<Vec<_>>(),
             vec!["web", "api", "daemon", "llm-shim", "postgres", "redis"]
         );
+        assert_eq!(display_order("atomcode"), 2);
+    }
+
+    #[test]
+    fn 日志服务映射与前缀规范化为_atomcode() {
+        assert_eq!(
+            normalize_log_line_prefix("opencode-1  | atomcode listening"),
+            "atomcode-1  | atomcode listening"
+        );
+        assert_eq!(
+            normalize_log_line_prefix("hunter-opencode-1  | atomcode listening"),
+            "hunter-atomcode-1  | atomcode listening"
+        );
+        assert_eq!(
+            normalize_log_line_prefix("api-1       | GET /api/health 200 OK"),
+            "api-1       | GET /api/health 200 OK"
+        );
+        let _h = paths::test_home("compose-log-service-map");
+        let eng = crate::config::current_engine_service();
+        assert_eq!(resolve_log_service("atomcode"), eng);
+        assert_eq!(resolve_log_service("daemon"), eng);
+        assert_eq!(resolve_log_service("opencode"), eng);
+        assert_eq!(resolve_log_service("api"), "api");
     }
 
     #[test]

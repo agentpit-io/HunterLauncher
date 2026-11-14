@@ -71,14 +71,14 @@ use super::builtin::{self, Progress};
 
 /// 要写进虚拟机 `/etc/resolv.conf` 的 nameserver，以及每一条的理由。
 ///
-/// 顺序有意义：先网关（跟着用户 Mac 的解析走），再两个国内公共 DNS 兜底。
+/// 顺序有意义：先国内高可用公共 DNS（避免用户开启系统代理时 `192.168.5.2` 不响应导致白等 2 秒），再 lima 网关兜底。
 pub const NAMESERVERS: &[(&str, &str)] = &[
+    ("223.6.6.6", "阿里公共 DNS，国内可直连"),
+    ("119.29.29.29", "腾讯 DNSPod 公共 DNS，国内可直连"),
     (
         "192.168.5.2",
         "lima user-v2 的网关，它自己就是 DNS 服务器，解析跟着你 Mac 走",
     ),
-    ("223.6.6.6", "阿里公共 DNS，国内可直连"),
-    ("119.29.29.29", "腾讯 DNSPod 公共 DNS，再兜一层"),
 ];
 
 /// 虚拟机里放我们这份 resolv.conf 的目录与文件（`hunter-dns.service` 从这里拷回去）。
@@ -661,11 +661,10 @@ mod tests {
     fn 写进去的_resolv_conf_里有网关和国内公共_dns() {
         let t = resolv_conf_text();
         let ns = nameservers_in(&t);
-        assert!(ns.contains(&"192.168.5.2".to_string()), "{t}");
-        // **国内网络也要能用**（任务书 P0-1 的硬要求）
-        assert!(
-            ns.iter().any(|n| n == "223.6.6.6" || n == "119.29.29.29"),
-            "{t}"
+        assert_eq!(
+            ns,
+            vec!["223.6.6.6", "119.29.29.29", "192.168.5.2"],
+            "国内公共 DNS 排前面，lima 网关排第三：{t}"
         );
         // 192.168.5.3 在 vz + user-v2 上实测不通，不许再出现
         assert!(!ns.contains(&"192.168.5.3".to_string()), "{t}");

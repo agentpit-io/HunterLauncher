@@ -7,9 +7,10 @@ import type { ServiceStatus } from '../lib/types'
  * llm-shim 不发布端口，M0 §5.3 说它的 PublishedPort 是 0 —— 这里显示「内部」而不是 0。
  */
 export function ServiceTile({ svc, internalLabel }: { svc: ServiceStatus; internalLabel: string }) {
+  const label = svc.service === 'opencode' || svc.service === 'daemon' ? 'atomcode' : svc.service
   return (
     <div className="flex h-[40px] items-center gap-3 rounded-md border border-line bg-card px-4">
-      <span className="truncate text-md text-ink-2">{svc.service}</span>
+      <span className="truncate text-md text-ink-2">{label}</span>
       <span className="tnum ml-auto shrink-0 text-sm text-muted">{svc.port === null ? internalLabel : svc.port}</span>
       <StatusDot health={svc.health} />
     </div>
