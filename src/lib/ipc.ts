@@ -346,10 +346,18 @@ export async function tightenWebBind(): Promise<string> {
 }
 
 export async function readSettings(): Promise<LauncherSettings> {
-  if (DEMO)
-    return demoPage() === 'settings-lan'
-      ? { ...demo.demoSettings, webLanExposed: true }
-      : demo.demoSettings
+  if (DEMO) {
+    const p = demoPage()
+    if (p === 'settings-lan') return { ...demo.demoSettings, webLanExposed: true }
+    if (p === 'logs-uploaded') {
+      return {
+        ...demo.demoSettings,
+        lastTraceCode: 'HL-DEMO01',
+        lastUploadAt: '2026-11-14 14:20:05',
+      }
+    }
+    return demo.demoSettings
+  }
   return call<LauncherSettings>('read_settings')
 }
 

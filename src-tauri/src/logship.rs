@@ -619,6 +619,7 @@ mod tests {
 
     #[test]
     fn machine_id_生成一次之后不再变() {
+        let _g = crate::log::test_lock();
         let mut c = LauncherConfig::default();
         assert!(c.support.machine_id.is_empty());
         assert!(ensure_machine_id(&mut c), "第一次要生成");
@@ -633,6 +634,7 @@ mod tests {
 
     #[test]
     fn machine_id_里不许出现主机名或用户名() {
+        let _g = crate::log::test_lock();
         let mut c = LauncherConfig::default();
         ensure_machine_id(&mut c);
         let id = c.support.machine_id.to_ascii_lowercase();

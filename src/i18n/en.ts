@@ -1049,6 +1049,18 @@ const en: Dict = {
   },
   logship: {
     button: 'Send your logs to us (no keys, no passwords)',
+    topButton: 'Upload logs',
+    topButtonTitle: 'Upload background logs and view logs',
+    autoUploading: 'Uploading background logs (redacted, no keys or passwords)…',
+    bannerTraceLabel: 'Log code',
+    bannerSuccessHint: 'Logs uploaded. Send us this log code so we can look into the issue.',
+    bannerHistoryHint: 'This is the log code from your most recent upload. You can send it to us or upload fresh logs anytime.',
+    bannerIdleHint: 'Upload redacted background logs (no keys or passwords) in one click to get a log code.',
+    copyTraceShort: 'Copy log code',
+    viewUploadedBody: 'View uploaded text',
+    reupload: 'Re-upload logs',
+    uploadNow: 'Upload background logs',
+    retryUpload: 'Retry upload',
     title: 'This is what gets sent — take a look first',
     intro:
       'Press "Upload" and the text below is sent to www.agentpit.io; you get back a trace code we can look the log up by. Keys, passwords, emails, phone numbers, the last IP octet, your username, your hostname and any conversation content are already stripped — what you see here is exactly what leaves this machine.',

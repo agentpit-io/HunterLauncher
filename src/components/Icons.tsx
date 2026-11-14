@@ -45,3 +45,15 @@ export function Gear({ size = 16, className = '' }: { size?: number; className?:
     </svg>
   )
 }
+
+/** 日志上传徽标。标题栏右侧「上传日志」按钮用它，线条与 Gear 一致。 */
+export function LogUploadIcon({ size = 15, className = '' }: { size?: number; className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+      <path d="M12 17v-6" />
+      <path d="m9.5 13.5 2.5-2.5 2.5 2.5" />
+    </svg>
+  )
+}

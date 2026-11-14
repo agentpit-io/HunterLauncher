@@ -31,6 +31,12 @@ export interface Store {
    * 演示模式下是 null。
    */
   boot: BootState | null
+  /**
+   * 顶部栏点击「上传日志」按钮时触发的计数信号（I21）。
+   * 每次点击自增 1 并同时切到 `logs` 抽屉页，`Logs.tsx` 监听此值自动上传后台日志并展示日志编码。
+   */
+  logUploadTrigger: number
+  triggerLogUpload: () => void
 }
 
 export const StoreCtx = createContext<Store | null>(null)

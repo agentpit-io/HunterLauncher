@@ -1,6 +1,6 @@
 import { useStore } from '../state/context'
 import * as ipc from '../lib/ipc'
-import { Gear } from './Icons'
+import { Gear, LogUploadIcon } from './Icons'
 import type { AppInfo } from '../lib/types'
 import type { Dict } from '../i18n'
 
@@ -18,7 +18,7 @@ import type { Dict } from '../i18n'
  *     **未在 Windows 真机上目视验证**（没有真机），只有代码路径与 CI 编译。
  */
 export function TitleBar({ info }: { info: AppInfo | null }) {
-  const { t, demo, overlay, setOverlay } = useStore()
+  const { t, demo, overlay, setOverlay, triggerLogUpload } = useStore()
   const native = info?.windowChrome === 'native'
   const winLike = info?.platform === 'windows'
 
@@ -44,6 +44,22 @@ export function TitleBar({ info }: { info: AppInfo | null }) {
             {t.app.demoBadge}
           </span>
         )}
+        {/* I21：顶部栏一键上传日志并打开日志页（在设置按钮正左侧） */}
+        <button
+          type="button"
+          data-testid="titlebar-upload-logs"
+          title={t.logship.topButtonTitle}
+          aria-label={t.logship.topButtonTitle}
+          onClick={triggerLogUpload}
+          className={`flex h-[26px] items-center gap-1.5 rounded-md border px-2 text-xs transition-colors duration-150 ${
+            overlay === 'logs'
+              ? 'border-amber/55 bg-amber-soft text-amber-text'
+              : 'border-line-strong bg-transparent text-faint hover:bg-card hover:text-body'
+          }`}
+        >
+          <LogUploadIcon size={14} />
+          <span>{t.logship.topButton}</span>
+        </button>
         {/* 设置入口。视觉稿里没有画它，但设置页必须有地方进得去 ——
             运行面板右下角那四个按钮是「停止 / 重启 / 日志 / 反馈」，没有设置，
             所以放在标题栏右侧（M1 把这一页做出来了却没有入口，M2 补上）。 */}

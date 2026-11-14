@@ -1111,6 +1111,19 @@ const zhCN = {
   logship: {
     /** 三个入口（错误页 / 设置页 / 运行面板）用的是同一句话 */
     button: '上传日志给我们（不含 key 与口令）',
+    /** I21：顶部标题栏一键上传日志并打开日志页 */
+    topButton: '上传日志',
+    topButtonTitle: '上传后台日志并查看日志',
+    autoUploading: '正在上传后台日志（已脱敏，不含 key 与口令）…',
+    bannerTraceLabel: '日志编码',
+    bannerSuccessHint: '日志已上传，把这个日志编码发给我们即可排查问题。',
+    bannerHistoryHint: '这是最近一次上传的日志编码，可发给我们排查，或随时上传最新后台日志。',
+    bannerIdleHint: '可将当前后台日志（已脱敏，不含 key 与口令）一键上传并生成日志编码。',
+    copyTraceShort: '复制日志编码',
+    viewUploadedBody: '查看已传内容',
+    reupload: '重新上传日志',
+    uploadNow: '立即上传后台日志',
+    retryUpload: '重试上传',
     title: '这些内容会传给我们，先看一眼',
     intro:
       '点「确认上传」之后，下面这份文字会发到 www.agentpit.io，我们的排障库里会多一条记录，你会拿到一个追踪码。key、口令、邮箱、手机号、IP 末段、用户名、主机名、对话内容都已经抹掉了 —— 你现在看到的就是会发出去的原文，一字不差。',

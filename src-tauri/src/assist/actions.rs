@@ -2042,6 +2042,7 @@ pub(crate) mod tests {
     /// 「这会删东西，而且删的路径是你自己配的」值得单独看一眼。
     #[test]
     fn 重建内置运行时这条动作在表里且级别正确() {
+        let _h = crate::paths::test_home("repair-builtin-spec");
         let s = spec("repair_builtin_runtime").expect("该在表里");
         assert_eq!(s.level, Level::Sensitive, "S-03 起要用户看得见");
         assert!(!s.user_only);
@@ -2065,6 +2066,7 @@ pub(crate) mod tests {
     /// 卸载内置运行时同样是 `Sensitive`，卡片上同样要写出**实际**路径。
     #[test]
     fn 卸载内置运行时这条动作级别正确且写明实际路径() {
+        let _h = crate::paths::test_home("uninstall-builtin-spec");
         let s = spec("uninstall_builtin_runtime").expect("该在表里");
         assert_eq!(s.level, Level::Sensitive, "S-03 起要用户看得见");
         let p = plan(&Call::new("uninstall_builtin_runtime")).expect("该能规划出来");

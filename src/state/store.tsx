@@ -53,6 +53,7 @@ const DEMO_STATES: Record<string, State> = {
   // I7：同一件事在设置页里的样子（只读说明 + 一键收紧）
   'settings-lan': { name: 'Ready' },
   logs: { name: 'Ready' },
+  'logs-uploaded': { name: 'Ready' },
   feedback: { name: 'Ready' },
   update: { name: 'Ready' },
   // I7：接管态的运行面板（App.tsx 里按 takeoverState().active 决定渲染哪一个）
@@ -154,6 +155,7 @@ function initialOverlay(): Overlay {
   ) {
     return 'update'
   }
+  if (page === 'logs-uploaded') return 'logs'
   return page === 'settings' || page === 'logs' || page === 'feedback' || page === 'update'
     ? page
     : null
@@ -168,6 +170,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [notice, setNotice] = useState<string | null>(null)
   // 开机那一次复查的结果（I12 · R1）。「正在检查」页与「检测到上次的数据」页都读它
   const [boot, setBoot] = useState<BootState | null>(null)
+  // I21：顶部栏点击「上传日志」触发计数；演示页面 logs-uploaded 初始置 1 以直接展示上传完成状态
+  const [logUploadTrigger, setLogUploadTrigger] = useState<number>(() =>
+    demoPage() === 'logs-uploaded' ? 1 : 0,
+  )
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -243,8 +249,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notice,
       setNotice,
       boot,
+      logUploadTrigger,
+      triggerLogUpload: () => {
+        setOverlay('logs')
+        setLogUploadTrigger((n) => n + 1)
+      },
     }),
-    [state, locale, overlay, notice, boot],
+    [state, locale, overlay, notice, boot, logUploadTrigger],
   )
 
   return <StoreCtx.Provider value={value}>{children}</StoreCtx.Provider>
