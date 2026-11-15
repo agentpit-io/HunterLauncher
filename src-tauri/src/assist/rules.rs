@@ -1182,13 +1182,13 @@ mod tests {
         let s = diagnose(&r);
         assert_eq!(s.rule, "builtin-runtime-down");
         assert!(s.detail.contains("还缺"), "{}", s.detail);
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") || cfg!(windows) {
             assert_eq!(
                 s.actions.first().map(|a| a.id.as_str()),
                 Some("install_runtime")
             );
         } else {
-            // Linux / Windows 上装不了内置运行时 —— **结论照给，做不到就说清楚**
+            // Linux 上装不了内置运行时 —— **结论照给，做不到就说清楚**
             assert!(s.actions.is_empty(), "{:?}", s.actions);
             assert!(s.detail.contains("做不了这一步"), "{}", s.detail);
         }

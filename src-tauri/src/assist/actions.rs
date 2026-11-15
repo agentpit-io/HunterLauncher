@@ -766,18 +766,23 @@ pub fn plan(call: &Call) -> AppResult<Plan> {
             }
             let missing = crate::runtime::builtin::missing_items();
             let bytes = crate::runtime::manifest::total_bytes(&missing);
-            p.summary = Some(format!(
-                "按顺序自动试这几条路：{}。第一条要下 {}，装在 {} 里，不要管理员密码、可一键卸载；\
-                 前一条没走通才会走下一条，需要管理员权限的那一步会弹系统自己的密码框。",
-                routes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| format!("{}·{}", i + 1, r.label()))
-                    .collect::<Vec<_>>()
-                    .join(" → "),
-                crate::assist::probe::human_bytes(bytes),
-                crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy()),
-            ));
+            p.summary = Some(if cfg!(windows) {
+                "自动下载并静默安装 Docker Desktop（约 500 MB）：自动限制虚拟化内存占用、跳过英文欢迎向导、默认安装到空间充裕的非系统盘；需要管理员权限时会弹一次 Windows 系统授权框。"
+                    .to_string()
+            } else {
+                format!(
+                    "按顺序自动试这几条路：{}。第一条要下 {}，装在 {} 里，不要管理员密码、可一键卸载；\
+                     前一条没走通才会走下一条，需要管理员权限的那一步会弹系统自己的密码框。",
+                    routes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| format!("{}·{}", i + 1, r.label()))
+                        .collect::<Vec<_>>()
+                        .join(" → "),
+                    crate::assist::probe::human_bytes(bytes),
+                    crate::redact::mask_home(&crate::paths::runtime_dir().to_string_lossy()),
+                )
+            });
             p.title = "替你把 Docker 装好".into();
         }
         "start_builtin_runtime" => {
