@@ -62,6 +62,7 @@ import type {
   RestorePreflight,
   ScheduleStatus,
   UninstallPlan,
+  HwReport,
 } from './types'
 
 /** 构建产物里能被 grep 到的标记，CI 用它确认发布包里没有演示数据。 */
@@ -72,7 +73,7 @@ export const DEMO_MARKER = 'HUNTER_DEMO_DATA_MARKER'
  * I8 之前它一直停在 `0.1.0`，于是每一轮的截图右上角都写着「启动器 v0.1.0」，
  * 看图的人分不清那是哪一版的界面（I8 截图时才发现）。
  */
-export const DEMO_LAUNCHER_VERSION = '0.1.24'
+export const DEMO_LAUNCHER_VERSION = '0.1.25'
 export const DEMO_HUNTER_TAG = '1.1.0'
 export const DEMO_LATEST_TAG = '1.2.0'
 export const DEMO_REGISTRY = 'ghcr.io/agentpit-io'
@@ -1636,6 +1637,100 @@ export function demoSelfCheck(page: string | null): SelfCheckReview {
     elapsedMs: 388,
   }
 }
+
+// ── I23 · 安装前电脑硬件配置体检演示数据 ──────────────────────────────────
+
+const DEMO_GIB = 1024 * 1024 * 1024
+
+export const demoHwGood: HwReport = {
+  level: 'good',
+  headline: '这台电脑配置充裕，可以流畅运行 Hunter',
+  summary: '各项硬件指标均满足推荐要求，可以直接开始安装。',
+  totalMemBytes: 16 * DEMO_GIB,
+  availMemBytes: Math.round(9.2 * DEMO_GIB),
+  cpuCores: 8,
+  diskFreeBytes: 128 * DEMO_GIB,
+  diskMount: '/',
+  dockerMemBytes: null,
+  items: [
+    { id: 'memory', label: '电脑总内存', value: '16.0 GB', level: 'good', note: '内存充足（推荐 16 GB 及以上）' },
+    { id: 'avail_memory', label: '当前空闲内存', value: '9.2 GB', level: 'good', note: '当前空闲内存充裕' },
+    { id: 'cpu', label: '处理器核心', value: '8 核 (x86_64)', level: 'good', note: '处理器核心充足' },
+    { id: 'disk', label: '可用磁盘空间', value: '/ 剩余 128 GB', level: 'good', note: '磁盘空间充裕' },
+    { id: 'os_virt', label: '系统与虚拟化', value: 'Linux', level: 'good', note: '系统环境支持自动配置运行环境' },
+  ],
+}
+
+export const demoHwTight: HwReport = {
+  level: 'tight',
+  headline: '这台电脑内存或配置偏紧，运行时可能会变慢',
+  summary:
+    'Hunter 需要同时运行 6 个后台服务（网页、数据库、对话引擎等），推荐 16 GB 及以上内存。当前电脑若继续安装，启动器会自动为您开启小内存减负模式；建议先关掉浏览器多余标签和占内存的大型软件，如果您有内存更大的台式机，更推荐在台式机上安装。',
+  totalMemBytes: 8 * DEMO_GIB,
+  availMemBytes: Math.round(2.8 * DEMO_GIB),
+  cpuCores: 4,
+  diskFreeBytes: 42 * DEMO_GIB,
+  diskMount: 'D:\\',
+  dockerMemBytes: null,
+  items: [
+    {
+      id: 'memory',
+      label: '电脑总内存',
+      value: '8.0 GB',
+      level: 'tight',
+      note: '总内存偏小（推荐 16 GB 及以上），启动器会自动为您调低运行环境内存占用，建议安装时关掉其他大型软件',
+    },
+    {
+      id: 'avail_memory',
+      label: '当前空闲内存',
+      value: '2.8 GB',
+      level: 'tight',
+      note: '当前空闲内存偏少，建议先关掉几个不用的软件，避免下载解压和启动时卡顿',
+    },
+    { id: 'cpu', label: '处理器核心', value: '4 核 (x86_64)', level: 'good', note: '处理器核心充足' },
+    { id: 'disk', label: '可用磁盘空间', value: 'D:\\ 剩余 42 GB', level: 'good', note: '磁盘空间充裕' },
+    { id: 'os_virt', label: '系统与虚拟化', value: 'Windows', level: 'good', note: '系统环境支持自动配置运行环境' },
+  ],
+}
+
+export const demoHwInsufficient: HwReport = {
+  level: 'insufficient',
+  headline: '这台电脑当前可用资源不足，直接安装容易卡住',
+  summary:
+    '检测到「当前空闲内存」未达到流畅运行最低要求。建议先关闭其他占内存或占空间的软件后点「重新检测」，或换用 16 GB 及以上内存的台式机安装。',
+  totalMemBytes: 8 * DEMO_GIB,
+  availMemBytes: Math.round(1.6 * DEMO_GIB),
+  cpuCores: 4,
+  diskFreeBytes: 12 * DEMO_GIB,
+  diskMount: 'C:\\',
+  dockerMemBytes: null,
+  items: [
+    {
+      id: 'memory',
+      label: '电脑总内存',
+      value: '8.0 GB',
+      level: 'tight',
+      note: '总内存偏小（推荐 16 GB 及以上），启动器会自动为您调低运行环境内存占用，建议安装时关掉其他大型软件',
+    },
+    {
+      id: 'avail_memory',
+      label: '当前空闲内存',
+      value: '1.6 GB',
+      level: 'insufficient',
+      note: '当前剩余可用内存不到 2.2 GB，请先关掉浏览器多余标签或大型软件后再试',
+    },
+    { id: 'cpu', label: '处理器核心', value: '4 核 (x86_64)', level: 'good', note: '处理器核心充足' },
+    {
+      id: 'disk',
+      label: '可用磁盘空间',
+      value: 'C:\\ 剩余 12 GB',
+      level: 'insufficient',
+      note: '可用磁盘空间不足 15 GB，装完 6 个服务后空间会见底',
+    },
+    { id: 'os_virt', label: '系统与虚拟化', value: 'Windows', level: 'good', note: '系统环境支持自动配置运行环境' },
+  ],
+}
+
 
 
 // ── I12 · 资源监控 / 启停 / 已有数据的演示值 ─────────────────────────────

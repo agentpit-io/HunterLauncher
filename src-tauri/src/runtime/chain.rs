@@ -40,6 +40,8 @@ pub enum Route {
     OrbStack,
     /// Homebrew（没有就先装 brew）
     Homebrew,
+    /// Windows 全自动静默安装 Docker Desktop（I23）
+    WinDockerDesktop,
 }
 
 impl Route {
@@ -48,6 +50,7 @@ impl Route {
             Route::Builtin => "builtin",
             Route::OrbStack => "orbstack",
             Route::Homebrew => "homebrew",
+            Route::WinDockerDesktop => "win-docker-desktop",
         }
     }
     pub fn label(self) -> &'static str {
@@ -55,6 +58,7 @@ impl Route {
             Route::Builtin => "内置运行时",
             Route::OrbStack => "OrbStack 官方安装包",
             Route::Homebrew => "Homebrew",
+            Route::WinDockerDesktop => "Windows 自动安装 Docker Desktop",
         }
     }
     /// 这条路线开始前，界面上那一句人话（**含预计下载量，数字来自清单**）。
@@ -83,6 +87,10 @@ impl Route {
                  那一步要往系统目录里写文件，macOS 会弹出它自己的密码框，\
                  输一次开机密码就行（密码交给系统，启动器看不到也不会保存）"
                 .to_string(),
+            Route::WinDockerDesktop => "正在为您自动安装 Windows 容器运行环境（约 500 MB）：\
+                 自动限制虚拟化内存占用、跳过英文向导、默认安装到空间充裕的非系统盘，\
+                 中途系统会弹出一次管理员确认框，点「是」即可（密码交给系统，启动器看不到也不会保存）"
+                .to_string(),
         }
     }
 }
@@ -92,8 +100,11 @@ impl Route {
 /// 用户在设置里把 `install_route` 选成 `orbstack` 时，把 OrbStack 提到最前面 ——
 /// **顺序变，链条不变**：每一条仍然会依次试下去。
 pub fn routes() -> Vec<Route> {
+    if cfg!(windows) {
+        return vec![Route::WinDockerDesktop];
+    }
     if !cfg!(target_os = "macos") {
-        // Linux / Windows 上装 Docker 都要管理员权限装系统级服务，
+        // Linux 上装 Docker 要管理员权限装系统级服务，
         // 这一轮没有做那条链路 —— **如实返回空**，不假装有办法
         return Vec::new();
     }
@@ -208,6 +219,11 @@ fn run_route(route: Route, p: &mut builtin::Progress) -> AppResult<String> {
                 ));
             }
             Ok("已经用 Homebrew 装好 OrbStack，docker 可以用了".to_string())
+        }
+        Route::WinDockerDesktop => {
+            let msg = super::win_install::install(p)?;
+            pin_docker_path();
+            Ok(msg)
         }
     }
 }
@@ -427,8 +443,11 @@ mod tests {
             assert_eq!(r[0], Route::Builtin);
             assert_eq!(r[1], Route::OrbStack);
             assert_eq!(r[2], Route::Homebrew);
+        } else if cfg!(windows) {
+            let r = routes();
+            assert_eq!(r, vec![Route::WinDockerDesktop]);
         } else {
-            assert!(routes().is_empty(), "别的平台上如实返回空");
+            assert!(routes().is_empty(), "Linux 平台上如实返回空");
         }
     }
 
@@ -436,7 +455,12 @@ mod tests {
     /// 不能只说「正在安装」。
     #[test]
     fn 每条路线都先说人话() {
-        for r in [Route::Builtin, Route::OrbStack, Route::Homebrew] {
+        for r in [
+            Route::Builtin,
+            Route::OrbStack,
+            Route::Homebrew,
+            Route::WinDockerDesktop,
+        ] {
             let s = r.intro();
             assert!(!s.is_empty());
             assert!(
@@ -452,6 +476,8 @@ mod tests {
         let h = Route::Homebrew.intro();
         assert!(h.contains("密码框"), "{h}");
         assert!(h.contains("启动器看不到也不会保存"), "{h}");
+        let w = Route::WinDockerDesktop.intro();
+        assert!(w.contains("启动器看不到也不会保存"), "{w}");
     }
 
     /// I18 · P0-2：`platform_cannot_install` 的三种状态 × 三个平台**都要过这一条**。

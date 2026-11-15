@@ -118,6 +118,7 @@ pub fn collect(cfg: &LauncherConfig, launcher_version: &str) -> Vec<Section> {
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
+    s.push_str(&format!("{}\n", crate::hwcheck::one_line_summary()));
     s.push_str(&format!(
         "Docker: {:?} · server {} · compose {}\n",
         d.runtime,

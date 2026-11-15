@@ -1346,3 +1346,29 @@ export interface SelfCheckReview {
   lines: string[]
   elapsedMs: number
 }
+
+// ── I23 · 安装前电脑硬件配置体检与分级提醒 ────────────────────────────────
+
+export type HwLevel = 'good' | 'tight' | 'insufficient'
+
+export interface HwItem {
+  id: string
+  label: string
+  value: string | null
+  level: HwLevel
+  note: string
+}
+
+export interface HwReport {
+  level: HwLevel
+  headline: string
+  summary: string
+  totalMemBytes: number | null
+  availMemBytes: number | null
+  cpuCores: number | null
+  diskFreeBytes: number | null
+  diskMount: string | null
+  dockerMemBytes: number | null
+  items: HwItem[]
+}
+

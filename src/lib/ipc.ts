@@ -70,6 +70,7 @@ import type {
   InterruptedUpgrade,
   QuitGuard,
   Preflight,
+  HwReport,
 } from './types'
 import * as demo from './demo'
 
@@ -1098,3 +1099,18 @@ export async function feedbackOneClick(
     errorMessage: errorMessage ?? null,
   })
 }
+
+// ── I23 · 安装前电脑硬件配置体检与分级提醒 ────────────────────────────────
+
+export async function hardwareCheck(): Promise<HwReport> {
+  if (DEMO) {
+    const p = demoPage()
+    const search = typeof window !== 'undefined' ? window.location.search : ''
+    if (p === 'welcome-tight' || search.includes('hw=tight')) return demo.demoHwTight
+    if (p === 'welcome-insufficient' || search.includes('hw=insufficient'))
+      return demo.demoHwInsufficient
+    return demo.demoHwGood
+  }
+  return call<HwReport>('hardware_check')
+}
+

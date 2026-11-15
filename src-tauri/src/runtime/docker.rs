@@ -571,20 +571,20 @@ pub fn install_guide() -> InstallGuide {
             title: "在 Windows 上装 Docker".into(),
             steps: vec![
                 GuideStep {
-                    text: "先确认系统是 Windows 10 21H2 及以上或 Windows 11，并在 BIOS 里打开虚拟化（Intel VT-x / AMD-V）。".into(),
+                    text: "自动安装（推荐）：直接点上方「帮我装好 Docker（不用你动手）」，启动器会自动下载安装包、自动配置虚拟化内存上限、跳过英文欢迎页，并默认安装到空间充裕的非 C 盘，全程不用自己敲命令。".into(),
                     url: None,
                 },
                 GuideStep {
-                    text: "以管理员身份打开 PowerShell，执行 wsl --install 装 WSL2。**装完需要重启电脑**。".into(),
+                    text: "确认系统是 Windows 10 21H2 及以上或 Windows 11，并在电脑主板设置里开启硬件虚拟化（Intel VT-x / AMD-V）。".into(),
+                    url: None,
+                },
+                GuideStep {
+                    text: "首次开启 Windows 虚拟化子系统后若提示需要重启，重启登录电脑后启动器会自动弹出并接着装完剩余步骤。".into(),
                     url: Some("https://learn.microsoft.com/zh-cn/windows/wsl/install".into()),
                 },
                 GuideStep {
-                    text: "下载并安装 Docker Desktop for Windows，安装完按提示注销或重启一次。".into(),
+                    text: "若您倾向自己从官网下载安装，也可打开 Docker Desktop 官方下载页，安装后点上方「重新检测」。".into(),
                     url: Some("https://www.docker.com/products/docker-desktop/".into()),
-                },
-                GuideStep {
-                    text: "如果 WSL2 吃内存太多，在 %USERPROFILE%\\.wslconfig 里写 [wsl2] 段的 memory=4GB 限一下。".into(),
-                    url: Some("https://learn.microsoft.com/zh-cn/windows/wsl/wsl-config".into()),
                 },
                 GuideStep {
                     text: "用 Clash / v2ray 等代理的话，TUN 模式会让容器连不上网。把 localhost、127.0.0.1 加进 NO_PROXY，或者拉镜像时先关掉 TUN。".into(),

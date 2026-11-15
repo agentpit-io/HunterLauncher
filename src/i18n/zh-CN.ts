@@ -260,6 +260,12 @@ const zhCN = {
       '不收集对话内容、股票代码、模型输出',
       '匿名遥测默认关闭，且当前没有上报服务端',
     ],
+    hwTitle: '这台电脑的配置检查',
+    hwChecking: '正在检测电脑硬件配置…',
+    hwGoodLine: (cores: string, totalMem: string, availMem: string, disk: string) =>
+      `这台电脑配置充裕，可以流畅运行 Hunter（${cores} · 总内存 ${totalMem} · 空闲 ${availMem} · 磁盘 ${disk}）`,
+    hwTightBadge: '配置偏紧 · 已开启小内存减负',
+    hwInsufficientBadge: '资源不足 · 建议先释放内存或换台式机',
     start: '开始',
   },
   /** AI 诊断助手（I4 §三）。两层：确定性规则在前，AI 兜底在后。 */
@@ -323,7 +329,7 @@ const zhCN = {
     tryStart: '尝试启动 Docker',
     // R5 · U-02：主按钮。**文案是结论不是问句** —— 不许写成「要不要我帮你装 Docker？」
     installBtn: '帮我装好 Docker（不用你动手）',
-    installNote: '启动器会挑一条最不打扰你的路：先装它自己那份（不改系统、不要密码），不行再走官方安装包，需要系统权限时会弹系统自带的授权框。',
+    installNote: '启动器会自动下载运行环境、自动配置内存上限并默认安装到空间充裕的非系统盘，需要系统权限时弹出一次系统自带的授权框，全程无需手动操作。',
   },
   // ── R5 · 装到哪块盘（U-03）─────────────────────────────────────────────
   //

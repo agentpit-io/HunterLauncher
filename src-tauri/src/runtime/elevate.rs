@@ -51,6 +51,8 @@ pub enum Op {
     /// **正常情况下走不到这里** —— `/Applications` 默认是 `drwxrwxr-x root:admin`，
     /// 管理员账号自己就写得了，所以 macOS 上的自更新通常一个密码框都不弹。
     ReplaceAppBundle,
+    /// Windows 自动安装 Docker Desktop 与开启 WSL2 特性（单次 UAC 确认框）
+    WinInstallDocker,
 }
 
 impl Op {
@@ -60,6 +62,7 @@ impl Op {
             Op::InstallDeb => "安装新版本的启动器",
             Op::StartDockerService => "启动这台机器上的 Docker 后台服务",
             Op::ReplaceAppBundle => "把启动器换成新版本",
+            Op::WinInstallDocker => "启用 Windows 虚拟化子系统并静默安装 Docker Desktop",
         }
     }
     /// 界面上那句「为什么要密码」。**弹框之前先说清楚。**
@@ -79,6 +82,11 @@ impl Op {
                  所以换新版本这一步要管理员。\
                  接下来系统会弹出它自己的密码框，输一次开机密码就行；\
                  密码交给系统，启动器看不到也不会保存。"
+            }
+            Op::WinInstallDocker => {
+                "Windows 上启用 WSL2 虚拟化组件并安装 Docker Desktop 服务需要一次系统管理员授权。\
+                 接下来 Windows 会弹出系统自带的用户账户控制（UAC）确认框，点「是」即可；\
+                 授权由 Windows 系统完成，密码交给系统，启动器看不到也不会保存。"
             }
         }
     }
@@ -117,6 +125,9 @@ pub fn available() -> Result<(), String> {
                  polkit 没有地方问你要密码。"
                 .to_string())
         };
+    }
+    if cfg!(windows) {
+        return Ok(());
     }
     Err("这个平台上还没有做「弹系统授权框」这条路。".to_string())
 }
@@ -168,9 +179,91 @@ pub fn root_argv(inner: &[String], prompt: &str) -> AppResult<Vec<String>> {
         v.extend(inner.iter().cloned());
         return Ok(v);
     }
+    if cfg!(windows) {
+        return Ok(windows_uac_argv(inner));
+    }
     Err(AppError::new(
         Code::NotImplemented,
         "这个平台上还没有做「弹系统授权框」这条路。".to_string(),
+    ))
+}
+
+/// 构造 Windows 单次 UAC 提权执行安装器的命令参数（纯函数）。
+///
+/// 通过 `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command`
+/// 调 `Start-Process -Verb RunAs -Wait -PassThru`，同时如果 WSL2 尚未启用则一并开启
+/// `Microsoft-Windows-Subsystem-Linux` 与 `VirtualMachinePlatform` 特性，全流程只弹一次 UAC。
+pub fn windows_uac_argv(inner: &[String]) -> Vec<String> {
+    let (prog, rest) = inner
+        .split_first()
+        .map(|(f, r)| (f.as_str(), r))
+        .unwrap_or(("", &[]));
+    let ps_prog = ps_single_quote(prog);
+    let ps_args = rest
+        .iter()
+        .map(|a| ps_single_quote(a))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let script = format!(
+        "$ErrorActionPreference = 'Continue'; \
+         & dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null; \
+         & dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null; \
+         & wsl.exe --set-default-version 2 2>$null | Out-Null; \
+         $p = Start-Process -FilePath {ps_prog} -ArgumentList @({ps_args}) -Verb RunAs -Wait -PassThru; \
+         if ($null -eq $p) {{ exit 1 }} else {{ exit $p.ExitCode }}"
+    );
+    vec![
+        "powershell.exe".into(),
+        "-NoProfile".into(),
+        "-NonInteractive".into(),
+        "-WindowStyle".into(),
+        "Hidden".into(),
+        "-Command".into(),
+        script,
+    ]
+}
+
+fn ps_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// 在 Windows 上通过系统 UAC 提权执行静默安装并返回退出码（如 `0` 成功、`3010` 需重启）。
+pub fn run_windows_installer(op: Op, inner: &[String], timeout: Duration) -> AppResult<i32> {
+    available().map_err(|e| AppError::new(Code::NotImplemented, e))?;
+    crate::assist::guard::argv_privileged(inner)?;
+    let argv = windows_uac_argv(inner);
+    crate::assist::guard::audit(
+        "elevate",
+        &std::collections::BTreeMap::from([
+            ("op".to_string(), format!("{op:?}")),
+            ("command".to_string(), inner.join(" ")),
+        ]),
+        crate::assist::guard::Proposer::Orchestrator,
+        Some(crate::assist::guard::Level::Sensitive),
+        "要弹 Windows UAC 授权框",
+    );
+    let (prog, args) = argv.split_first().expect("windows_uac_argv 至少有一项");
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let r = crate::proc::run_timeout(prog, &refs, timeout)?;
+    let code = r.status.unwrap_or(-1);
+    if code == 0 || code == 3010 {
+        crate::assist::guard::audit(
+            "elevate",
+            &std::collections::BTreeMap::from([("op".to_string(), format!("{op:?}"))]),
+            crate::assist::guard::Proposer::Orchestrator,
+            Some(crate::assist::guard::Level::Sensitive),
+            &format!("已完成（{}，退出码 {code}）", op.what()),
+        );
+        return Ok(code);
+    }
+    Err(AppError::new(
+        Code::NotImplemented,
+        format!(
+            "{}没有完成：{}（退出码 {:?}）",
+            op.what(),
+            r.err_line(),
+            r.status
+        ),
     ))
 }
 
@@ -376,9 +469,32 @@ mod tests {
             let v = r.expect("Linux 上要给得出来");
             assert!(v[0].ends_with("pkexec"), "{v:?}");
             assert_eq!(&v[1..], &inner[..], "pkexec 后面原样是参数数组，不拼字符串");
+        } else if cfg!(windows) {
+            let v = r.expect("Windows 上要给得出来");
+            assert_eq!(v[0], "powershell.exe");
+            assert!(v.last().unwrap().contains("-Verb RunAs"));
         } else {
             assert!(r.is_err(), "别的平台上如实说没做");
         }
+    }
+
+    #[test]
+    fn windows_uac_命令包装包含_runas_且参数逐个单引号转义() {
+        let inner = a(&[
+            r"C:\cache\DockerDesktopInstaller.exe",
+            "install",
+            "--quiet",
+            "--accept-license",
+        ]);
+        let v = windows_uac_argv(&inner);
+        assert_eq!(v[0], "powershell.exe");
+        let cmd = v.last().unwrap();
+        assert!(cmd.contains("-Verb RunAs"), "{cmd}");
+        assert!(
+            cmd.contains(r"'C:\cache\DockerDesktopInstaller.exe'"),
+            "{cmd}"
+        );
+        assert!(cmd.contains("'--accept-license'"), "{cmd}");
     }
 
     /// 表外的命令**包都包不出来** —— 守卫在拼字符串之前就拦下了。
@@ -416,7 +532,12 @@ mod tests {
 
     #[test]
     fn 提权前那两句人话都在() {
-        for op in [Op::InstallDeb, Op::StartDockerService, Op::ReplaceAppBundle] {
+        for op in [
+            Op::InstallDeb,
+            Op::StartDockerService,
+            Op::ReplaceAppBundle,
+            Op::WinInstallDocker,
+        ] {
             assert!(!op.what().is_empty());
             assert!(
                 op.why().contains("密码交给系统，启动器看不到也不会保存"),

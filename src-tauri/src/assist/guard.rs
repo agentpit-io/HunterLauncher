@@ -1328,6 +1328,8 @@ pub const PRIVILEGED_OPS: &[&str] = &[
     // macOS 自更新：.app 所在的目录当前账号写不了时才走这条（I14 · F1）。
     // 正常的 /Applications 是 drwxrwxr-x root:admin，管理员账号自己就写得了
     "rsync -a --delete <刚解出来的新 .app>/ <正在跑的那个 .app>/",
+    // Windows 自动安装 Docker Desktop（I23）：缓存目录下的安装包 + 静默安装参数
+    "DockerDesktopInstaller.exe install --quiet --accept-license --backend=wsl-2 --always-run-service [安装目录参数]",
 ];
 
 /// 校验**要以 root 身份跑的那条命令**（提权前的最后一道）。
@@ -1344,6 +1346,40 @@ pub fn argv_privileged(argv: &[String]) -> AppResult<()> {
         .unwrap_or_default();
     let rest: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
     match (base.as_str(), rest.as_slice()) {
+        (
+            "dockerdesktopinstaller.exe",
+            ["install", "--quiet", "--accept-license", "--backend=wsl-2", "--always-run-service", extra @ ..],
+        ) => {
+            let p = Path::new(prog);
+            if !p.is_file() {
+                return Err(reject(format!(
+                    "要运行的安装包 {} 不存在，拒绝提权。",
+                    crate::redact::mask_home(prog)
+                )));
+            }
+            let real = writable_path(p)?;
+            let cache = canon_for_write(&crate::paths::runtime_cache())?;
+            if !real.starts_with(&cache) {
+                return Err(reject(format!(
+                    "只能运行启动器自己下到 {} 里的安装包，拒绝提权。",
+                    crate::redact::mask_home(&cache.to_string_lossy())
+                )));
+            }
+            if extra.len() > 2 {
+                return Err(reject("Docker 安装器附加参数过多，拒绝提权。".to_string()));
+            }
+            for arg in extra {
+                let ok = arg.starts_with("--installation-dir=")
+                    || arg.starts_with("--wsl-default-data-root=");
+                if !ok || arg.contains(';') || arg.contains('|') || arg.contains('&') {
+                    return Err(reject(format!(
+                        "Docker 安装器附加参数「{}」不在白名单中，拒绝提权。",
+                        safe(arg)
+                    )));
+                }
+            }
+            Ok(())
+        }
         ("dpkg", ["-i", deb]) => {
             let p = Path::new(deb);
             if !p.is_file() {

@@ -827,7 +827,7 @@ fn write_docker_config() -> AppResult<()> {
 /// | 项 | 取法 |
 /// |---|---|
 /// | CPU | 本机核数的一半，夹在 2–4 之间 |
-/// | 内存 | 本机内存的 1/4，夹在 4–8 GiB 之间（六个容器实测峰值约 2.5 GiB） |
+/// | 内存 | 8 GB 小内存机器（`mem_gib <= 9`）分配 3 GiB，给宿主机多留 1 GiB 避免剧烈 Swap；12 GB+ 机器取 1/4 并夹在 4–8 GiB 之间 |
 /// | 磁盘 | 剩余空间的 1/3，夹在 20–60 GiB 之间（镜像解压后约 3 GiB） |
 ///
 /// 任何一项读不到就用下限 —— **不猜一个大的**。
@@ -835,13 +835,21 @@ pub fn vm_params() -> (u32, u32, u32) {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(2);
-    let cpu = (cores / 2).clamp(2, 4);
-
     let mem_gib = host_mem_gib().unwrap_or(8);
-    let memory = (mem_gib / 4).clamp(4, 8);
+    let disk_free = crate::assist::probe::disk_free(&crate::paths::root()).map(|(free, _)| free);
+    vm_params_for(cores, mem_gib, disk_free)
+}
 
-    let disk = match crate::assist::probe::disk_free(&crate::paths::root()) {
-        Some((free, _)) => ((free / (1024 * 1024 * 1024)) as u32 / 3).clamp(20, 60),
+/// [`vm_params`] 的纯函数内核：按核心数、本机总内存（GiB）与剩余磁盘字节数算虚拟机配额。
+pub fn vm_params_for(cores: u32, mem_gib: u32, disk_free_bytes: Option<u64>) -> (u32, u32, u32) {
+    let cpu = (cores / 2).clamp(2, 4);
+    let memory = if mem_gib <= 9 {
+        3
+    } else {
+        (mem_gib / 4).clamp(4, 8)
+    };
+    let disk = match disk_free_bytes {
+        Some(free) => ((free / (1024 * 1024 * 1024)) as u32 / 3).clamp(20, 60),
         None => 20,
     };
     (cpu, memory, disk)
@@ -1379,8 +1387,18 @@ mod tests {
         let _g = crate::paths::test_home("builtin-vm-params");
         let (cpu, mem, disk) = vm_params();
         assert!((2..=4).contains(&cpu), "cpu={cpu}");
-        assert!((4..=8).contains(&mem), "mem={mem}");
+        assert!((3..=8).contains(&mem), "mem={mem}");
         assert!((20..=60).contains(&disk), "disk={disk}");
+    }
+
+    #[test]
+    fn 小内存笔记本分配_3_gib_大内存按四分之一夹在_4_到_8_gib() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(vm_params_for(8, 8, Some(120 * GB)), (4, 3, 40));
+        assert_eq!(vm_params_for(8, 12, Some(120 * GB)), (4, 4, 40));
+        assert_eq!(vm_params_for(8, 16, Some(120 * GB)), (4, 4, 40));
+        assert_eq!(vm_params_for(12, 32, Some(300 * GB)), (4, 8, 60));
+        assert_eq!(vm_params_for(2, 8, None), (2, 3, 20));
     }
 
     #[test]

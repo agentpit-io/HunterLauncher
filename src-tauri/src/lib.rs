@@ -51,6 +51,7 @@ pub mod flow;
 pub mod gateway;
 pub mod headless;
 pub mod http;
+pub mod hwcheck;
 pub mod log;
 pub mod logship;
 pub mod monitor;
@@ -264,6 +265,8 @@ pub fn run() {
             commands::logship_upload,
             // I7 · 只允许本机访问（用户 2026-09-21 19:05 的决定）
             commands::tighten_web_bind,
+            // I23 · 安装前电脑硬件配置体检与分级提醒
+            commands::hardware_check,
         ])
         .setup(|app| {
             let handle = app.handle();

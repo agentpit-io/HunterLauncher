@@ -248,6 +248,12 @@ const en: Dict = {
       'Never collects conversations, tickers or model output',
       'Anonymous telemetry is off by default and currently has no server endpoint',
     ],
+    hwTitle: 'Hardware check for this machine',
+    hwChecking: 'Checking hardware configuration…',
+    hwGoodLine: (cores: string, totalMem: string, availMem: string, disk: string) =>
+      `Plenty of resources to run Hunter smoothly (${cores} · total RAM ${totalMem} · free ${availMem} · disk ${disk})`,
+    hwTightBadge: 'Tight resources · low-memory relief enabled',
+    hwInsufficientBadge: 'Insufficient resources · close heavy apps or use a desktop',
     start: 'Start',
   },
   /** AI troubleshooting assistant (I4 §3). Two layers: deterministic rules first, AI as fallback. */
@@ -313,7 +319,7 @@ const en: Dict = {
     // R5 · U-02: a statement, not a question ("shall I install Docker for you?" is wrong)
     installBtn: 'Install Docker for me (no work on your side)',
     installNote:
-      'The launcher picks the least intrusive path: its own copy first (no system changes, no password), then the official installer, using the system prompt when it needs privilege.',
+      'The launcher automatically downloads the runtime, configures a safe memory cap, and installs onto a spacious non-system disk by default, raising a single system prompt only when privilege is required.',
   },
   // ── R5 · which disk to install on (U-03) ─────────────────────────────
   // Not a single number lives here: capacity, free space, footprint, cap and

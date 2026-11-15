@@ -3289,3 +3289,9 @@ pub async fn self_check(deep: Option<bool>) -> Result<crate::selfcheck::Review> 
 pub async fn assist_audit_tail(lines: usize) -> Result<Vec<String>> {
     blocking(move || Ok(crate::assist::guard::audit_tail(lines.min(500)))).await
 }
+
+/// I23 · 安装前电脑硬件环境体检与三档分级提醒。
+#[tauri::command]
+pub async fn hardware_check() -> Result<crate::hwcheck::HwReport> {
+    blocking(|| Ok(crate::hwcheck::check())).await
+}

@@ -24,6 +24,7 @@ pub mod netcheck;
 pub mod orbstack;
 pub mod vmdns;
 pub mod which;
+pub mod win_install;
 
 /// 这台机器是什么系统。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

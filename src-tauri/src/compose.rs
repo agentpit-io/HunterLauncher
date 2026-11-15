@@ -1743,12 +1743,18 @@ pub fn wait_healthy(
                     .iter()
                     .find(|s| s.state == "exited" && s.exit_code.unwrap_or(0) != 0)
                 {
+                    let code = dead.exit_code.unwrap_or(-1);
+                    if is_service_oom(&dead.service, code) {
+                        return Err(AppError::new(
+                            Code::StartTimeout,
+                            oom_error_message(&dead.service),
+                        ));
+                    }
                     return Err(AppError::new(
                         Code::StartTimeout,
                         format!(
                             "服务 {} 启动后就退出了（退出码 {}）。先看它的日志。",
-                            dead.service,
-                            dead.exit_code.unwrap_or(-1)
+                            dead.service, code
                         ),
                     ));
                 }
@@ -1756,6 +1762,15 @@ pub fn wait_healthy(
             Err(e) => crate::lwarn!("轮询 compose ps 失败（会继续重试）：{}", e.msg),
         }
         if Instant::now() >= deadline {
+            if let Some(oom_svc) = last.iter().find_map(|s| {
+                (!service_ready(s) && is_service_oom(&s.service, s.exit_code.unwrap_or(0)))
+                    .then(|| s.service.clone())
+            }) {
+                return Err(AppError::new(
+                    Code::StartTimeout,
+                    oom_error_message(&oom_svc),
+                ));
+            }
             let not_ready: Vec<String> = expected
                 .iter()
                 .filter(|e| !last.iter().any(|s| s.service == **e && service_ready(s)))
@@ -1779,6 +1794,37 @@ pub fn wait_healthy(
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// 纯函数：根据容器的退出码或 `OOMKilled` 状态判断是否死于内存不足。
+pub fn is_oom_status(exit_code: i64, oom_killed: Option<bool>) -> bool {
+    exit_code == 137 || oom_killed == Some(true)
+}
+
+/// 服务因内存不足被系统强杀时给用户看的大白话错误信息。
+pub fn oom_error_message(service: &str) -> String {
+    let shown = if service == "opencode" || service == "daemon" {
+        "atomcode"
+    } else {
+        service
+    };
+    format!(
+        "电脑可用内存不足，服务 {shown} 在启动时被系统强行终止（内存溢出）。建议先关闭其他占内存的大型软件后重试，或在 16 GB 及以上内存的电脑（如台式机）上运行。"
+    )
+}
+
+/// 检查指定服务是否因内存不足被杀（`ExitCode == 137` 或 `OOMKilled == true`）。
+pub fn is_service_oom(service: &str, exit_code: i64) -> bool {
+    if exit_code == 137 {
+        return true;
+    }
+    let names = container_names();
+    let cname = names
+        .get(service)
+        .cloned()
+        .unwrap_or_else(|| format!("{PROJECT}-{service}-1"));
+    let oom = vitals_of(&cname).and_then(|v| v.oom_killed);
+    is_oom_status(exit_code, oom)
 }
 
 pub fn health_cn(h: Health) -> &'static str {
@@ -3414,5 +3460,17 @@ mod tests {
     #[test]
     fn 没有漂移就什么都不做() {
         fix_bind_drift(&[]).expect("空表必须是立刻成功、什么都不做");
+    }
+
+    #[test]
+    fn 容器内存溢出退出码_137_或_oom_killed_精准识别并输出大白话() {
+        assert!(is_oom_status(137, None));
+        assert!(is_oom_status(1, Some(true)));
+        assert!(!is_oom_status(1, Some(false)));
+        assert!(!is_oom_status(1, None));
+        let msg = oom_error_message("daemon");
+        assert!(msg.contains("atomcode"), "{msg}");
+        assert!(msg.contains("电脑可用内存不足"), "{msg}");
+        assert!(msg.contains("16 GB"), "{msg}");
     }
 }

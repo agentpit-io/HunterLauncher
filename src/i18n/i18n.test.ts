@@ -177,3 +177,18 @@ describe('I17 · U3 / U4 文案', () => {
     expect(hits, `这些文案还写着旧名字：\n${hits.join('\n')}`).toEqual([])
   })
 })
+
+describe('I23 · 欢迎页硬件体检与自动安装文案', () => {
+  it('三档硬件检查文案完整且中英文对齐', () => {
+    const lineZh = zhCN.welcome.hwGoodLine('8 核', '16.0 GB', '9.2 GB', '/ 剩余 128 GB')
+    expect(lineZh).toContain('16.0 GB')
+    expect(lineZh).toContain('9.2 GB')
+    expect(zhCN.welcome.hwTightBadge).toContain('减负')
+    expect(zhCN.welcome.hwInsufficientBadge).toContain('台式机')
+
+    const lineEn = en.welcome.hwGoodLine('8 cores', '16.0 GB', '9.2 GB', '128 GB free')
+    expect(lineEn).toContain('16.0 GB')
+    expect(en.welcome.hwTightBadge).toContain('low-memory')
+  })
+})
+
